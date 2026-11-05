@@ -1,222 +1,190 @@
 module
-public import Rivet.Syntax
-import Rivet.Model
+public import Rivet.Model
+import Rivet.Safety
+@[expose] public section
+namespace Rivet
 
-public section
-namespace Rivet.API
-noncomputable def Execution := State
+/-- The little-endian address stored in the current stack return slot. -/
+def MachineState.returnAddress (state : MachineState) : Nat :=
+  read64 state.memory (state.registers .rsp)
 
-/-- Logical observations, not a constructor for an execution. -/
-inductive Control where
-  | running (pc : Nat)
-  | returned (address : Nat)
-  | fault
-  deriving DecidableEq, Repr
+def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
+  state.registers .rsp + 8 ≤ word ∧
+    (List.range 8).all (fun offset => state.readable (state.registers .rsp + offset)) = true
 
-structure View where
-  regs : Reg → Nat
-  zero : Bool
-  bytes : Nat → Fin 256
-  readable : Nat → Bool
-  reads : List Access
-  control : Control
+/-- Record update used to express register values in instruction postconditions. -/
+def MachineState.write (state : MachineState) (register : Reg) (value : Nat) : MachineState :=
+  { state with registers := fun other => if other = register then value else state.registers other }
 
-noncomputable def observe (s : Execution) : View :=
-  ⟨s.regs, s.zf, s.mem, s.readable, s.reads,
-    match s.status with
-    | .running => .running s.pc
-    | .returned a => .returned a
-    | .fault => .fault⟩
+namespace API
 
-@[expose] noncomputable def reg (s : Execution) (r : Reg) : Nat := (observe s).regs r
-@[expose] noncomputable def byte (s : Execution) : Nat → Fin 256 := (observe s).bytes
-@[expose] noncomputable def readable (s : Execution) : Nat → Bool := (observe s).readable
-@[expose] noncomputable def zero (s : Execution) : Bool := (observe s).zero
-@[expose] noncomputable def reads (s : Execution) : List Access := (observe s).reads
-@[expose] def At (s : Execution) (pc : Nat) : Prop := (observe s).control = .running pc
-@[expose] def Returned (s : Execution) (a : Nat) : Prop := (observe s).control = .returned a
-noncomputable def execute (p : Program) (n : Nat) (s : Execution) : Execution := run p n s
+def AtInstruction (state : MachineState) (index : Nat) : Prop :=
+  state.status = .running index
 
-@[expose] def View.returnAddress (v : View) : Nat :=
-  (List.range 8).foldr (fun i n => (v.bytes (v.regs .rsp+i)).val + 256*n) 0
-@[expose] def View.ValidReturnSlot (v : View) : Prop :=
-  v.regs .rsp + 8 ≤ word ∧ (List.range 8).all (fun i => v.readable (v.regs .rsp+i)) = true
-@[expose] noncomputable def returnAddress (s : Execution) : Nat := (observe s).returnAddress
-@[expose] def ValidReturnSlot (s : Execution) : Prop := (observe s).ValidReturnSlot
+def execute (program : Program) (steps : Nat) (initial : MachineState) : MachineState :=
+  run program steps initial
 
-@[expose] abbrev InstructionAt (p : Program) (pc : Nat) (op : Op) : Prop :=
-  (p[pc]?).map Instruction.op = some op
+abbrev InstructionAt (program : Program) (index : Nat) (instruction : Op) : Prop :=
+  (program[index]?).map Instruction.op = some instruction
 
-/-- An exact-fuel Hoare contract over public observations. -/
-structure Ensures (p : Program) (n : Nat) (P Q : View → Prop) : Prop where
-  run : ∀ s, P (observe s) → Q (observe (execute p n s))
+/-- Executing from a state satisfying the precondition establishes the postcondition. -/
+structure Ensures (program : Program) (steps : Nat)
+    (precondition postcondition : MachineState → Prop) : Prop where
+  run : ∀ initial, precondition initial → postcondition (execute program steps initial)
 
-/-- Compose blocks through their shared intermediate assertion. -/
-theorem Ensures.seq (first : Ensures p n P Q) (second : Ensures p m Q R) :
-    Ensures p (n+m) P R := by
+theorem Ensures.seq (first : Ensures program firstSteps precondition intermediate)
+    (second : Ensures program secondSteps intermediate postcondition) :
+    Ensures program (firstSteps + secondSteps) precondition postcondition := by
   constructor
-  intro s h
-  simpa only [execute, run_add] using second.run (execute p n s) (first.run s h)
+  intro initial preconditionHolds
+  simpa only [execute, run_add] using
+    second.run (execute program firstSteps initial) (first.run initial preconditionHolds)
 
-/-- Change assertions by implication; no interpreter access is required. -/
-theorem Ensures.consequence (h : Ensures p n P Q)
-    (pre : ∀ v, P' v → P v) (post : ∀ v, Q v → Q' v) : Ensures p n P' Q' :=
-  ⟨fun s hs => post _ (h.run s (pre _ hs))⟩
+theorem Ensures.consequence (contract : Ensures program steps precondition postcondition)
+    (pre : ∀ state, stronger state → precondition state)
+    (post : ∀ state, postcondition state → weaker state) :
+    Ensures program steps stronger weaker :=
+  ⟨fun initial assumption => post _ (contract.run initial (pre _ assumption))⟩
 
-@[simp] theorem execute_zero (p : Program) (s : Execution) : execute p 0 s = s := by rfl
+@[simp] theorem execute_zero (program : Program) (initial : MachineState) :
+    execute program 0 initial = initial := by rfl
 
-theorem execute_execute (p : Program) (m n : Nat) (s : Execution) :
-    execute p m (execute p n s) = execute p (n+m) s := (run_add p n m s).symm
+theorem execute_execute (program : Program) (later earlier : Nat) (initial : MachineState) :
+    execute program later (execute program earlier initial) =
+      execute program (earlier + later) initial := (run_add program earlier later initial).symm
 
-@[simp] theorem execute_returned (p : Program) (n : Nat) (s : Execution)
-    (h : Returned s address) : execute p n s = s := by
-  have status : s.status = .returned address := by
-    cases hs : s.status <;> simp [Returned, observe, hs] at h ⊢
-    assumption
-  have step_eq : step p s = s := by simp [step, status]
-  change run p n s = s
-  induction n with
-  | zero => rfl
-  | succ n ih => simpa [run, step_eq] using ih
+@[simp] theorem execute_returned (program : Program) (steps : Nat) (initial : MachineState)
+    (returned : initial.status = .returned address) : execute program steps initial = initial :=
+  run_stopped program steps initial (by simp [returned, ExecutionStatus.isRunning])
 
-/-- Logical register update; other observations are retained by record update. -/
-@[expose] def View.write (v : View) (r : Reg) (n : Nat) : View :=
-  { v with regs := fun q => if q = r then n else v.regs q }
+@[simp] theorem execute_fault (program : Program) (steps : Nat) (initial : MachineState)
+    (faulted : initial.status = .fault) : execute program steps initial = initial :=
+  run_stopped program steps initial (by simp [faulted, ExecutionStatus.isRunning])
 
-private theorem running (hv : observe s = v) (location : v.control = .running pc) :
-    s.status = .running ∧ s.pc = pc := by
-  have hc : (observe s).control = .running pc := hv ▸ location
-  cases hs : s.status <;> simp [observe, hs] at hc ⊢
-  exact hc
+theorem execute_reads_mono (program : Program) (steps : Nat) (initial : MachineState) (access : Access)
+    (recorded : access ∈ initial.readHistory) : access ∈ (execute program steps initial).readHistory :=
+  run_reads_monotone program initial steps access recorded
 
-private theorem one (code : InstructionAt p pc op)
-    (hv : observe s = v) (location : v.control = .running pc) :
-    execute p 1 s = stepOp op s := by
-  have hr := running hv location
-  change step p s = stepOp op s
-  simp only [step, hr.1, hr.2]
-  cases he : p[pc]? with
-  | none => simp [InstructionAt, he] at code
-  | some i => simp [InstructionAt, he] at code; simp [code]
+theorem execute_preserves_register (program : Program) (steps : Nat) (initial : MachineState)
+    (register : Reg) (unchanged : program.all (fun instruction => !(modifies instruction.op register)) = true) :
+    (execute program steps initial).registers register = initial.registers register := by
+  apply run_preserves
+  intro instruction member
+  have := (List.all_eq_true.mp unchanged) instruction member
+  simpa using this
+
+private theorem one (code : InstructionAt program index instruction)
+    (location : initial.status = .running index) :
+    execute program 1 initial = stepOp instruction initial := by
+  change step program initial = stepOp instruction initial
+  simp only [step, location]
+  cases entry : program[index]? with
+  | none => simp [InstructionAt, entry] at code
+  | some found => simp [InstructionAt, entry] at code; simp [code]
 
 -- Every instruction has the same contract shape as a multi-instruction block.
 -- `code` is checked automatically for concrete programs, or supplied explicitly.
-theorem clear (p : Program) (pc : Nat) (dst : Reg32) (v : View)
-    (location : v.control = .running pc := by rfl)
-    (code : InstructionAt p pc (.xor dst dst) := by decide +kernel) :
-    Ensures p 1 (· = v) (· = { v.write dst.parent 0 with control := .running (pc+1), zero := true }) := by
+theorem clear (program : Program) (index : Nat) (destination : Reg32) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.xor destination destination) := by decide +kernel) :
+    Ensures program 1 (· = initial) (· = { initial.write destination.parent 0 with status := .running (index+1), zeroFlag := true }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, View.write, stepOp, next, put]
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, put] <;> try rfl
 
-theorem test_zero (p : Program) (pc : Nat) (r : Reg) (v : View)
-    (location : v.control = .running pc := by rfl)
-    (code : InstructionAt p pc (.test r r) := by decide +kernel) :
-    Ensures p 1 (· = v) (· = { v with control := .running (pc+1), zero := v.regs r == 0 }) := by
+theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.test register register) := by decide +kernel) :
+    Ensures program 1 (· = initial) (· = { initial with status := .running (index+1), zeroFlag := initial.registers register == 0 }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, stepOp, next]
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [ExecutionStatus.advance, stepOp, next]
 
-theorem read_byte (p : Program) (pc : Nat) (dst : Reg32) (base : Reg) (v : View)
-    (location : v.control = .running pc) (bound : v.regs base < word)
-    (allowed : v.readable (v.regs base) = true)
-    (code : InstructionAt p pc (.movzx dst (.bytePtr base)) := by decide +kernel) :
-    Ensures p 1 (· = v) (· = { v.write dst.parent (v.bytes (v.regs base)).val with
-      control := .running (pc+1), reads := v.reads ++ [⟨v.regs base,1⟩] }) := by
+theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
+    (location : initial.status = .running index) (bound : initial.registers base < word)
+    (allowed : initial.readable (initial.registers base) = true)
+    (code : InstructionAt program index (.movzx destination (.bytePtr base)) := by decide +kernel) :
+    Ensures program 1 (· = initial) (· = { initial.write destination.parent (initial.memory (initial.registers base)).val with
+      status := .running (index+1), readHistory := initial.readHistory ++ [⟨initial.registers base,1⟩] }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
+  intro actual equal
+  subst actual
+  rw [one code location]
   have hb (b : Fin 256) : b.val % word = b.val := by
     apply Nat.mod_eq_of_lt
     have := b.isLt
     unfold word
     omega
-  simp_all [observe, View.write, stepOp, next, put]
+  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, put] <;> try rfl
 
-theorem add (p : Program) (pc : Nat) (dst src : Reg) (v : View)
-    (location : v.control = .running pc := by rfl)
-    (code : InstructionAt p pc (.add dst src) := by decide +kernel) :
-    let n := (v.regs dst + v.regs src) % word
-    Ensures p 1 (· = v) (· = { v.write dst n with control := .running (pc+1), zero := n == 0 }) := by
+theorem add (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.add destination source) := by decide +kernel) :
+    let n := (initial.registers destination + initial.registers source) % word
+    Ensures program 1 (· = initial) (· = { initial.write destination n with status := .running (index+1), zeroFlag := n == 0 }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, View.write, stepOp, next, put]
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, put] <;> try rfl
 
-theorem inc (p : Program) (pc : Nat) (r : Reg) (v : View)
-    (location : v.control = .running pc := by rfl)
-    (code : InstructionAt p pc (.inc r) := by decide +kernel) :
-    let n := (v.regs r + 1) % word
-    Ensures p 1 (· = v) (· = { v.write r n with control := .running (pc+1), zero := n == 0 }) := by
+theorem inc (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.inc register) := by decide +kernel) :
+    let n := (initial.registers register + 1) % word
+    Ensures program 1 (· = initial) (· = { initial.write register n with status := .running (index+1), zeroFlag := n == 0 }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, View.write, stepOp, next, put]
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, put] <;> try rfl
 
-theorem dec (p : Program) (pc : Nat) (r : Reg) (v : View)
-    (location : v.control = .running pc := by rfl)
-    (code : InstructionAt p pc (.dec r) := by decide +kernel) :
-    let n := (word - 1 + v.regs r) % word
-    Ensures p 1 (· = v) (· = { v.write r n with control := .running (pc+1), zero := n == 0 }) := by
+theorem dec (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.dec register) := by decide +kernel) :
+    let n := (word - 1 + initial.registers register) % word
+    Ensures program 1 (· = initial) (· = { initial.write register n with status := .running (index+1), zeroFlag := n == 0 }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, View.write, stepOp, next, put]
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, put] <;> try rfl
 
-theorem branch_zero (p : Program) (pc target : Nat) (v : View)
-    (location : v.control = .running pc := by rfl)
-    (code : InstructionAt p pc (.jz target) := by decide +kernel) :
-    Ensures p 1 (· = v) (· = { v with control := .running (if v.zero then target else pc+1) }) := by
+theorem branch_zero (program : Program) (index target : Nat) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.jz target) := by decide +kernel) :
+    Ensures program 1 (· = initial) (· = { initial with status := .running (if initial.zeroFlag then target else index+1) }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, stepOp]
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [ExecutionStatus.advance, stepOp]
+  split <;> rfl
 
-theorem branch_nonzero (p : Program) (pc target : Nat) (v : View)
-    (location : v.control = .running pc := by rfl)
-    (code : InstructionAt p pc (.jnz target) := by decide +kernel) :
-    Ensures p 1 (· = v) (· = { v with control := .running (if v.zero then pc+1 else target) }) := by
+theorem branch_nonzero (program : Program) (index target : Nat) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.jnz target) := by decide +kernel) :
+    Ensures program 1 (· = initial) (· = { initial with status := .running (if initial.zeroFlag then index+1 else target) }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, stepOp]
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [ExecutionStatus.advance, stepOp]
+  split <;> rfl
 
-theorem return_ (p : Program) (pc : Nat) (v : View)
-    (location : v.control = .running pc) (slot : v.ValidReturnSlot)
-    (code : InstructionAt p pc .ret := by decide +kernel) :
-    Ensures p 1 (· = v) (· = { v.write .rsp ((v.regs .rsp+8)%word) with
-      control := .returned v.returnAddress, reads := v.reads ++ [⟨v.regs .rsp,8⟩] }) := by
+theorem return_ (program : Program) (index : Nat) (initial : MachineState)
+    (location : initial.status = .running index) (slot : initial.ValidReturnSlot)
+    (code : InstructionAt program index .ret := by decide +kernel) :
+    Ensures program 1 (· = initial) (· = { initial.write .rsp ((initial.registers .rsp+8)%word) with
+      status := .returned initial.returnAddress, readHistory := initial.readHistory ++ [⟨initial.registers .rsp,8⟩] }) := by
   constructor
-  intro s hv
-  have hr := running hv location
-  rw [one code hv location]
-  cases s
-  cases v
-  simp_all [observe, View.write, View.ValidReturnSlot, View.returnAddress, stepOp, put, read64]
-end Rivet.API
+  intro actual equal
+  subst actual
+  rw [one code location]
+  simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp, put, read64]
+end API
+end Rivet

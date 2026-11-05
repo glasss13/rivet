@@ -29,6 +29,13 @@ inductive Op where
   | jnz (target : Nat)
   | ret
   deriving DecidableEq, Repr
+/-- Whether an instruction can write a register, including RET advancing RSP. -/
+def modifies : Op → Reg → Bool
+  | .xor d _, r | .movzx d _, r => d.parent == r
+  | .add d _, r | .inc d, r | .dec d, r => d == r
+  | .ret, r => r == .rsp
+  | _, _ => false
+
 structure Instruction where
   op : Op
   line : Nat
