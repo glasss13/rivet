@@ -1,7 +1,7 @@
 module
-public import Verification.Model
+public import Rivet.Model
 @[expose] public section
-namespace Verification
+namespace Rivet
 
 def CalleeSaved (r : Reg) : Prop :=
   r = .rbx ∨ r = .rbp ∨ r = .r12 ∨ r = .r13 ∨ r = .r14 ∨ r = .r15
@@ -50,4 +50,4 @@ theorem run_reads_monotone (p : Program) (s : State) (n : Nat) (e : Access)
   | zero => exact h
   | succ n ih => exact ih (step p s) (step_reads_monotone p s e h)
 
-end Verification
+end Rivet

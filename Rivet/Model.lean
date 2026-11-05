@@ -1,7 +1,7 @@
 module
-public import Verification.Syntax
+public import Rivet.Syntax
 @[expose] public section
-namespace Verification
+namespace Rivet
 
 inductive Status where
   | running | returned (address : Nat) | fault
@@ -82,4 +82,4 @@ theorem run_add (p : Program) (n m : Nat) (s : State) :
   | zero => simp [run]
   | succ n ih => simpa [Nat.succ_add, run] using ih (step p s)
 
-end Verification
+end Rivet

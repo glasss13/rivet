@@ -1,4 +1,4 @@
-# Assembly verification
+# Rivet
 
 A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Programs retain instruction operands, widths, source lines, and resolved branch targets. Lean is the only required toolchain; its version is pinned in `lean-toolchain`.
 
@@ -6,13 +6,13 @@ A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Prog
 lake build
 ```
 
-`Verification.API` provides opaque executions, logical observations, composable `Ensures` contracts, and instruction rules proved against the shared interpreter. `Verification.Parser` defines the accepted source grammar. `Verification.Safety` and `Verification.Word` provide generic register-preservation, read-history, and machine-word invariants.
+`Rivet.API` provides opaque executions, logical observations, composable `Ensures` contracts, and instruction rules proved against the shared interpreter. `Rivet.Parser` defines the accepted source grammar. `Rivet.Safety` and `Rivet.Word` provide generic register-preservation, read-history, and machine-word invariants.
 
 Define a program directly from assembly in your proof module:
 
 ```lean
-import Verification.Parser
-open Verification
+import Rivet
+open Rivet
 
 def source : String := include_str "input.s"
 def program : Program := (parse source).toOption.get (by decide +kernel)

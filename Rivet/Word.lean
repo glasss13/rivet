@@ -1,7 +1,7 @@
 module
-public import Verification.Safety
+public import Rivet.Safety
 @[expose] public section
-namespace Verification
+namespace Rivet
 set_option maxRecDepth 4000
 -- Registers use the canonical natural-number encoding of a 64-bit word.
 -- The invariant is explicit, and every supported transition preserves it.
@@ -36,4 +36,4 @@ theorem run_registers64 (p : Program) (n : Nat) (s : State) (h : Registers64 s) 
   | zero => exact h
   | succ n ih => exact ih _ (step_registers64 p s h)
 
-end Verification
+end Rivet

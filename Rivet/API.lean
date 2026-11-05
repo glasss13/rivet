@@ -1,9 +1,9 @@
 module
-public import Verification.Syntax
-import Verification.Model
+public import Rivet.Syntax
+import Rivet.Model
 
 public section
-namespace Verification.API
+namespace Rivet.API
 noncomputable def Execution := State
 
 /-- Logical observations, not a constructor for an execution. -/
@@ -219,4 +219,4 @@ theorem return_ (p : Program) (pc : Nat) (v : View)
   cases s
   cases v
   simp_all [observe, View.write, View.ValidReturnSlot, View.returnAddress, stepOp, put, read64]
-end Verification.API
+end Rivet.API

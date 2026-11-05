@@ -1,7 +1,7 @@
 module
 public import Std
 @[expose] public section
-namespace Verification
+namespace Rivet
 def word : Nat := 2^64
 inductive Reg where
   | rax | rbx | rcx | rdx | rsi | rdi | rbp | rsp
@@ -38,4 +38,4 @@ structure Access where
   address : Nat
   size : Nat
   deriving DecidableEq, Repr
-end Verification
+end Rivet

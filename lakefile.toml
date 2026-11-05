@@ -1,5 +1,5 @@
-name = "verification"
+name = "rivet"
 version = "0.1.0"
-defaultTargets = ["Verification"]
+defaultTargets = ["Rivet"]
 [[lean_lib]]
-name = "Verification"
+name = "Rivet"

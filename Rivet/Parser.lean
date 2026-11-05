@@ -1,8 +1,8 @@
 module
-public import Verification.Syntax
+public import Rivet.Syntax
 @[expose] public section
 deriving instance DecidableEq for Except
-namespace Verification
+namespace Rivet
 
 -- A deliberately closed Intel-syntax grammar; no assembler preprocessing.
 def splitChars (sep : Char) (cs : List Char) : List (List Char) :=
@@ -88,4 +88,4 @@ def parse (source : String) : Except String Program := do
       | .jz t | .jnz t => t ≥ p.length
       | _ => false) then throw "branch target outside function"
   return p
-end Verification
+end Rivet
