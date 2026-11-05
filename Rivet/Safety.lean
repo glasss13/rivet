@@ -8,7 +8,7 @@ def CalleeSaved (register : Reg) : Prop :=
 
 theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (unchanged : modifies operation register = false) :
     (stepOp operation state).registers register = state.registers register := by
-  cases operation <;> simp_all [modifies, stepOp, next, put, Ne.symm] <;> split <;> simp_all [Ne.symm]
+  cases operation <;> simp_all [modifies, stepOp, next, MachineState.write, Ne.symm] <;> split <;> simp_all [Ne.symm]
 
 theorem step_preserves (program : Program) (state : MachineState) (register : Reg)
     (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
@@ -44,7 +44,7 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
   split
   · split
     · rename_i instruction instructionAtIndex
-      cases instruction.op <;> simp_all [stepOp, next, put] <;> split <;> simp_all
+      cases instruction.op <;> simp_all [stepOp, next, MachineState.write] <;> split <;> simp_all
     · exact recorded
   · exact recorded
 
