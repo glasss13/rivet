@@ -1,0 +1,12 @@
+{
+  "lean": "4.30.0",
+  "python": "3.9.25",
+  "gcc": "11.5.0",
+  "assembler": "2.35.2-54.el9",
+  "platform": "x86_64-linux",
+  "python_packages": [],
+  "lean_packages": [],
+  "rustc": "1.99.1",
+  "cargo": "1.99.1",
+  "rust_packages": []
+}
