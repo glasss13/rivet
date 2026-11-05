@@ -5,45 +5,45 @@ deriving instance DecidableEq for Except
 namespace Rivet
 
 -- A deliberately closed Intel-syntax grammar; no assembler preprocessing.
-def splitChars (sep : Char) (cs : List Char) : List (List Char) :=
-  cs.foldr (fun c acc => if c = sep then [] :: acc else
-    match acc with | [] => [[c]] | h::t => (c::h)::t) [[]]
-def strip (cs : List Char) : List Char :=
-  ((cs.dropWhile (fun c => c == ' ' || c == '\t' || c == '\r')).reverse.dropWhile
-    (fun c => c == ' ' || c == '\t' || c == '\r')).reverse
-def clean (s : String) : String := String.ofList (strip (s.toList.takeWhile (· != '#')))
-def tokens (s : String) : List String :=
-  let cs := s.toList.flatMap (fun c => if c == ',' then [' ', ',', ' ']
-    else if c == '\t' then [' '] else [c])
-  (splitChars ' ' cs).filterMap (fun cs => if cs.isEmpty then none else some (String.ofList cs))
-def identifier (s : String) : Bool :=
-  !s.toList.isEmpty && s.toList.all (fun c => c.isAlpha || c.isDigit || c == '_') &&
-    !(s.toList.head!).isDigit
+def splitChars (separator : Char) (characters : List Char) : List (List Char) :=
+  characters.foldr (fun character groups => if character = separator then [] :: groups else
+    match groups with | [] => [[character]] | head::tail => (character::head)::tail) [[]]
+def strip (characters : List Char) : List Char :=
+  ((characters.dropWhile (fun character => character == ' ' || character == '\t' || character == '\r')).reverse.dropWhile
+    (fun character => character == ' ' || character == '\t' || character == '\r')).reverse
+def clean (source : String) : String := String.ofList (strip (source.toList.takeWhile (· != '#')))
+def tokens (source : String) : List String :=
+  let characters := source.toList.flatMap (fun character => if character == ',' then [' ', ',', ' ']
+    else if character == '\t' then [' '] else [character])
+  (splitChars ' ' characters).filterMap (fun characters => if characters.isEmpty then none else some (String.ofList characters))
+def identifier (source : String) : Bool :=
+  !source.toList.isEmpty && source.toList.all (fun character => character.isAlpha || character.isDigit || character == '_') &&
+    !(source.toList.head!).isDigit
 -- GNU as treats these Intel expression operators and type names specially,
 -- regardless of case or whether a label with that spelling exists.
-def assemblyIdentifier (s : String) : Bool :=
-  identifier s && !([
+def assemblyIdentifier (source : String) : Bool :=
+  identifier source && !([
     "and", "eq", "ge", "gt", "le", "lt", "mod", "ne", "not", "offset", "or",
     "shl", "short", "shr", "xor", "byte", "word", "dword", "fword", "qword",
     "mmword", "tbyte", "oword", "xmmword", "ymmword", "zmmword", "near", "far",
-    "ptr"] : List String).contains (String.ofList (s.toList.map Char.toLower))
+    "ptr"] : List String).contains (String.ofList (source.toList.map Char.toLower))
 abbrev Labels := List (String × Nat)
-def target (ls : Labels) (s : String) : Except String Nat :=
-  match ls.lookup s with
-  | some n => .ok n
-  | none => .error ("unresolved label: " ++ s)
-def parseOp (ls : Labels) (s : String) : Except String Op := do
-  match tokens s with
+def target (labels : Labels) (labelName : String) : Except String Nat :=
+  match labels.lookup labelName with
+  | some instructionIndex => .ok instructionIndex
+  | none => .error ("unresolved label: " ++ labelName)
+def parseOp (labels : Labels) (source : String) : Except String Op := do
+  match tokens source with
   | ["xor", "eax", ",", "eax"] => pure (.xor .eax .eax)
   | ["test", "rsi", ",", "rsi"] => pure (.test .rsi .rsi)
   | ["movzx", "edx", ",", "BYTE", "PTR", "[rdi]"] => pure (.movzx .edx (.bytePtr .rdi))
   | ["add", "rax", ",", "rdx"] => pure (.add .rax .rdx)
   | ["inc", "rdi"] => pure (.inc .rdi)
   | ["dec", "rsi"] => pure (.dec .rsi)
-  | ["jz", l] => pure (.jz (← target ls l))
-  | ["jnz", l] => pure (.jnz (← target ls l))
+  | ["jz", labelName] => pure (.jz (← target labels labelName))
+  | ["jnz", labelName] => pure (.jnz (← target labels labelName))
   | ["ret"] => pure .ret
-  | _ => .error ("unsupported instruction: " ++ s)
+  | _ => .error ("unsupported instruction: " ++ source)
 
 structure Scan where
   functionName : Option String := none
@@ -52,40 +52,40 @@ structure Scan where
   count : Nat := 0
   entrySeen : Bool := false
 
-def scanLine (st : Scan) (line : Nat) (raw : String) : Except String Scan := do
-  let s := clean raw
-  if s.toList.isEmpty then return st
-  if s.toList.contains ';' then throw "semicolon is forbidden"
-  if s.toList.head? == some '.' then
-    match tokens s with
+def scanLine (scan : Scan) (lineNumber : Nat) (rawLine : String) : Except String Scan := do
+  let lineSource := clean rawLine
+  if lineSource.toList.isEmpty then return scan
+  if lineSource.toList.contains ';' then throw "semicolon is forbidden"
+  if lineSource.toList.head? == some '.' then
+    match tokens lineSource with
     | [".globl", name] =>
-      if st.functionName.isSome || !assemblyIdentifier name || st.count != 0 || !st.labels.isEmpty then
+      if scan.functionName.isSome || !assemblyIdentifier name || scan.count != 0 || !scan.labels.isEmpty then
         throw "expected one initial .globl declaration"
-      return { st with functionName := some name }
+      return { scan with functionName := some name }
     | _ => throw "unsupported directive"
-  if s.toList.getLast? == some ':' then
-    let name := String.ofList (s.toList.reverse.drop 1).reverse
-    if !assemblyIdentifier name || (st.labels.lookup name).isSome then
+  if lineSource.toList.getLast? == some ':' then
+    let name := String.ofList (lineSource.toList.reverse.drop 1).reverse
+    if !assemblyIdentifier name || (scan.labels.lookup name).isSome then
       throw "invalid, reserved, or duplicate label"
-    if !st.entrySeen then
-      if st.functionName != some name then throw "first label must name the function"
-    return { st with labels := st.labels ++ [(name, st.count)], entrySeen := true }
-  if !st.entrySeen then throw "instruction before function entry"
-  return { st with lines := st.lines ++ [(line,s)], count := st.count+1 }
+    if !scan.entrySeen then
+      if scan.functionName != some name then throw "first label must name the function"
+    return { scan with labels := scan.labels ++ [(name, scan.count)], entrySeen := true }
+  if !scan.entrySeen then throw "instruction before function entry"
+  return { scan with lines := scan.lines ++ [(lineNumber,lineSource)], count := scan.count+1 }
 
 def parse (source : String) : Except String Program := do
-  let numbered := ((splitChars '\n' source.toList).map String.ofList).zipIdx 1
-  let st ← numbered.foldlM (fun st (s,n) =>
-    match scanLine st n s with
-    | .ok st => pure st
-    | .error e => .error ("line " ++ toString n ++ ": " ++ e)) {}
-  if st.count == 0 then throw "empty function"
-  let p ← st.lines.mapM (fun (n,s) => do
-    match parseOp st.labels s with
-    | .ok op => pure (Instruction.mk op n)
-    | .error e => .error ("line " ++ toString n ++ ": " ++ e))
-  if p.any (fun i => match i.op with
-      | .jz t | .jnz t => t ≥ p.length
+  let numberedLines := ((splitChars '\n' source.toList).map String.ofList).zipIdx 1
+  let scan ← numberedLines.foldlM (fun scan (lineSource,lineNumber) =>
+    match scanLine scan lineNumber lineSource with
+    | .ok scan => pure scan
+    | .error message => .error ("line " ++ toString lineNumber ++ ": " ++ message)) {}
+  if scan.count == 0 then throw "empty function"
+  let program ← scan.lines.mapM (fun (lineNumber,lineSource) => do
+    match parseOp scan.labels lineSource with
+    | .ok operation => pure (Instruction.mk operation lineNumber)
+    | .error message => .error ("line " ++ toString lineNumber ++ ": " ++ message))
+  if program.any (fun instruction => match instruction.op with
+      | .jz targetIndex | .jnz targetIndex => targetIndex ≥ program.length
       | _ => false) then throw "branch target outside function"
-  return p
+  return program
 end Rivet

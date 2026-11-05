@@ -4,26 +4,6 @@ import Rivet.Safety
 @[expose] public section
 namespace Rivet
 
-/-- The little-endian address stored in the current stack return slot. -/
-def MachineState.returnAddress (state : MachineState) : Nat :=
-  read64 state.memory (state.registers .rsp)
-
-def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
-  state.registers .rsp + 8 ≤ word ∧
-    (List.range 8).all (fun offset => state.readable (state.registers .rsp + offset)) = true
-
-/-- Record update used to express register values in instruction postconditions. -/
-def MachineState.write (state : MachineState) (register : Reg) (value : Nat) : MachineState :=
-  { state with registers := fun other => if other = register then value else state.registers other }
-
-namespace API
-
-def AtInstruction (state : MachineState) (index : Nat) : Prop :=
-  state.status = .running index
-
-def execute (program : Program) (steps : Nat) (initial : MachineState) : MachineState :=
-  run program steps initial
-
 abbrev InstructionAt (program : Program) (index : Nat) (instruction : Op) : Prop :=
   (program[index]?).map Instruction.op = some instruction
 
@@ -41,10 +21,10 @@ theorem Ensures.seq (first : Ensures program firstSteps precondition intermediat
     second.run (execute program firstSteps initial) (first.run initial preconditionHolds)
 
 theorem Ensures.consequence (contract : Ensures program steps precondition postcondition)
-    (pre : ∀ state, stronger state → precondition state)
-    (post : ∀ state, postcondition state → weaker state) :
-    Ensures program steps stronger weaker :=
-  ⟨fun initial assumption => post _ (contract.run initial (pre _ assumption))⟩
+    (strengthenPrecondition : ∀ state, strongerPrecondition state → precondition state)
+    (weakenPostcondition : ∀ state, postcondition state → weakerPostcondition state) :
+    Ensures program steps strongerPrecondition weakerPostcondition :=
+  ⟨fun initial assumption => weakenPostcondition _ (contract.run initial (strengthenPrecondition _ assumption))⟩
 
 @[simp] theorem execute_zero (program : Program) (initial : MachineState) :
     execute program 0 initial = initial := by rfl
@@ -87,7 +67,8 @@ private theorem one (code : InstructionAt program index instruction)
 theorem clear (program : Program) (index : Nat) (destination : Reg32) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.xor destination destination) := by decide +kernel) :
-    Ensures program 1 (· = initial) (· = { initial.write destination.parent 0 with status := .running (index+1), zeroFlag := true }) := by
+    Ensures program 1 (· = initial) (· = { initial.write destination.parent 0 with
+      status := .running (index+1), zeroFlag := true }) := by
   constructor
   intro actual equal
   subst actual
@@ -97,7 +78,8 @@ theorem clear (program : Program) (index : Nat) (destination : Reg32) (initial :
 theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.test register register) := by decide +kernel) :
-    Ensures program 1 (· = initial) (· = { initial with status := .running (index+1), zeroFlag := initial.registers register == 0 }) := by
+    Ensures program 1 (· = initial) (· = { initial with
+      status := .running (index+1), zeroFlag := initial.registers register == 0 }) := by
   constructor
   intro actual equal
   subst actual
@@ -114,9 +96,9 @@ theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base 
   intro actual equal
   subst actual
   rw [one code location]
-  have hb (b : Fin 256) : b.val % word = b.val := by
+  have byteFitsWord (byte : Fin 256) : byte.val % word = byte.val := by
     apply Nat.mod_eq_of_lt
-    have := b.isLt
+    have := byte.isLt
     unfold word
     omega
   simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, put] <;> try rfl
@@ -124,8 +106,9 @@ theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base 
 theorem add (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.add destination source) := by decide +kernel) :
-    let n := (initial.registers destination + initial.registers source) % word
-    Ensures program 1 (· = initial) (· = { initial.write destination n with status := .running (index+1), zeroFlag := n == 0 }) := by
+    let result := (initial.registers destination + initial.registers source) % word
+    Ensures program 1 (· = initial) (· = { initial.write destination result with
+      status := .running (index+1), zeroFlag := result == 0 }) := by
   constructor
   intro actual equal
   subst actual
@@ -135,8 +118,9 @@ theorem add (program : Program) (index : Nat) (destination source : Reg) (initia
 theorem inc (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.inc register) := by decide +kernel) :
-    let n := (initial.registers register + 1) % word
-    Ensures program 1 (· = initial) (· = { initial.write register n with status := .running (index+1), zeroFlag := n == 0 }) := by
+    let result := (initial.registers register + 1) % word
+    Ensures program 1 (· = initial) (· = { initial.write register result with
+      status := .running (index+1), zeroFlag := result == 0 }) := by
   constructor
   intro actual equal
   subst actual
@@ -146,8 +130,9 @@ theorem inc (program : Program) (index : Nat) (register : Reg) (initial : Machin
 theorem dec (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.dec register) := by decide +kernel) :
-    let n := (word - 1 + initial.registers register) % word
-    Ensures program 1 (· = initial) (· = { initial.write register n with status := .running (index+1), zeroFlag := n == 0 }) := by
+    let result := (word - 1 + initial.registers register) % word
+    Ensures program 1 (· = initial) (· = { initial.write register result with
+      status := .running (index+1), zeroFlag := result == 0 }) := by
   constructor
   intro actual equal
   subst actual
@@ -186,5 +171,4 @@ theorem return_ (program : Program) (index : Nat) (initial : MachineState)
   subst actual
   rw [one code location]
   simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp, put, read64]
-end API
 end Rivet

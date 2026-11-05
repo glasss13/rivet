@@ -6,7 +6,7 @@ A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Prog
 lake build
 ```
 
-`Rivet.API` provides a public `MachineState`, composable `Ensures` contracts, and instruction rules proved against the shared interpreter. The API also exposes fault absorption, monotone read histories, and preservation of registers untouched by a program. `Rivet.Parser` defines the accepted source grammar. `Rivet.Safety` and `Rivet.Word` provide generic register-preservation, read-history, and machine-word invariants.
+`import Rivet` provides the whole library. `Rivet.Model` defines the public `MachineState` and execution functions; `Rivet.Contracts` defines composable `Ensures` contracts and instruction rules proved against that interpreter. The API also exposes fault absorption, monotone read histories, and preservation of registers untouched by a program. `Rivet.Parser` defines the accepted source grammar. `Rivet.Safety` and `Rivet.Word` provide generic register-preservation, read-history, and machine-word invariants.
 
 The interpreter and contracts use the same state record. Access registers with `state.registers .rax`, memory with `state.memory address`, and execution status with `state.status`. Status is `.running instructionIndex`, `.returned address`, or `.fault`; there is no observation wrapper or separate proof-state representation.
 

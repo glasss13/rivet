@@ -19,21 +19,21 @@ structure Mem8 where
   base : Reg
   deriving DecidableEq, Repr
 inductive Op where
-  | xor (dst src : Reg32)
-  | test (lhs rhs : Reg)
-  | movzx (dst : Reg32) (src : Mem8)
-  | add (dst src : Reg)
-  | inc (dst : Reg)
-  | dec (dst : Reg)
+  | xor (destination source : Reg32)
+  | test (left right : Reg)
+  | movzx (destination : Reg32) (source : Mem8)
+  | add (destination source : Reg)
+  | inc (destination : Reg)
+  | dec (destination : Reg)
   | jz (target : Nat)
   | jnz (target : Nat)
   | ret
   deriving DecidableEq, Repr
 /-- Whether an instruction can write a register, including RET advancing RSP. -/
 def modifies : Op → Reg → Bool
-  | .xor d _, r | .movzx d _, r => d.parent == r
-  | .add d _, r | .inc d, r | .dec d, r => d == r
-  | .ret, r => r == .rsp
+  | .xor destination _, register | .movzx destination _, register => destination.parent == register
+  | .add destination _, register | .inc destination, register | .dec destination, register => destination == register
+  | .ret, register => register == .rsp
   | _, _ => false
 
 structure Instruction where

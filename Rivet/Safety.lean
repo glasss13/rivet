@@ -3,54 +3,56 @@ public import Rivet.Model
 @[expose] public section
 namespace Rivet
 
-def CalleeSaved (r : Reg) : Prop :=
-  r = .rbx ∨ r = .rbp ∨ r = .r12 ∨ r = .r13 ∨ r = .r14 ∨ r = .r15
+def CalleeSaved (register : Reg) : Prop :=
+  register = .rbx ∨ register = .rbp ∨ register = .r12 ∨ register = .r13 ∨ register = .r14 ∨ register = .r15
 
-theorem op_preserves (op : Op) (s : MachineState) (r : Reg) (h : modifies op r = false) :
-    (stepOp op s).registers r = s.registers r := by
-  cases op <;> simp_all [modifies, stepOp, next, put, Ne.symm] <;> split <;> simp_all [Ne.symm]
+theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (unchanged : modifies operation register = false) :
+    (stepOp operation state).registers register = state.registers register := by
+  cases operation <;> simp_all [modifies, stepOp, next, put, Ne.symm] <;> split <;> simp_all [Ne.symm]
 
-theorem step_preserves (p : Program) (s : MachineState) (r : Reg)
-    (h : ∀ i ∈ p, modifies i.op r = false) : (step p s).registers r = s.registers r := by
+theorem step_preserves (program : Program) (state : MachineState) (register : Reg)
+    (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
+    (step program state).registers register = state.registers register := by
   unfold step
   split
   · split
-    · rename_i i he
+    · rename_i instruction instructionAtIndex
       apply op_preserves
-      exact h i (List.mem_of_getElem? he)
+      exact unchanged instruction (List.mem_of_getElem? instructionAtIndex)
     · rfl
   · rfl
 
 /-- A register untouched by every instruction is preserved for any amount of fuel. -/
-theorem run_preserves (p : Program) (n : Nat) (s : MachineState) (r : Reg)
-    (unchanged : ∀ i ∈ p, modifies i.op r = false) :
-    (run p n s).registers r = s.registers r := by
-  induction n generalizing s with
+theorem run_preserves (program : Program) (steps : Nat) (state : MachineState) (register : Reg)
+    (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
+    (run program steps state).registers register = state.registers register := by
+  induction steps generalizing state with
   | zero => rfl
-  | succ n ih => rw [run, ih, step_preserves p s r unchanged]
+  | succ steps inductionHypothesis => rw [run, inductionHypothesis, step_preserves program state register unchanged]
 
-theorem run_stopped (p : Program) (n : Nat) (s : MachineState) (h : s.status.isRunning = false) :
-    run p n s = s := by
-  have hs : step p s = s := by
-    cases status : s.status <;> simp_all [step, ExecutionStatus.isRunning]
-  induction n with
+theorem run_stopped (program : Program) (steps : Nat) (state : MachineState) (stopped : state.status.isRunning = false) :
+    run program steps state = state := by
+  have stepUnchanged : step program state = state := by
+    cases status : state.status <;> simp_all [step, ExecutionStatus.isRunning]
+  induction steps with
   | zero => rfl
-  | succ n ih => simpa [run, hs] using ih
+  | succ steps inductionHypothesis => simpa [run, stepUnchanged] using inductionHypothesis
 
-theorem step_reads_monotone (p : Program) (s : MachineState) (e : Access)
-    (h : e ∈ s.readHistory) : e ∈ (step p s).readHistory := by
+theorem step_reads_monotone (program : Program) (state : MachineState) (access : Access)
+    (recorded : access ∈ state.readHistory) : access ∈ (step program state).readHistory := by
   unfold step
   split
   · split
-    · rename_i i hi
-      cases i.op <;> simp_all [stepOp, next, put] <;> split <;> simp_all
-    · exact h
-  · exact h
+    · rename_i instruction instructionAtIndex
+      cases instruction.op <;> simp_all [stepOp, next, put] <;> split <;> simp_all
+    · exact recorded
+  · exact recorded
 
-theorem run_reads_monotone (p : Program) (s : MachineState) (n : Nat) (e : Access)
-    (h : e ∈ s.readHistory) : e ∈ (run p n s).readHistory := by
-  induction n generalizing s with
-  | zero => exact h
-  | succ n ih => exact ih (step p s) (step_reads_monotone p s e h)
+theorem run_reads_monotone (program : Program) (state : MachineState) (steps : Nat) (access : Access)
+    (recorded : access ∈ state.readHistory) : access ∈ (run program steps state).readHistory := by
+  induction steps generalizing state with
+  | zero => exact recorded
+  | succ steps inductionHypothesis =>
+    exact inductionHypothesis (step program state) (step_reads_monotone program state access recorded)
 
 end Rivet
