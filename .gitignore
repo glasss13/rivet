@@ -1,4 +1,4 @@
 .lake/
-__pycache__/
-*.pyc
-importer/target/
+
+# Local examples and experiments
+/local/

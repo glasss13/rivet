@@ -1,4 +1,6 @@
-import Verification.Safety
+module
+public import Verification.Safety
+@[expose] public section
 namespace Verification
 set_option maxRecDepth 4000
 -- Registers use the canonical natural-number encoding of a 64-bit word.
@@ -34,5 +36,4 @@ theorem run_registers64 (p : Program) (n : Nat) (s : State) (h : Registers64 s) 
   | zero => exact h
   | succ n ih => exact ih _ (step_registers64 p s h)
 
-#print axioms run_registers64
 end Verification

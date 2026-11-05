@@ -1,4 +1,6 @@
-import Verification.Model
+module
+public import Verification.Syntax
+@[expose] public section
 deriving instance DecidableEq for Except
 namespace Verification
 
@@ -17,6 +19,14 @@ def tokens (s : String) : List String :=
 def identifier (s : String) : Bool :=
   !s.toList.isEmpty && s.toList.all (fun c => c.isAlpha || c.isDigit || c == '_') &&
     !(s.toList.head!).isDigit
+-- GNU as treats these Intel expression operators and type names specially,
+-- regardless of case or whether a label with that spelling exists.
+def assemblyIdentifier (s : String) : Bool :=
+  identifier s && !([
+    "and", "eq", "ge", "gt", "le", "lt", "mod", "ne", "not", "offset", "or",
+    "shl", "short", "shr", "xor", "byte", "word", "dword", "fword", "qword",
+    "mmword", "tbyte", "oword", "xmmword", "ymmword", "zmmword", "near", "far",
+    "ptr"] : List String).contains (String.ofList (s.toList.map Char.toLower))
 abbrev Labels := List (String × Nat)
 def target (ls : Labels) (s : String) : Except String Nat :=
   match ls.lookup s with
@@ -49,13 +59,14 @@ def scanLine (st : Scan) (line : Nat) (raw : String) : Except String Scan := do
   if s.toList.head? == some '.' then
     match tokens s with
     | [".globl", name] =>
-      if st.functionName.isSome || !identifier name || st.count != 0 || !st.labels.isEmpty then
+      if st.functionName.isSome || !assemblyIdentifier name || st.count != 0 || !st.labels.isEmpty then
         throw "expected one initial .globl declaration"
       return { st with functionName := some name }
     | _ => throw "unsupported directive"
   if s.toList.getLast? == some ':' then
     let name := String.ofList (s.toList.reverse.drop 1).reverse
-    if !identifier name || (st.labels.lookup name).isSome then throw "invalid or duplicate label"
+    if !assemblyIdentifier name || (st.labels.lookup name).isSome then
+      throw "invalid, reserved, or duplicate label"
     if !st.entrySeen then
       if st.functionName != some name then throw "first label must name the function"
     return { st with labels := st.labels ++ [(name, st.count)], entrySeen := true }

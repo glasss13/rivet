@@ -3,9 +3,3 @@ version = "0.1.0"
 defaultTargets = ["Verification"]
 [[lean_lib]]
 name = "Verification"
-[[lean_exe]]
-name = "probe"
-root = "Verification.Probe"
-[[lean_exe]]
-name = "parser"
-root = "Verification.ParserCLI"

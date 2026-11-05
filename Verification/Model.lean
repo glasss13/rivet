@@ -1,42 +1,8 @@
-import Std
+module
+public import Verification.Syntax
+@[expose] public section
 namespace Verification
 
-def word : Nat := 2^64
-inductive Reg where
-  | rax | rbx | rcx | rdx | rsi | rdi | rbp | rsp
-  | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15
-  deriving DecidableEq, Repr
--- Widths are expressed by x86 register aliases and the memory operand type.
-inductive Reg32 where
-  | eax | edx
-  deriving DecidableEq, Repr
-@[simp] def Reg32.parent : Reg32 → Reg
-  | .eax => .rax
-  | .edx => .rdx
-structure Mem8 where
-  bytePtr ::
-  base : Reg
-  deriving DecidableEq, Repr
-inductive Op where
-  | xor (dst src : Reg32)
-  | test (lhs rhs : Reg)
-  | movzx (dst : Reg32) (src : Mem8)
-  | add (dst src : Reg)
-  | inc (dst : Reg)
-  | dec (dst : Reg)
-  | jz (target : Nat)
-  | jnz (target : Nat)
-  | ret
-  deriving DecidableEq, Repr
-structure Instruction where
-  op : Op
-  line : Nat
-  deriving DecidableEq, Repr
-abbrev Program := List Instruction
-structure Access where
-  address : Nat
-  size : Nat
-  deriving DecidableEq, Repr
 inductive Status where
   | running | returned (address : Nat) | fault
   deriving DecidableEq, Repr
@@ -73,7 +39,8 @@ def stepOp (op : Op) (s : State) : State :=
     let v := (s.regs d + 1) % word
     next { put s d v with zf := v == 0 }
   | .dec d =>
-    let v := (s.regs d + word - 1) % word
+    -- Keep the symbolic operand last to avoid expanding a word-sized numeral during reduction.
+    let v := (word - 1 + s.regs d) % word
     next { put s d v with zf := v == 0 }
   | .jz t => { s with pc := if s.zf then t else s.pc+1 }
   | .jnz t => { s with pc := if s.zf then s.pc+1 else t }
@@ -108,4 +75,11 @@ theorem run_memory (p : Program) (n : Nat) (s : State) : (run p n s).mem = s.mem
   induction n generalizing s with
   | zero => rfl
   | succ n ih => rw [run, ih, step_memory]
+
+theorem run_add (p : Program) (n m : Nat) (s : State) :
+    run p (n+m) s = run p m (run p n s) := by
+  induction n generalizing s with
+  | zero => simp [run]
+  | succ n ih => simpa [Nat.succ_add, run] using ih (step p s)
+
 end Verification
