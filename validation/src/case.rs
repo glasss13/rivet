@@ -8,6 +8,7 @@ use strum::{EnumCount, VariantArray};
 // Excludes the appended return instruction.
 const MAX_BODY_INSTRUCTIONS: usize = 8;
 const MAX_DATA_BYTES: usize = 32;
+const MAX_PROGRAM_STEPS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Memory8 {
@@ -290,8 +291,8 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
     let mut program = if whole_program {
         let count = generator.usize(1..=MAX_BODY_INSTRUCTIONS);
         (0..count)
-            .map(|index| {
-                let target = generator.usize(index + 1..=count);
+            .map(|_| {
+                let target = generator.usize(0..=count);
                 random_program_instruction(generator, target)
             })
             .collect()
@@ -299,7 +300,7 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
         vec![random_instruction(generator)]
     };
     if whole_program {
-        // Forward branches may target this appended return instruction.
+        // Branches may also target this appended return instruction.
         program.push(Operation::Ret);
     } else if matches!(
         program.first(),
@@ -307,10 +308,15 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
     ) {
         program.extend([Operation::Inc { destination: Rdi }, Operation::Ret]);
     }
+    let mut registers = std::array::from_fn(|_| random_word(generator));
+    if whole_program && generator.bool() {
+        // The program generator decrements RSI; exercise short countdowns too.
+        registers[Rsi as usize] = generator.u64(0..=MAX_BODY_INSTRUCTIONS as u64);
+    }
     Case {
-        steps: if whole_program { program.len() + 1 } else { 1 },
+        steps: if whole_program { MAX_PROGRAM_STEPS } else { 1 },
         program,
-        registers: std::array::from_fn(|_| random_word(generator)),
+        registers,
         zero_flag: generator.bool(),
         carry_flag: generator.bool(),
         data: (0..generator.usize(1..=MAX_DATA_BYTES))

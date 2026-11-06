@@ -12,7 +12,7 @@ From the repository root:
 cargo run --locked --manifest-path validation/Cargo.toml -- --cases 1000 --seed 20261105
 ```
 
-This builds the Lean model and generates cases from a seeded random generator biased toward arithmetic boundaries. The harness checks individual instructions with varied operands and short programs with forward branches and a final RET. Lean always receives structured instructions; native execution uses assembly generated from those same instructions. Program generation preserves the return stack and uses RDI as its data pointer.
+This builds the Lean model and generates cases from a seeded random generator biased toward arithmetic boundaries. The harness checks individual instructions with varied operands and short programs with forward, backward, and self branches and a final RET. Whole programs run for at most 64 instructions; loops may return, fault, or remain running at that limit. RSI, the generated countdown register, is sometimes initialized to a small value to exercise terminating loops. Lean always receives structured instructions; native execution uses assembly generated from those same instructions. Program generation preserves the return stack and uses RDI as its data pointer.
 
 Each case is prepared once in `setup.rs`, producing two separate values: `ExecutionInput` is plain program and initial-state data; `NativeMemory` owns the executable code and data/stack allocations. Native execution receives both. Lean receives only `ExecutionInput`, so it can run independently of the native resources.
 
