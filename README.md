@@ -6,7 +6,7 @@ A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Prog
 lake build
 ```
 
-`import Rivet` provides the whole library. `Rivet.Model` defines the public `MachineState` and execution functions; `Rivet.Contracts` defines uncounted block contracts (`Ensures`), successful function contracts (`Returns`), and instruction rules proved against that interpreter. The API also exposes fault absorption, monotone read histories, and preservation of registers untouched by a program. `Rivet.Parser` defines the accepted source grammar. `Rivet.Safety` provides generic register-preservation and read-history properties. Registers have type `BitVec 64`, so register width is guaranteed by construction.
+`import Rivet` provides the whole library. `Rivet.Model` defines the public `MachineState` and execution functions; `Rivet.Contracts` defines uncounted block contracts (`Ensures`), successful function contracts (`Returns`), and instruction rules proved against that interpreter. The API also exposes fault absorption, monotone read histories, and preservation of registers untouched by a program. `Rivet.Parser` defines the accepted source grammar. `Rivet.ExecutionProperties` provides generic register-preservation and read-history properties. Registers have type `BitVec 64`, so register width is guaranteed by construction.
 
 The interpreter and contracts use the same state record. Access registers with `state.registers .rax`, natural-number values with `(state.registers .rax).toNat`, memory with `state.memory address`, and execution status with `state.status`. Status is `.running instructionIndex`, `.returned address`, or `.fault`; there is no observation wrapper or separate proof-state representation.
 
@@ -22,7 +22,7 @@ Instruction rules such as `clear`, `read_byte`, and `return_` produce `Ensures` 
 
 `Ensures.loop invariant finished measure body` iterates blocks until `finished` holds. For each invariant state where it does not hold, `body` must establish another invariant state with a strictly smaller natural-valued measure. Measures can describe algorithmic progress, such as bytes remaining. Ordinary induction over such a measure also composes directly with the instruction rules.
 
-`Reaches.to_return` uses determinism to show that every state reachable from an initial state can still reach its eventual successful return. Together with `Reaches.reads_mono`, `Reaches.not_fault`, and `Reaches.preserves_register`, this supports safety proofs for all execution prefixes without calculating a return budget.
+`Reaches.to_return` uses determinism to show that every state reachable from an initial state can still reach its eventual successful return. Together with `Reaches.reads_mono`, `Reaches.not_fault`, and `Reaches.preserves_register`, this supports safety proofs for all execution prefixes without calculating a return budget. `contract.never_faults initially` derives fault freedom directly from a `Returns` contract and its precondition.
 
 `execute program steps initial` remains available for low-level bounded execution. The native differential validator uses `step` directly to compare intermediate states within its instruction budget. Proof contracts use uncounted execution.
 
@@ -38,8 +38,8 @@ def program : Program := (parse source).toOption.get (by decide +kernel)
 
 `include_str` embeds the file contents at elaboration time, relative to the Lean source file. The proof argument checks that parsing succeeded; invalid assembly cannot silently become an empty program. There is no generated instruction-list file or separate translation implementation. Recompile the containing Lean module after changing its assembly input.
 
-The source grammar accepts `xor eax, eax`, `test rsi, rsi`, `movzx edx, BYTE PTR [rdi]`, `add rax, rdx`, `inc rdi`, `dec rsi`, `jz LABEL`, `jnz LABEL`, and `ret`, with one initial `.globl NAME` declaration. Other directives and instruction forms are rejected. Intel expression and type keywords are forbidden as label names, regardless of case.
+The source grammar accepts 32-bit register `xor`, 64-bit register `mov`, `test`, `cmp`, `add`, `inc`, and `dec`, byte loads (`movzx r32, BYTE PTR [r64]`), byte stores (`mov BYTE PTR [r64], r8`), `jb`, `jz`, `jnz`, and `ret`, with one initial `.globl NAME` declaration. All sixteen general-purpose registers and their 32-bit and low-byte aliases are supported; high-byte aliases and complex addressing modes are not. Other directives and instruction forms are rejected. Intel expression and type keywords are forbidden as label names, regardless of case.
 
-Proofs concern the shared model. Assembler and processor correspondence remain assumptions; machine code is not verified. Only ZF is modeled, memory is read-only, and executions have no concurrency or asynchronous interference.
+Proofs concern the shared model. Assembler and processor correspondence remain assumptions; machine code is not verified. ZF and CF are modeled. Memory has separate `readable` and `writable` permissions; byte stores fault when write permission is absent. Executions have no concurrency or asynchronous interference.
 
 A developer-only [differential validation harness](validation/README.md) compares the interpreter with native x86-64 execution. Its Rust and Linux tooling requirements are separate from library use.

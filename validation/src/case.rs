@@ -1,16 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-use crate::register::{Register32, Register64};
+use crate::register::{Register8, Register32, Register64};
 use Register32::*;
 use Register64::*;
-use strum::VariantArray;
+use strum::{EnumCount, VariantArray};
+
+// Excludes the appended return instruction.
+const MAX_BODY_INSTRUCTIONS: usize = 8;
+const MAX_DATA_BYTES: usize = 32;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Memory8 {
     pub base: Register64,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, EnumCount)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     Xor {
@@ -24,6 +28,21 @@ pub enum Operation {
     Movzx {
         destination: Register32,
         source: Memory8,
+    },
+    Mov {
+        destination: Register64,
+        source: Register64,
+    },
+    Store8 {
+        destination: Memory8,
+        source: Register8,
+    },
+    Cmp {
+        left: Register64,
+        right: Register64,
+    },
+    Jb {
+        target: usize,
     },
     Add {
         destination: Register64,
@@ -55,6 +74,16 @@ impl Operation {
                 destination,
                 source,
             } => format!("movzx {destination}, BYTE PTR [{}]", source.base),
+            Self::Mov {
+                destination,
+                source,
+            } => format!("mov {destination}, {source}"),
+            Self::Store8 {
+                destination,
+                source,
+            } => format!("mov BYTE PTR [{}], {source}", destination.base),
+            Self::Cmp { left, right } => format!("cmp {left}, {right}"),
+            Self::Jb { target } => format!("jb rivet_instruction_{target}"),
             Self::Add {
                 destination,
                 source,
@@ -73,8 +102,10 @@ pub struct Case {
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
     pub zero_flag: bool,
+    pub carry_flag: bool,
     pub data: Vec<u8>,
     pub fault_memory: bool,
+    pub read_only_data: bool,
     pub steps: usize,
 }
 impl Case {
@@ -98,7 +129,9 @@ pub struct ExecutionInput {
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
     pub zero_flag: bool,
+    pub carry_flag: bool,
     pub memory_base: u64,
+    pub writable_base: u64,
     pub memory: Vec<u8>,
     pub steps: usize,
 }
@@ -117,7 +150,9 @@ pub enum Status {
 pub struct Snapshot {
     pub registers: [u64; 16],
     pub zero_flag: bool,
+    pub carry_flag: bool,
     pub status: Status,
+    pub memory: Vec<u8>,
 }
 
 fn random_word(generator: &mut fastrand::Rng) -> u64 {
@@ -158,7 +193,7 @@ fn binary_instruction<Operand: Copy>(
 }
 
 fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
-    match generator.usize(..9) {
+    match generator.usize(..Operation::COUNT) {
         0 => binary_instruction(generator, Register32::VARIANTS, |destination, source| {
             Operation::Xor {
                 destination,
@@ -188,13 +223,30 @@ fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
         },
         6 => Operation::Jz { target: 2 },
         7 => Operation::Jnz { target: 2 },
-        _ => Operation::Ret,
+        8 => binary_instruction(generator, Register64::VARIANTS, |destination, source| {
+            Operation::Mov {
+                destination,
+                source,
+            }
+        }),
+        9 => Operation::Store8 {
+            destination: Memory8 {
+                base: sample(generator, Register64::VARIANTS),
+            },
+            source: sample(generator, Register8::VARIANTS),
+        },
+        10 => binary_instruction(generator, Register64::VARIANTS, |left, right| {
+            Operation::Cmp { left, right }
+        }),
+        11 => Operation::Jb { target: 2 },
+        12 => Operation::Ret,
+        _ => unreachable!(),
     }
 }
 
 // Keep RSP as a return stack and use RDI as the data pointer in program cases.
 fn random_program_instruction(generator: &mut fastrand::Rng, target: usize) -> Operation {
-    match generator.usize(..9) {
+    match generator.usize(..Operation::COUNT) {
         0 => Operation::Xor {
             destination: Eax,
             source: Eax,
@@ -215,14 +267,28 @@ fn random_program_instruction(generator: &mut fastrand::Rng, target: usize) -> O
         5 => Operation::Dec { destination: Rsi },
         6 => Operation::Jz { target },
         7 => Operation::Jnz { target },
-        _ => Operation::Ret,
+        8 => Operation::Mov {
+            destination: Rcx,
+            source: Rdx,
+        },
+        9 => Operation::Store8 {
+            destination: Memory8 { base: Rdi },
+            source: Register8::Dl,
+        },
+        10 => Operation::Cmp {
+            left: Rax,
+            right: Rdx,
+        },
+        11 => Operation::Jb { target },
+        12 => Operation::Ret,
+        _ => unreachable!(),
     }
 }
 
 pub fn generate(generator: &mut fastrand::Rng) -> Case {
     let whole_program = generator.bool();
     let mut program = if whole_program {
-        let count = generator.usize(1..9);
+        let count = generator.usize(1..=MAX_BODY_INSTRUCTIONS);
         (0..count)
             .map(|index| {
                 let target = generator.usize(index + 1..=count);
@@ -237,7 +303,7 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
         program.push(Operation::Ret);
     } else if matches!(
         program.first(),
-        Some(Operation::Jz { .. } | Operation::Jnz { .. })
+        Some(Operation::Jz { .. } | Operation::Jnz { .. } | Operation::Jb { .. })
     ) {
         program.extend([Operation::Inc { destination: Rdi }, Operation::Ret]);
     }
@@ -246,9 +312,11 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
         program,
         registers: std::array::from_fn(|_| random_word(generator)),
         zero_flag: generator.bool(),
-        data: (0..generator.usize(1..33))
+        carry_flag: generator.bool(),
+        data: (0..generator.usize(1..=MAX_DATA_BYTES))
             .map(|_| generator.u8(..))
             .collect(),
         fault_memory: generator.bool(),
+        read_only_data: generator.bool(),
     }
 }

@@ -1,6 +1,7 @@
 //! Linux/x86-64 execution only. Expected instruction behavior lives in Rivet.
 use crate::{
     case::{ExecutionInput, Snapshot, Status},
+    register::{register_values, set_registers},
     setup::NativeMemory,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -15,6 +16,8 @@ use nix::{
     unistd::{ForkResult, Pid, fork, getpid, getppid},
 };
 use std::{
+    fs::File,
+    os::unix::fs::FileExt,
     thread,
     time::{Duration, Instant},
 };
@@ -82,65 +85,35 @@ impl Drop for TracedChild {
     }
 }
 
-fn register_values(registers: &libc::user_regs_struct) -> [u64; 16] {
-    [
-        registers.rax,
-        registers.rbx,
-        registers.rcx,
-        registers.rdx,
-        registers.rsi,
-        registers.rdi,
-        registers.rbp,
-        registers.rsp,
-        registers.r8,
-        registers.r9,
-        registers.r10,
-        registers.r11,
-        registers.r12,
-        registers.r13,
-        registers.r14,
-        registers.r15,
-    ]
-}
-
-fn set_registers(registers: &mut libc::user_regs_struct, values: [u64; 16]) {
-    [
-        registers.rax,
-        registers.rbx,
-        registers.rcx,
-        registers.rdx,
-        registers.rsi,
-        registers.rdi,
-        registers.rbp,
-        registers.rsp,
-        registers.r8,
-        registers.r9,
-        registers.r10,
-        registers.r11,
-        registers.r12,
-        registers.r13,
-        registers.r14,
-        registers.r15,
-    ] = values;
-}
-
-fn snapshot(registers: &libc::user_regs_struct, status: Status) -> Snapshot {
-    Snapshot {
+fn snapshot(
+    registers: &libc::user_regs_struct,
+    status: Status,
+    process_memory: &File,
+    memory_base: u64,
+    memory_size: usize,
+) -> Result<Snapshot> {
+    let mut memory = vec![0; memory_size];
+    process_memory.read_exact_at(&mut memory, memory_base)?;
+    Ok(Snapshot {
         registers: register_values(registers),
         zero_flag: registers.eflags & (1 << 6) != 0,
+        carry_flag: registers.eflags & 1 != 0,
         status,
-    }
+        memory,
+    })
 }
 
 pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snapshot>> {
     let code_base = memory.code.as_ptr() as u64;
     let mut child = TracedChild::start()?;
+    let process_memory = File::open(format!("/proc/{}/mem", child.pid))?;
     let mut registers = ptrace::getregs(child.pid)?;
     set_registers(&mut registers, input.registers);
     registers.rip = code_base;
-    // Preserve OS-required flags; initialize ZF and clear tracing/direction/resume bits.
-    registers.eflags = (registers.eflags & !((1 << 6) | (1 << 8) | (1 << 10) | (1 << 16)))
-        | ((input.zero_flag as u64) << 6);
+    // Preserve OS-required flags; initialize ZF/CF and clear tracing/direction/resume bits.
+    registers.eflags = (registers.eflags & !(1 | (1 << 6) | (1 << 8) | (1 << 10) | (1 << 16)))
+        | ((input.zero_flag as u64) << 6)
+        | input.carry_flag as u64;
     ptrace::setregs(child.pid, registers)?;
     registers = ptrace::getregs(child.pid)?;
     let mut snapshots = vec![snapshot(
@@ -148,7 +121,10 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
         Status::Running {
             instruction_index: 0,
         },
-    )];
+        &process_memory,
+        input.memory_base,
+        input.memory.len(),
+    )?];
     for _ in 0..input.steps {
         let opcode = registers
             .rip
@@ -191,7 +167,13 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
                 },
             };
         let finished = !matches!(status, Status::Running { .. });
-        snapshots.push(snapshot(&registers, status));
+        snapshots.push(snapshot(
+            &registers,
+            status,
+            &process_memory,
+            input.memory_base,
+            input.memory.len(),
+        )?);
         if finished {
             break;
         }

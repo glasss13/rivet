@@ -98,12 +98,27 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
             ProtFlags::PROT_NONE,
         )?;
     }
+    if case.read_only_data {
+        // SAFETY: the first page is an aligned, owned data region, separate from the return stack.
+        unsafe {
+            mprotect(
+                NonNull::new(base as *mut _).unwrap(),
+                page,
+                ProtFlags::PROT_READ,
+            )?;
+        }
+    }
     let mut values = case.registers;
     values[Rsp as usize] = base + stack_offset as u64;
     let data_pointer = if case.fault_memory { guard } else { base + 64 };
     for operation in &case.program {
-        if let Operation::Movzx { source, .. } = operation {
-            values[source.base as usize] = data_pointer;
+        let base_register = match operation {
+            Operation::Movzx { source, .. } => Some(source.base),
+            Operation::Store8 { destination, .. } => Some(destination.base),
+            _ => None,
+        };
+        if let Some(register) = base_register {
+            values[register as usize] = data_pointer + case.registers[register as usize] % 16;
         }
     }
     if case.program[0] == Operation::Ret && case.fault_memory {
@@ -113,7 +128,13 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
         program: case.program.clone(),
         registers: values,
         zero_flag: case.zero_flag,
+        carry_flag: case.carry_flag,
         memory_base: base,
+        writable_base: if case.read_only_data {
+            base + page as u64
+        } else {
+            base
+        },
         memory: memory_bytes,
         steps: case.steps,
     };

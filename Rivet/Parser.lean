@@ -32,16 +32,87 @@ def target (labels : Labels) (labelName : String) : Except String Nat :=
   match labels.lookup labelName with
   | some instructionIndex => .ok instructionIndex
   | none => .error ("unresolved label: " ++ labelName)
+def parseRegister : String → Except String Reg
+  | "rax" => .ok .rax
+  | "rbx" => .ok .rbx
+  | "rcx" => .ok .rcx
+  | "rdx" => .ok .rdx
+  | "rsi" => .ok .rsi
+  | "rdi" => .ok .rdi
+  | "rbp" => .ok .rbp
+  | "rsp" => .ok .rsp
+  | "r8" => .ok .r8
+  | "r9" => .ok .r9
+  | "r10" => .ok .r10
+  | "r11" => .ok .r11
+  | "r12" => .ok .r12
+  | "r13" => .ok .r13
+  | "r14" => .ok .r14
+  | "r15" => .ok .r15
+  | name => .error ("unsupported register: " ++ name)
+
+def parseRegister32 : String → Except String Reg32
+  | "eax" => .ok .eax
+  | "ebx" => .ok .ebx
+  | "ecx" => .ok .ecx
+  | "edx" => .ok .edx
+  | "esi" => .ok .esi
+  | "edi" => .ok .edi
+  | "ebp" => .ok .ebp
+  | "esp" => .ok .esp
+  | "r8d" => .ok .r8d
+  | "r9d" => .ok .r9d
+  | "r10d" => .ok .r10d
+  | "r11d" => .ok .r11d
+  | "r12d" => .ok .r12d
+  | "r13d" => .ok .r13d
+  | "r14d" => .ok .r14d
+  | "r15d" => .ok .r15d
+  | name => .error ("unsupported register: " ++ name)
+
+def parseRegister8 : String → Except String Reg8
+  | "al" => .ok .al
+  | "bl" => .ok .bl
+  | "cl" => .ok .cl
+  | "dl" => .ok .dl
+  | "sil" => .ok .sil
+  | "dil" => .ok .dil
+  | "bpl" => .ok .bpl
+  | "spl" => .ok .spl
+  | "r8b" => .ok .r8b
+  | "r9b" => .ok .r9b
+  | "r10b" => .ok .r10b
+  | "r11b" => .ok .r11b
+  | "r12b" => .ok .r12b
+  | "r13b" => .ok .r13b
+  | "r14b" => .ok .r14b
+  | "r15b" => .ok .r15b
+  | name => .error ("unsupported register: " ++ name)
+
+def parseMemory8 (source : String) : Except String Mem8 := do
+  match source.toList with
+  | '[' :: rest =>
+    match rest.reverse with
+    | ']' :: name => return ⟨← parseRegister (String.ofList name.reverse)⟩
+    | _ => throw "expected [register]"
+  | _ => throw "expected [register]"
+
 def parseOp (labels : Labels) (source : String) : Except String Op := do
   match tokens source with
-  | ["xor", "eax", ",", "eax"] => pure (.xor .eax .eax)
-  | ["test", "rsi", ",", "rsi"] => pure (.test .rsi .rsi)
-  | ["movzx", "edx", ",", "BYTE", "PTR", "[rdi]"] => pure (.movzx .edx (.bytePtr .rdi))
-  | ["add", "rax", ",", "rdx"] => pure (.add .rax .rdx)
-  | ["inc", "rdi"] => pure (.inc .rdi)
-  | ["dec", "rsi"] => pure (.dec .rsi)
-  | ["jz", labelName] => pure (.jz (← target labels labelName))
-  | ["jnz", labelName] => pure (.jnz (← target labels labelName))
+  | ["xor", destination, ",", operand] => return .xor (← parseRegister32 destination) (← parseRegister32 operand)
+  | ["test", left, ",", right] => return .test (← parseRegister left) (← parseRegister right)
+  | ["movzx", destination, ",", "BYTE", "PTR", memory] =>
+    return .movzx (← parseRegister32 destination) (← parseMemory8 memory)
+  | ["mov", "BYTE", "PTR", memory, ",", operand] =>
+    return .store8 (← parseMemory8 memory) (← parseRegister8 operand)
+  | ["mov", destination, ",", operand] => return .mov (← parseRegister destination) (← parseRegister operand)
+  | ["cmp", left, ",", right] => return .cmp (← parseRegister left) (← parseRegister right)
+  | ["add", destination, ",", operand] => return .add (← parseRegister destination) (← parseRegister operand)
+  | ["inc", destination] => return .inc (← parseRegister destination)
+  | ["dec", destination] => return .dec (← parseRegister destination)
+  | ["jb", labelName] => return .jb (← target labels labelName)
+  | ["jz", labelName] => return .jz (← target labels labelName)
+  | ["jnz", labelName] => return .jnz (← target labels labelName)
   | ["ret"] => pure .ret
   | _ => .error ("unsupported instruction: " ++ source)
 
@@ -85,7 +156,7 @@ def parse (source : String) : Except String Program := do
     | .ok operation => pure (Instruction.mk operation lineNumber)
     | .error message => .error ("line " ++ toString lineNumber ++ ": " ++ message))
   if program.any (fun instruction => match instruction.op with
-      | .jz targetIndex | .jnz targetIndex => targetIndex ≥ program.length
+      | .jb targetIndex | .jz targetIndex | .jnz targetIndex => targetIndex ≥ program.length
       | _ => false) then throw "branch target outside function"
   return program
 end Rivet

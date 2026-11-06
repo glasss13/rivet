@@ -16,9 +16,9 @@ This builds the Lean model and generates cases from a seeded random generator bi
 
 Each case is prepared once in `setup.rs`, producing two separate values: `ExecutionInput` is plain program and initial-state data; `NativeMemory` owns the executable code and data/stack allocations. Native execution receives both. Lean receives only `ExecutionInput`, so it can run independently of the native resources.
 
-After each instruction it compares all sixteen general-purpose registers, ZF, instruction location, and return/fault status. The supported instruction set has no memory writes. An inaccessible guard page supplies load/return fault cases. Assembler symbols determine native instruction boundaries independently of Rivet.
+After each instruction it compares all sixteen general-purpose registers, ZF, CF, instruction location, return/fault status, and every byte of the controlled data/stack memory. The parent reads the stopped child’s memory through `/proc/PID/mem`, so copy-on-write pages are observed correctly. Randomly read-only data pages and an inaccessible guard page exercise store, load, and return faults. Assembler symbols determine native instruction boundaries independently of Rivet.
 
-RSP starts on a controlled stack. Load base registers are initialized to point at the controlled data or guard page. Replay recreates these bindings so it works across different ASLR addresses.
+RSP starts on a controlled stack. Load/store base registers are initialized to point at the controlled data or guard page, with small offsets taken from their generated register values. Replay recreates these bindings so it works across different ASLR addresses.
 
 A mismatch prints the seed, case number, and case JSON. Instructions use the named operands from Rivet’s instruction types: `{"add": {"destination": "rax", "source": "rdx"}}`, `{"inc": {"destination": "rdi"}}`, or `"ret"`. Operands use the typed registers in [register.rs](src/register.rs); register-value arrays follow the declaration order of `Register64`. Save the case JSON to rerun it:
 
@@ -30,4 +30,4 @@ Exit codes: **0** = passed; **1** = semantic mismatch; **2** = infrastructure, p
 
 The native runner forks a traced child per case and single-steps it with a two-second stop deadline. Each model invocation has a five-second deadline, including pipe I/O. Both processes are cleaned up on errors.
 
-This is bounded observational testing. It checks ZF rather than all RFLAGS, compares generic fault status, and does not observe memory-read events or memory outside the controlled pages. Reaching the instruction budget compares an execution prefix; it does not prove termination.
+This is bounded observational testing. It checks ZF and CF rather than all RFLAGS, compares generic fault status, and does not observe memory-read events or memory outside the controlled pages. Reaching the instruction budget compares an execution prefix; it does not prove termination.

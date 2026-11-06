@@ -11,8 +11,10 @@ inductive ExecutionStatus where
 structure MachineState where
   registers : Reg → BitVec 64
   zeroFlag : Bool
+  carryFlag : Bool := false
   memory : Nat → Fin 256
   readable : Nat → Bool
+  writable : Nat → Bool := fun _ => false
   status : ExecutionStatus
   readHistory : List Access
 
@@ -20,6 +22,10 @@ structure MachineState where
 def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 64) : MachineState :=
   { state with registers := fun otherRegister =>
       if otherRegister = register then value else state.registers otherRegister }
+
+/-- Update one byte; permission checks belong to the instruction semantics. -/
+def MachineState.storeByte (state : MachineState) (address : Nat) (value : Fin 256) : MachineState :=
+  { state with memory := fun otherAddress => if otherAddress = address then value else state.memory otherAddress }
 
 def ExecutionStatus.isRunning : ExecutionStatus → Bool
   | .running _ => true
@@ -38,23 +44,36 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
   | .xor destination sourceRegister =>
     let result := (state.registers destination.parent).setWidth 32 ^^^
       (state.registers sourceRegister.parent).setWidth 32
-    next { state.write destination.parent (result.setWidth 64) with zeroFlag := result == 0 }
+    next { state.write destination.parent (result.setWidth 64) with zeroFlag := result == 0, carryFlag := false }
   | .test leftRegister rightRegister =>
-    next { state with zeroFlag := (state.registers leftRegister &&& state.registers rightRegister) == 0 }
+    next { state with zeroFlag := (state.registers leftRegister &&& state.registers rightRegister) == 0, carryFlag := false }
   | .movzx destination memoryOperand =>
     let address := (state.registers memoryOperand.base).toNat
     if state.readable address then
       next { state.write destination.parent (BitVec.ofNat 64 (state.memory address).val) with readHistory := state.readHistory ++ [⟨address,1⟩] }
     else { state with status := .fault }
+  | .mov destination sourceRegister => next (state.write destination (state.registers sourceRegister))
+  | .store8 destination sourceRegister =>
+    let address := (state.registers destination.base).toNat
+    if state.writable address then
+      next (state.storeByte address ⟨(state.registers sourceRegister.parent).toNat % 256, Nat.mod_lt _ (by decide)⟩)
+    else { state with status := .fault }
+  | .cmp leftRegister rightRegister =>
+    next { state with
+      zeroFlag := state.registers leftRegister == state.registers rightRegister
+      carryFlag := state.registers leftRegister < state.registers rightRegister }
   | .add destination sourceRegister =>
     let result := state.registers destination + state.registers sourceRegister
-    next { state.write destination result with zeroFlag := result == 0 }
+    next { state.write destination result with
+      zeroFlag := result == 0
+      carryFlag := result < state.registers destination }
   | .inc destination =>
     let result := state.registers destination + 1
     next { state.write destination result with zeroFlag := result == 0 }
   | .dec destination =>
     let result := state.registers destination - 1
     next { state.write destination result with zeroFlag := result == 0 }
+  | .jb target => { state with status := if state.carryFlag then .running target else state.status.advance }
   | .jz target => { state with status := if state.zeroFlag then .running target else state.status.advance }
   | .jnz target => { state with status := if state.zeroFlag then state.status.advance else .running target }
   | .ret =>
@@ -87,22 +106,6 @@ def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
 
 def AtInstruction (state : MachineState) (index : Nat) : Prop :=
   state.status = .running index
-
--- Only ZF is observable by this language. No instruction writes memory.
-theorem step_memory (program : Program) (state : MachineState) : (step program state).memory = state.memory := by
-  unfold step
-  split
-  · split
-    · rename_i instruction instructionAtIndex
-      cases instruction.op <;> simp [stepOp, next, MachineState.write] <;> split <;> rfl
-    · rfl
-  · rfl
-
-theorem execute_memory (program : Program) (steps : Nat) (state : MachineState) :
-    (execute program steps state).memory = state.memory := by
-  induction steps generalizing state with
-  | zero => rfl
-  | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_memory]
 
 theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState) :
     execute program (firstSteps+secondSteps) state = execute program secondSteps (execute program firstSteps state) := by

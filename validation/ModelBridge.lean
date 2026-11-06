@@ -7,6 +7,7 @@ meta import JsonDeriving
 open Rivet Json
 
 deriving instance FromJson for Reg
+deriving instance FromJson for Reg8
 deriving instance FromJson for Reg32
 deriving instance FromJson for Mem8
 deriving instance FromJson for Op
@@ -15,7 +16,9 @@ structure Request where
   program : Array Op
   registers : Array Nat
   zeroFlag : Bool
+  carryFlag : Bool
   memoryBase : Nat
+  writableBase : Nat
   memory : Array Nat
   steps : Nat
   deriving FromJson
@@ -23,15 +26,19 @@ deriving instance ToJson for ExecutionStatus
 structure SnapshotOutput where
   registers : Array Nat
   zeroFlag : Bool
+  carryFlag : Bool
   status : ExecutionStatus
+  memory : Array Nat
   deriving ToJson
 
 def registerOrder : Array Reg := #[.rax, .rbx, .rcx, .rdx, .rsi, .rdi, .rbp, .rsp,
   .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
-def snapshot (state : MachineState) : SnapshotOutput := {
+def snapshot (memoryBase memorySize : Nat) (state : MachineState) : SnapshotOutput := {
   registers := registerOrder.map (fun register => (state.registers register).toNat)
   zeroFlag := state.zeroFlag
-  status := state.status }
+  carryFlag := state.carryFlag
+  status := state.status
+  memory := (Array.range memorySize).map (fun offset => (state.memory (memoryBase + offset)).val) }
 
 def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   unless request.registers.size == 16 && request.steps ≤ 64 do
@@ -43,6 +50,9 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     zeroFlag := request.zeroFlag
+    carryFlag := request.carryFlag
+    writable := fun address => request.writableBase ≤ address &&
+      address < request.memoryBase + request.memory.size
     readable := fun address => request.memoryBase ≤ address &&
       address < request.memoryBase + request.memory.size
     memory := fun address =>
@@ -52,11 +62,11 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     status := .running 0
     readHistory := [] }
   let mut current := initial
-  let mut observations := #[snapshot initial]
+  let mut observations := #[snapshot request.memoryBase request.memory.size initial]
   for _ in [:request.steps] do
     if !current.status.isRunning then break
     current := step program current
-    observations := observations.push (snapshot current)
+    observations := observations.push (snapshot request.memoryBase request.memory.size current)
   return observations
 
 def respond (line : String) : Json :=

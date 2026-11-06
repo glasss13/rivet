@@ -1,6 +1,6 @@
 module
 public import Rivet.Model
-import Rivet.Safety
+import Rivet.ExecutionProperties
 @[expose] public section
 namespace Rivet
 
@@ -201,7 +201,7 @@ theorem clear (program : Program) (index : Nat) (destination : Reg32) (initial :
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.xor destination destination) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write destination.parent 0 with
-      status := .running (index+1), zeroFlag := true }) := by
+      status := .running (index+1), zeroFlag := true, carryFlag := false }) := by
   constructor
   intro actual equal
   subst actual
@@ -213,7 +213,7 @@ theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : 
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.test register register) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with
-      status := .running (index+1), zeroFlag := initial.registers register == 0 }) := by
+      status := .running (index+1), zeroFlag := initial.registers register == 0, carryFlag := false }) := by
   constructor
   intro actual equal
   subst actual
@@ -238,7 +238,7 @@ theorem add (program : Program) (index : Nat) (destination source : Reg) (initia
     (code : InstructionAt program index (.add destination source) := by decide +kernel) :
     let result := initial.registers destination + initial.registers source
     Ensures program (· = initial) (· = { initial.write destination result with
-      status := .running (index+1), zeroFlag := result == 0 }) := by
+      status := .running (index+1), zeroFlag := result == 0, carryFlag := result < initial.registers destination }) := by
   constructor
   intro actual equal
   subst actual
@@ -307,4 +307,55 @@ theorem return_ (program : Program) (index : Nat) (initial : MachineState)
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
   simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp, read64]
+theorem move (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.mov destination source) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial.write destination (initial.registers source) with
+      status := .running (index+1) }) := by
+  constructor
+  intro actual equal
+  subst actual
+  refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
+  rw [one code location]
+  simp [stepOp, next, ExecutionStatus.advance, MachineState.write, location]
+
+theorem compare (program : Program) (index : Nat) (left right : Reg) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.cmp left right) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial with
+      status := .running (index+1)
+      zeroFlag := initial.registers left == initial.registers right,
+      carryFlag := initial.registers left < initial.registers right }) := by
+  constructor
+  intro actual equal
+  subst actual
+  refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
+  rw [one code location]
+  simp [stepOp, next, ExecutionStatus.advance, location]
+
+theorem write_byte (program : Program) (index : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
+    (location : initial.status = .running index) (allowed : initial.writable (initial.registers base).toNat = true)
+    (code : InstructionAt program index (.store8 (.bytePtr base) source) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial.storeByte (initial.registers base).toNat
+      ⟨(initial.registers source.parent).toNat % 256, Nat.mod_lt _ (by decide)⟩ with
+      status := .running (index+1) }) := by
+  constructor
+  intro actual equal
+  subst actual
+  refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
+  rw [one code location]
+  simp [stepOp, next, ExecutionStatus.advance, MachineState.storeByte, location, allowed]
+
+theorem branch_below (program : Program) (index target : Nat) (initial : MachineState)
+    (location : initial.status = .running index := by rfl)
+    (code : InstructionAt program index (.jb target) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial with status := .running (if initial.carryFlag then target else index+1) }) := by
+  constructor
+  intro actual equal
+  subst actual
+  refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
+  rw [one code location]
+  simp [stepOp, ExecutionStatus.advance, location]
+  split <;> rfl
+
 end Rivet
