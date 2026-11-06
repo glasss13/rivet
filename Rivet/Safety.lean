@@ -23,20 +23,20 @@ theorem step_preserves (program : Program) (state : MachineState) (register : Re
   · rfl
 
 /-- A register untouched by every instruction is preserved for any amount of fuel. -/
-theorem run_preserves (program : Program) (steps : Nat) (state : MachineState) (register : Reg)
+theorem execute_preserves (program : Program) (steps : Nat) (state : MachineState) (register : Reg)
     (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
-    (run program steps state).registers register = state.registers register := by
+    (execute program steps state).registers register = state.registers register := by
   induction steps generalizing state with
   | zero => rfl
-  | succ steps inductionHypothesis => rw [run, inductionHypothesis, step_preserves program state register unchanged]
+  | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_preserves program state register unchanged]
 
-theorem run_stopped (program : Program) (steps : Nat) (state : MachineState) (stopped : state.status.isRunning = false) :
-    run program steps state = state := by
+theorem execute_stopped (program : Program) (steps : Nat) (state : MachineState) (stopped : state.status.isRunning = false) :
+    execute program steps state = state := by
   have stepUnchanged : step program state = state := by
     cases status : state.status <;> simp_all [step, ExecutionStatus.isRunning]
   induction steps with
   | zero => rfl
-  | succ steps inductionHypothesis => simpa [run, stepUnchanged] using inductionHypothesis
+  | succ steps inductionHypothesis => simpa [execute, stepUnchanged] using inductionHypothesis
 
 theorem step_reads_monotone (program : Program) (state : MachineState) (access : Access)
     (recorded : access ∈ state.readHistory) : access ∈ (step program state).readHistory := by
@@ -48,8 +48,8 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
     · exact recorded
   · exact recorded
 
-theorem run_reads_monotone (program : Program) (state : MachineState) (steps : Nat) (access : Access)
-    (recorded : access ∈ state.readHistory) : access ∈ (run program steps state).readHistory := by
+theorem execute_reads_monotone (program : Program) (state : MachineState) (steps : Nat) (access : Access)
+    (recorded : access ∈ state.readHistory) : access ∈ (execute program steps state).readHistory := by
   induction steps generalizing state with
   | zero => exact recorded
   | succ steps inductionHypothesis =>

@@ -72,10 +72,10 @@ def step (program : Program) (state : MachineState) : MachineState :=
     | none => { state with status := .fault }
   | _ => state
 
-def run (program : Program) (steps : Nat) (state : MachineState) : MachineState :=
+def execute (program : Program) (steps : Nat) (state : MachineState) : MachineState :=
   match steps with
   | 0 => state
-  | remainingSteps+1 => run program remainingSteps (step program state)
+  | remainingSteps+1 => execute program remainingSteps (step program state)
 
 /-- The little-endian address stored in the current stack return slot. -/
 def MachineState.returnAddress (state : MachineState) : Nat :=
@@ -88,9 +88,6 @@ def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
 def AtInstruction (state : MachineState) (index : Nat) : Prop :=
   state.status = .running index
 
-def execute (program : Program) (steps : Nat) (initial : MachineState) : MachineState :=
-  run program steps initial
-
 -- Only ZF is observable by this language. No instruction writes memory.
 theorem step_memory (program : Program) (state : MachineState) : (step program state).memory = state.memory := by
   unfold step
@@ -101,16 +98,16 @@ theorem step_memory (program : Program) (state : MachineState) : (step program s
     · rfl
   · rfl
 
-theorem run_memory (program : Program) (steps : Nat) (state : MachineState) :
-    (run program steps state).memory = state.memory := by
+theorem execute_memory (program : Program) (steps : Nat) (state : MachineState) :
+    (execute program steps state).memory = state.memory := by
   induction steps generalizing state with
   | zero => rfl
-  | succ steps inductionHypothesis => rw [run, inductionHypothesis, step_memory]
+  | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_memory]
 
-theorem run_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState) :
-    run program (firstSteps+secondSteps) state = run program secondSteps (run program firstSteps state) := by
+theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState) :
+    execute program (firstSteps+secondSteps) state = execute program secondSteps (execute program firstSteps state) := by
   induction firstSteps generalizing state with
-  | zero => simp [run]
-  | succ firstSteps inductionHypothesis => simpa [Nat.succ_add, run] using inductionHypothesis (step program state)
+  | zero => simp [execute]
+  | succ firstSteps inductionHypothesis => simpa [Nat.succ_add, execute] using inductionHypothesis (step program state)
 
 end Rivet
