@@ -1,0 +1,33 @@
+# Rivet differential validation
+
+Developer-only harness for **x86-64 Linux**. Rust compares actual CPU execution against Rivet's compiled Lean interpreter; it contains no reference implementation of the instruction semantics.
+
+Requires the repository's Lean toolchain, stable Rust/Cargo, GNU assembler (`as`), and permission to trace a child with `ptrace`. The root `lake build` remains Lean-only.
+
+The bridge uses [lean-json](https://github.com/paulbutcher/lean-json) for JSON and automatic codecs; its deriving support is imported only at compile time.
+
+From the repository root:
+
+```sh
+cargo run --locked --manifest-path validation/Cargo.toml -- --cases 1000 --seed 20261105
+```
+
+This builds the Lean model and generates cases from a seeded random generator biased toward arithmetic boundaries. The harness checks individual instructions with varied operands and short programs with forward branches and a final RET. Lean always receives structured instructions; native execution uses assembly generated from those same instructions. Program generation preserves the return stack and uses RDI as its data pointer.
+
+Each case is prepared once in `setup.rs`, producing two separate values: `ExecutionInput` is plain program and initial-state data; `NativeMemory` owns the executable code and data/stack allocations. Native execution receives both. Lean receives only `ExecutionInput`, so it can run independently of the native resources.
+
+After each instruction it compares all sixteen general-purpose registers, ZF, instruction location, and return/fault status. The supported instruction set has no memory writes. An inaccessible guard page supplies load/return fault cases. Assembler symbols determine native instruction boundaries independently of Rivet.
+
+RSP starts on a controlled stack. Load base registers are initialized to point at the controlled data or guard page. Replay recreates these bindings so it works across different ASLR addresses.
+
+A mismatch prints the seed, case number, and case JSON. Instructions use the named operands from Rivet’s instruction types: `{"add": {"destination": "rax", "source": "rdx"}}`, `{"inc": {"destination": "rdi"}}`, or `"ret"`. Operands use the typed registers in [register.rs](src/register.rs); register-value arrays follow the declaration order of `Register64`. Save the case JSON to rerun it:
+
+```sh
+cargo run --locked --manifest-path validation/Cargo.toml -- --replay /tmp/case.json
+```
+
+Exit codes: **0** = passed; **1** = semantic mismatch; **2** = infrastructure, protocol, or invalid-input error.
+
+The native runner forks a traced child per case and single-steps it with a two-second stop deadline. Each model invocation has a five-second deadline, including pipe I/O. Both processes are cleaned up on errors.
+
+This is bounded observational testing. It checks ZF rather than all RFLAGS, compares generic fault status, and does not observe memory-read events or memory outside the controlled pages. Reaching the instruction budget compares an execution prefix; it does not prove termination.

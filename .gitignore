@@ -2,3 +2,6 @@
 
 # Local examples and experiments
 /local/
+
+# Developer-only native validation artifacts
+/validation/target/

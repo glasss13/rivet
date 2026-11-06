@@ -25,3 +25,5 @@ def program : Program := (parse source).toOption.get (by decide +kernel)
 The source grammar accepts `xor eax, eax`, `test rsi, rsi`, `movzx edx, BYTE PTR [rdi]`, `add rax, rdx`, `inc rdi`, `dec rsi`, `jz LABEL`, `jnz LABEL`, and `ret`, with one initial `.globl NAME` declaration. Other directives and instruction forms are rejected. Intel expression and type keywords are forbidden as label names, regardless of case.
 
 Proofs concern the shared model. Assembler and processor correspondence remain assumptions; machine code is not verified. Only ZF is modeled, memory is read-only, and executions have no concurrency or asynchronous interference.
+
+A developer-only [differential validation harness](validation/README.md) compares the interpreter with native x86-64 execution. Its Rust and Linux tooling requirements are separate from library use.
