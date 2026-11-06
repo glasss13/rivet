@@ -33,10 +33,10 @@ import Rivet
 open Rivet
 
 def source : String := include_str "input.s"
-def program : Program := (parse source).toOption.get (by decide +kernel)
+def program : Program := assembly% source
 ```
 
-`include_str` embeds the file contents at elaboration time, relative to the Lean source file. The proof argument checks that parsing succeeded; invalid assembly cannot silently become an empty program. There is no generated instruction-list file or separate translation implementation. Recompile the containing Lean module after changing its assembly input.
+`include_str` embeds the file contents at elaboration time, relative to the Lean source file. `assembly%` runs the existing parser and stores its resulting instructions with a kernel-checked proof that they equal the parsed source. Invalid assembly is an elaboration error. Later proofs use the stored program without evaluating the parser again. There is no generated instruction-list file or separate parser implementation, and no native-evaluation axiom is required. Recompile the containing Lean module after changing its assembly input. `parse` remains available for runtime parsing.
 
 The source grammar accepts 32-bit register `xor`, 64-bit register `mov`, `test`, `cmp`, `add`, `inc`, and `dec`, byte loads (`movzx r32, BYTE PTR [r64]`), byte stores (`mov BYTE PTR [r64], r8`), `jb`, `jz`, `jnz`, and `ret`, with one initial `.globl NAME` declaration. All sixteen general-purpose registers and their 32-bit and low-byte aliases are supported; high-byte aliases and complex addressing modes are not. Other directives and instruction forms are rejected. Intel expression and type keywords are forbidden as label names, regardless of case.
 

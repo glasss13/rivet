@@ -1,4 +1,4 @@
 module
 public import Rivet.Contracts
-public import Rivet.Parser
+public import Rivet.Assembly
 public import Rivet.ExecutionProperties
