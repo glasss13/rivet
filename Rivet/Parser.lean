@@ -273,6 +273,8 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
     | _ => throw "MOVABS requires a 64-bit register and immediate"
   | ["inc", destination] => return .inc (← parseRegister destination)
   | ["dec", destination] => return .dec (← parseRegister destination)
+  | ["push", source] => return .push (← parseRegister source)
+  | ["pop", destination] => return .pop (← parseRegister destination)
   | ["ret"] => pure .ret
   | _ => .error ("unsupported instruction: " ++ source)
 

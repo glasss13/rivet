@@ -173,6 +173,20 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
       let value := if condition.holds state then state.readOperand source else state.readOperand destination
       next { state.writeOperand destination value with readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
+  | .push source =>
+    let pointer := state.registers .rsp - 8
+    if permits state.writable pointer.toNat 8 then
+      -- PUSH RSP stores the original pointer, before decrementing it.
+      next ((state.writeMemory pointer.toNat .qword (state.registers source)).write .rsp pointer)
+    else { state with status := .fault }
+  | .pop destination =>
+    let address := (state.registers .rsp).toNat
+    if permits state.readable address 8 then
+      -- Write the destination last: POP RSP replaces the incremented pointer.
+      let result := (state.write .rsp (state.registers .rsp + 8)).write destination
+        (readMemory state.memory address .qword)
+      next { result with readHistory := state.readHistory ++ [⟨address,8⟩] }
+    else { state with status := .fault }
   | .ret =>
     let address := (state.registers .rsp).toNat
     if address + 8 ≤ word && (List.range 8).all (fun offset => state.readable (address+offset)) then

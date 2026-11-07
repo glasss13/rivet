@@ -92,6 +92,12 @@ pub enum Operation {
         destination: Register64,
     },
     Ret,
+    Push {
+        source: Register64,
+    },
+    Pop {
+        destination: Register64,
+    },
 }
 impl Operation {
     pub fn memory_address(&self) -> Option<&Address> {
@@ -168,6 +174,8 @@ impl Operation {
             Self::Inc { destination } => format!("inc {destination}"),
             Self::Dec { destination } => format!("dec {destination}"),
             Self::Ret => "ret".into(),
+            Self::Push { source } => format!("push {source}"),
+            Self::Pop { destination } => format!("pop {destination}"),
         }
     }
 }
@@ -367,7 +375,7 @@ fn register_or_memory(generator: &mut fastrand::Rng, width: Width, whole_program
     }
 }
 
-// Whole programs preserve the return stack and reserve RSI for countdowns.
+// Branching programs preserve the return stack and reserve RSI for countdowns.
 fn random_instruction(
     generator: &mut fastrand::Rng,
     whole_program: bool,
@@ -378,7 +386,7 @@ fn random_instruction(
     } else {
         sample(generator, Register64::VARIANTS)
     };
-    match generator.usize(..Operation::COUNT) {
+    match generator.usize(..Operation::COUNT - if whole_program { 2 } else { 0 }) {
         0 => {
             let operation = sample(generator, BinaryOp::VARIANTS);
             random_operands(generator, whole_program, Some(operation))
@@ -434,13 +442,32 @@ fn random_instruction(
             destination: if whole_program { Rsi } else { register },
         },
         11 => Operation::Ret,
+        12 => Operation::Push { source: register },
+        13 => Operation::Pop {
+            destination: register,
+        },
         _ => unreachable!(),
     }
 }
 
 pub fn generate(generator: &mut fastrand::Rng) -> Case {
     let whole_program = generator.bool();
-    let mut program = if whole_program {
+    let mut program = if whole_program && generator.bool() {
+        // Matched saves/restores keep RET on its original slot, including PUSH/POP RSP.
+        let registers: Vec<_> = (0..generator.usize(1..=MAX_BODY_INSTRUCTIONS / 2))
+            .map(|_| sample(generator, Register64::VARIANTS))
+            .collect();
+        registers
+            .iter()
+            .map(|&source| Operation::Push { source })
+            .chain(
+                registers
+                    .iter()
+                    .rev()
+                    .map(|&destination| Operation::Pop { destination }),
+            )
+            .collect()
+    } else if whole_program {
         let count = generator.usize(1..=MAX_BODY_INSTRUCTIONS);
         (0..count)
             .map(|_| {
