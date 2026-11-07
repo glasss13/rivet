@@ -145,9 +145,17 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
         instruction.encoding() == EncodingKind::Legacy
             && !instruction.has_lock_prefix()
             && !instruction.has_rep_prefix()
-            && !instruction.has_repne_prefix()
-            && !instruction.has_segment_prefix(),
+            && !instruction.has_repne_prefix(),
         "unsupported encoding or prefix"
+    );
+    // NOP's apparent operand is not accessed; segment/address-size prefixes
+    // used for padding do not affect its behavior.
+    if instruction.mnemonic() == Nop {
+        return Ok(Operation::Nop);
+    }
+    ensure!(
+        !instruction.has_segment_prefix(),
+        "segment overrides are not supported"
     );
     // Address-size overrides are deliberately outside this initial importer.
     // TODO: just support this

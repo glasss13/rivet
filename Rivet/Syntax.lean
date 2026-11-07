@@ -182,6 +182,7 @@ def validShift (destination : Operand) (count : Nat) : Bool :=
   (match destination with | .reg32 _ | .reg64 _ => true | _ => false) && count < 256
 
 inductive Op where
+  | nop
   | movd (destination : Xmm) (source : Reg32)
   | pshufd (destination source : Xmm) (order : Nat)
   | loadXmm (operation : XmmMove) (destination : Xmm) (source : Address)

@@ -89,6 +89,7 @@ fn condition(value: rivet_import::program::Condition) -> &'static str {
 fn operation(value: &Operation) -> String {
     use Operation::*;
     match value {
+        Nop => ".nop".into(),
         Binary {
             operation,
             destination,

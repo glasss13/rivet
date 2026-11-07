@@ -46,6 +46,7 @@ pub enum Condition {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
+    Nop,
     Binary {
         operation: BinaryOp,
         destination: Operand,
