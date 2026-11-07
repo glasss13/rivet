@@ -10,6 +10,7 @@ inductive ExecutionStatus where
   deriving DecidableEq, Repr
 structure MachineState where
   registers : Reg → BitVec 64
+  xmmRegisters : Xmm → BitVec 128 := fun _ => 0
   signFlag : Bool := false
   zeroFlag : Bool
   carryFlag : Bool := false
@@ -160,6 +161,24 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
 
 def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
+  | .loadXmm _ destination source =>
+    let address := (source.evaluate state.registers).toNat
+    if permits state.readable address 16 then
+      let value := BitVec.ofNat 128 ((List.range 16).foldr
+        (fun offset value => (state.memory (address + offset)).val + 256 * value) 0)
+      next { state with
+        xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register
+        readHistory := state.readHistory ++ [⟨address, 16⟩] }
+    else { state with status := .fault }
+  | .storeXmm _ destination source =>
+    let address := (destination.evaluate state.registers).toNat
+    if permits state.writable address 16 then
+      let value := state.xmmRegisters source
+      next { state with memory := fun otherAddress =>
+        if address ≤ otherAddress && otherAddress < address + 16 then
+          ⟨(value.toNat / 256^(otherAddress - address)) % 256, Nat.mod_lt _ (by decide)⟩
+        else state.memory otherAddress }
+    else { state with status := .fault }
   | .binary operation destination source => state.binary operation destination source
   | .shift operation destination count =>
     if validShift destination count then

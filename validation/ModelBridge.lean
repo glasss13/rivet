@@ -10,6 +10,8 @@ deriving instance FromJson for Reg
 deriving instance FromJson for Reg8
 deriving instance FromJson for Reg32
 deriving instance FromJson for Reg16
+deriving instance FromJson for Xmm
+deriving instance FromJson for XmmMove
 deriving instance FromJson for Width
 deriving instance FromJson for Scale
 deriving instance FromJson for Address
@@ -23,6 +25,7 @@ deriving instance FromJson for FlagValues
 structure Request where
   program : Array Op
   registers : Array Nat
+  xmmRegisters : Array (Array Nat)
   signFlag : Bool
   zeroFlag : Bool
   carryFlag : Bool
@@ -35,6 +38,7 @@ structure Request where
 deriving instance ToJson for ExecutionStatus
 structure SnapshotOutput where
   registers : Array Nat
+  xmmRegisters : Array (Array Nat)
   signFlag : Bool
   zeroFlag : Bool
   carryFlag : Bool
@@ -44,8 +48,12 @@ structure SnapshotOutput where
 
 def registerOrder : Array Reg := #[.rax, .rbx, .rcx, .rdx, .rsi, .rdi, .rbp, .rsp,
   .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
+def xmmOrder : Array Xmm := #[.xmm0, .xmm1, .xmm2, .xmm3, .xmm4, .xmm5, .xmm6, .xmm7,
+  .xmm8, .xmm9, .xmm10, .xmm11, .xmm12, .xmm13, .xmm14, .xmm15]
 def snapshot (memoryBase memorySize : Nat) (state : MachineState) : SnapshotOutput := {
   registers := registerOrder.map (fun register => (state.registers register).toNat)
+  xmmRegisters := xmmOrder.map fun register =>
+    (Array.range 4).map fun index => (state.xmmRegisters register).toNat / 2^(32*index) % 2^32
   signFlag := state.signFlag
   zeroFlag := state.zeroFlag
   carryFlag := state.carryFlag
@@ -56,11 +64,16 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   unless request.registers.size == 16 && request.steps ≤ 64 do
     throw "invalid registers or step budget"
   unless request.registers.all (· < 2^64) do throw "register value exceeds 64 bits"
+  unless request.xmmRegisters.size == 16 &&
+      request.xmmRegisters.all (fun words => words.size == 4 && words.all (· < 2^32)) do
+    throw "invalid XMM register values"
   unless request.memory.size ≤ 65536 && request.memory.all (· < 256) do
     throw "invalid memory"
   let program := request.program.toList.map fun operation => ⟨operation, 0⟩
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
+    xmmRegisters := fun register => BitVec.ofNat 128
+      ((request.xmmRegisters[xmmOrder.toList.idxOf register]!).foldr (fun word value => word + 2^32 * value) 0)
     signFlag := request.signFlag
     zeroFlag := request.zeroFlag
     carryFlag := request.carryFlag

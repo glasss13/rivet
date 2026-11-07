@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     operand::{Address, Operand, Scale, Width},
-    register::{Register32, Register64},
+    register::{Register32, Register64, Xmm},
 };
 use Register32::*;
 use Register64::*;
@@ -33,6 +33,14 @@ pub enum BinaryOp {
 pub enum ShiftOp {
     Shl,
     Shr,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum XmmMove {
+    Movups,
+    Movdqu,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
@@ -114,6 +122,18 @@ pub enum Operation {
         destination: Operand,
         count: u8,
     },
+    #[serde(rename = "loadXmm")]
+    LoadXmm {
+        operation: XmmMove,
+        destination: Xmm,
+        source: Address,
+    },
+    #[serde(rename = "storeXmm")]
+    StoreXmm {
+        operation: XmmMove,
+        destination: Address,
+        source: Xmm,
+    },
     Push {
         source: Register64,
     },
@@ -161,6 +181,13 @@ impl Operation {
             }
             | Self::Movsxd {
                 source: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::LoadXmm {
+                source: address, ..
+            }
+            | Self::StoreXmm {
+                destination: address,
                 ..
             } => Some(address),
             _ => None,
@@ -217,6 +244,16 @@ impl Operation {
                 destination,
                 count,
             } => format!("{operation} {destination}, {count}"),
+            Self::LoadXmm {
+                operation,
+                destination,
+                source,
+            } => format!("{operation} {destination}, XMMWORD PTR {source}"),
+            Self::StoreXmm {
+                operation,
+                destination,
+                source,
+            } => format!("{operation} XMMWORD PTR {destination}, {source}"),
             Self::Push { source } => format!("push {source}"),
             Self::Pop { destination } => format!("pop {destination}"),
         }
@@ -227,6 +264,7 @@ impl Operation {
 pub struct Case {
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
+    pub xmm_registers: [[u32; 4]; 16],
     pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
@@ -255,6 +293,7 @@ impl Case {
 pub struct ExecutionInput {
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
+    pub xmm_registers: [[u32; 4]; 16],
     pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
@@ -277,6 +316,7 @@ pub enum Status {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub registers: [u64; 16],
+    pub xmm_registers: [[u32; 4]; 16],
     pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
@@ -515,8 +555,18 @@ fn random_instruction(
             ),
             count: generator.u8(..),
         },
-        15 => Operation::Push { source: register },
-        16 => Operation::Pop {
+        15 => Operation::LoadXmm {
+            operation: sample(generator, XmmMove::VARIANTS),
+            destination: sample(generator, Xmm::VARIANTS),
+            source: random_address(generator, whole_program),
+        },
+        16 => Operation::StoreXmm {
+            operation: sample(generator, XmmMove::VARIANTS),
+            destination: random_address(generator, whole_program),
+            source: sample(generator, Xmm::VARIANTS),
+        },
+        17 => Operation::Push { source: register },
+        18 => Operation::Pop {
             destination: register,
         },
         _ => unreachable!(),
@@ -569,6 +619,7 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
         steps: if whole_program { MAX_PROGRAM_STEPS } else { 1 },
         program,
         registers,
+        xmm_registers: std::array::from_fn(|_| std::array::from_fn(|_| generator.u32(..))),
         sign_flag: generator.bool(),
         zero_flag: generator.bool(),
         carry_flag: generator.bool(),

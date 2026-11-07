@@ -110,6 +110,25 @@ def parseRegister16 : String → Except String Reg16
   | "r15w" => .ok .r15w
   | name => .error ("unsupported register: " ++ name)
 
+def parseXmm : String → Except String Xmm
+  | "xmm0" => .ok .xmm0
+  | "xmm1" => .ok .xmm1
+  | "xmm2" => .ok .xmm2
+  | "xmm3" => .ok .xmm3
+  | "xmm4" => .ok .xmm4
+  | "xmm5" => .ok .xmm5
+  | "xmm6" => .ok .xmm6
+  | "xmm7" => .ok .xmm7
+  | "xmm8" => .ok .xmm8
+  | "xmm9" => .ok .xmm9
+  | "xmm10" => .ok .xmm10
+  | "xmm11" => .ok .xmm11
+  | "xmm12" => .ok .xmm12
+  | "xmm13" => .ok .xmm13
+  | "xmm14" => .ok .xmm14
+  | "xmm15" => .ok .xmm15
+  | name => .error ("unsupported XMM register: " ++ name)
+
 def joinTokens (parts : List String) : String :=
   String.ofList (List.intercalate [' '] (parts.map String.toList))
 
@@ -235,6 +254,16 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
       unless validBinary operation destination source do throw "invalid scalar operands or immediate"
       return .binary operation destination source
     | _ => throw "scalar instruction requires two operands"
+  else if mnemonic == "movups" || mnemonic == "movdqu" then
+    let operation := if mnemonic == "movups" then XmmMove.movups else .movdqu
+    let operands := (splitChars ',' (joinTokens parts.tail).toList).map fun operand =>
+      tokens (String.ofList (operand.map Char.toLower))
+    match operands with
+    | [[destination], "xmmword" :: "ptr" :: address] =>
+      return .loadXmm operation (← parseXmm destination) (← parseAddress (joinTokens address))
+    | ["xmmword" :: "ptr" :: address, [source]] =>
+      return .storeXmm operation (← parseAddress (joinTokens address)) (← parseXmm source)
+    | _ => throw "MOVUPS/MOVDQU require an XMM register and an XMMWORD PTR memory operand"
   else if mnemonic == "shl" || mnemonic == "shr" then
     match (splitChars ',' (joinTokens parts.tail).toList).map String.ofList with
     | [destination, count] =>

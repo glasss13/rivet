@@ -1,7 +1,7 @@
 //! Linux/x86-64 execution only. Expected instruction behavior lives in Rivet.
 use crate::{
     case::{ExecutionInput, Snapshot, Status},
-    register::{register_values, set_registers},
+    register::{register_values, set_registers, set_xmm_registers, xmm_values},
     setup::NativeMemory,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -87,6 +87,7 @@ impl Drop for TracedChild {
 
 fn snapshot(
     registers: &libc::user_regs_struct,
+    floating_point: &libc::user_fpregs_struct,
     status: Status,
     process_memory: &File,
     memory_base: u64,
@@ -96,6 +97,7 @@ fn snapshot(
     process_memory.read_exact_at(&mut memory, memory_base)?;
     Ok(Snapshot {
         registers: register_values(registers),
+        xmm_registers: xmm_values(floating_point),
         sign_flag: registers.eflags & (1 << 7) != 0,
         zero_flag: registers.eflags & (1 << 6) != 0,
         carry_flag: registers.eflags & 1 != 0,
@@ -118,9 +120,14 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
         | ((input.zero_flag as u64) << 6)
         | input.carry_flag as u64;
     ptrace::setregs(child.pid, registers)?;
+    let mut floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
+    set_xmm_registers(&mut floating_point, input.xmm_registers);
+    ptrace::setregset::<ptrace::regset::NT_PRFPREG>(child.pid, floating_point)?;
     registers = ptrace::getregs(child.pid)?;
+    floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
     let mut snapshots = vec![snapshot(
         &registers,
+        &floating_point,
         Status::Running {
             instruction_index: 0,
         },
@@ -139,6 +146,7 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
             bail!("native worker exited unexpectedly");
         };
         registers = ptrace::getregs(child.pid)?;
+        floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
         let status =
             match signal {
                 Signal::SIGSEGV | Signal::SIGBUS => Status::Fault,
@@ -172,6 +180,7 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
         let finished = !matches!(status, Status::Running { .. });
         snapshots.push(snapshot(
             &registers,
+            &floating_point,
             status,
             &process_memory,
             input.memory_base,
