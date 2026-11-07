@@ -161,6 +161,23 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
 def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
   | .binary operation destination source => state.binary operation destination source
+  | .shift operation destination count =>
+    if validShift destination count then
+      let width := (destination.width.getD .qword).bits
+      -- For the supported widths, count masking is reduction modulo 32 or 64.
+      let count := count % width
+      let value := (state.readOperand destination).setWidth width
+      let result : BitVec width := match operation with
+        | .shl => value <<< count
+        | .shr => value >>> count
+      -- Even a zero-count r32 shift clears the upper half of its parent register.
+      let updated := state.writeOperand destination (result.setWidth 64)
+      if count == 0 then next updated else
+        next { updated with
+          carryFlag := value.getLsbD (match operation with | .shl => width - count | .shr => count - 1)
+          zeroFlag := result == 0
+          signFlag := result.msb }
+    else { state with status := .fault }
   | .imul destination source immediate =>
     if validImul destination source immediate && state.canRead source then
       let width := (destination.width.getD .qword).bits

@@ -52,6 +52,12 @@ theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {u
       · cases destination <;> simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
       · rfl
     · rfl
+  | shift operation destination count =>
+    simp only [stepOp]
+    split
+    · split <;> cases destination <;>
+        simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
+    · rfl
   | imul destination source immediate | not destination | mov destination source | setcc _ destination | cmovcc _ destination source =>
     simp only [stepOp]
     split
@@ -101,6 +107,11 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
         simp only [stepOp, MachineState.binary]
         split
         · cases destination <;> cases source <;> simp_all [next, MachineState.recordRead]
+        · exact recorded
+      | shift operation destination count =>
+        simp only [stepOp]
+        split
+        · split <;> simp_all [next]
         · exact recorded
       | imul destination source immediate | not source | mov destination source | movzx destination source | movsxd destination source
       | cmovcc _ destination source =>

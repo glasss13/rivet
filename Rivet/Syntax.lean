@@ -163,12 +163,21 @@ def validImul (destination source : Operand) (immediate : Option Int) : Bool :=
     | none => true
     | some value => validBinary .add destination (.immediate value)
 
+inductive ShiftOp where
+  | shl | shr
+  deriving DecidableEq, Repr
+
+/-- The immediate-count register forms needed by LZ4. -/
+def validShift (destination : Operand) (count : Nat) : Bool :=
+  (match destination with | .reg32 _ | .reg64 _ => true | _ => false) && count < 256
+
 inductive Op where
   | binary (operation : BinaryOp) (destination source : Operand)
   | lea (destination : Reg) (source : Address)
   | movzx (destination : Reg32) (source : Operand)
   | movsxd (destination : Reg) (source : Operand)
   | mov (destination source : Operand)
+  | shift (operation : ShiftOp) (destination : Operand) (count : Nat)
   | imul (destination source : Operand) (immediate : Option Int)
   | not (destination : Operand)
   | inc (destination : Reg)
@@ -185,7 +194,7 @@ inductive Op where
 def modifies : Op → Reg → Bool
   | .movzx destination _, register => destination.parent == register
   | .binary operation destination _, register => operation.writes && destination.register == some register
-  | .imul destination _ _, register
+  | .shift _ destination _, register | .imul destination _ _, register
   | .not destination, register | .mov destination _, register | .setcc _ destination, register
   | .cmovcc _ destination _, register => destination.register == some register
   | .lea destination _, register | .movsxd destination _, register

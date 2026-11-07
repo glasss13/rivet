@@ -28,6 +28,14 @@ pub enum BinaryOp {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum ShiftOp {
+    Shl,
+    Shr,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
 #[serde(rename_all = "camelCase")]
 pub enum Condition {
     #[strum(serialize = "e")]
@@ -100,6 +108,11 @@ pub enum Operation {
         destination: Operand,
         source: Operand,
         immediate: Option<i128>,
+    },
+    Shift {
+        operation: ShiftOp,
+        destination: Operand,
+        count: u8,
     },
     Push {
         source: Register64,
@@ -199,6 +212,11 @@ impl Operation {
                 Some(value) => format!("imul {destination}, {source}, {value}"),
                 None => format!("imul {destination}, {source}"),
             },
+            Self::Shift {
+                operation,
+                destination,
+                count,
+            } => format!("{operation} {destination}, {count}"),
             Self::Push { source } => format!("push {source}"),
             Self::Pop { destination } => format!("pop {destination}"),
         }
@@ -489,8 +507,20 @@ fn random_instruction(
                 immediate,
             }
         }
-        14 => Operation::Push { source: register },
-        15 => Operation::Pop {
+        14 => Operation::Shift {
+            operation: sample(generator, ShiftOp::VARIANTS),
+            destination: Operand::register(
+                sample(generator, &[Width::Dword, Width::Qword]),
+                if whole_program { Rcx } else { register },
+            ),
+            count: if generator.bool() {
+                sample(generator, &[0, 1, 2, 3, 4, 16, 31, 32, 33, 63, 64, 65, 255])
+            } else {
+                generator.u8(..)
+            },
+        },
+        15 => Operation::Push { source: register },
+        16 => Operation::Pop {
             destination: register,
         },
         _ => unreachable!(),
