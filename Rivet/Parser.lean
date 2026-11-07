@@ -235,6 +235,19 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
       unless validBinary operation destination source do throw "invalid scalar operands or immediate"
       return .binary operation destination source
     | _ => throw "scalar instruction requires two operands"
+  else if mnemonic == "imul" then
+    let operands := (splitChars ',' (joinTokens parts.tail).toList).map String.ofList
+    let (destination, source, immediate) ← match operands with
+      | [destination, source] => pure (destination, source, none)
+      | [destination, source, immediate] => pure (destination, source, some (← parseInteger (clean immediate)))
+      | _ => throw "IMUL requires two operands or three with an immediate multiplier"
+    let destination ← parseOperand destination
+    let source ← parseOperand source
+    let (source, immediate) := match source, immediate with
+      | .immediate value, none => (destination, some value)
+      | _, _ => (source, immediate)
+    unless validImul destination source immediate do throw "invalid IMUL operands or immediate"
+    return .imul destination source immediate
   else if mnemonic.toList.take 4 == ['c', 'm', 'o', 'v'] then
     let condition ← parseCondition (String.ofList (mnemonic.toList.drop 4))
     match (splitChars ',' (joinTokens parts.tail).toList).map String.ofList with

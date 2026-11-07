@@ -96,6 +96,11 @@ pub enum Operation {
     Not {
         destination: Operand,
     },
+    Imul {
+        destination: Operand,
+        source: Operand,
+        immediate: Option<i128>,
+    },
     Push {
         source: Register64,
     },
@@ -130,6 +135,10 @@ impl Operation {
                 ..
             }
             | Self::Cmovcc {
+                source: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Imul {
                 source: Operand::Memory { address, .. },
                 ..
             }
@@ -182,6 +191,14 @@ impl Operation {
             Self::Dec { destination } => format!("dec {destination}"),
             Self::Ret => "ret".into(),
             Self::Not { destination } => format!("not {destination}"),
+            Self::Imul {
+                destination,
+                source,
+                immediate,
+            } => match immediate {
+                Some(value) => format!("imul {destination}, {source}, {value}"),
+                None => format!("imul {destination}, {source}"),
+            },
             Self::Push { source } => format!("push {source}"),
             Self::Pop { destination } => format!("pop {destination}"),
         }
@@ -456,8 +473,24 @@ fn random_instruction(
                 destination: register_or_memory(generator, width, whole_program),
             }
         }
-        13 => Operation::Push { source: register },
-        14 => Operation::Pop {
+        13 => {
+            let width = sample(generator, &[Width::Word, Width::Dword, Width::Qword]);
+            let immediate = generator.bool().then(|| {
+                let value = random_word(generator);
+                if width == Width::Word {
+                    value as i16 as i128
+                } else {
+                    value as i32 as i128
+                }
+            });
+            Operation::Imul {
+                destination: Operand::register(width, if whole_program { Rcx } else { register }),
+                source: register_or_memory(generator, width, whole_program),
+                immediate,
+            }
+        }
+        14 => Operation::Push { source: register },
+        15 => Operation::Pop {
             destination: register,
         },
         _ => unreachable!(),
