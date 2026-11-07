@@ -15,4 +15,4 @@ serde_json = "1"
 subprocess = "1.2.3"
 tempfile = "3"
 strum = { version = "0.28.0", features = ["derive"] }
-rivet-import = { path = "../importer" }
+rivet-import = { path = "../rivet-import" }

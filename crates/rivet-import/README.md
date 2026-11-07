@@ -6,7 +6,7 @@ it with iced-x86, and writes a Lean module containing `entry : Nat` and
 from the binary. No assembly text is parsed along the way.
 
 ```sh
-cargo run --release --manifest-path importer/Cargo.toml -- ./example \
+cargo run --release -p rivet-import -- ./example \
   --function sum_bytes --namespace Example --output Example.lean
 ```
 

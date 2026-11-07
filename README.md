@@ -2,7 +2,7 @@
 
 A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Programs retain instruction operands, widths, source lines, byte addresses, encoding lengths, and resolved branch targets. Lean is the only required toolchain; its version is pinned in `lean-toolchain`.
 
-The optional [binary importer](importer/README.md) uses Rust and iced-x86 to generate a Lean program directly from a named function in a linked ELF executable. It supports Rivet's scalar and SSE instruction forms, without loading global data or supporting calls; generated modules require only Lean to use.
+The optional [binary importer](crates/rivet-import/README.md) uses Rust and iced-x86 to generate a Lean program directly from a named function in a linked ELF executable. It supports Rivet's scalar and SSE instruction forms, without loading global data or supporting calls; generated modules require only Lean to use.
 
 ```sh
 lake build
@@ -77,3 +77,5 @@ Structured MOV operations use `Operand` for their source and destination, for ex
 Proofs concern the shared model. Assembler and processor correspondence remain assumptions; machine code is not verified. ZF, CF, and SF are modeled. Arithmetic and logic compute flags at the operand width; INC and DEC preserve CF. Overflow, parity, and auxiliary carry flags are not yet modeled. Memory has separate `readable` and `writable` permissions; multi-byte accesses check the entire range before changing state, and MOV stores do not require read permission. Effective-address arithmetic wraps at 64 bits; accesses spanning the address-space boundary fault. Executions have no concurrency or asynchronous interference.
 
 A developer-only [differential validation harness](validation/README.md) compares the interpreter with native x86-64 execution. Its Rust and Linux tooling requirements are separate from library use.
+
+Rust tools share a Cargo workspace under `crates/`, with one root lockfile and build directory. Run `cargo run -p rivet-import -- ...` for the importer, `cargo run -p rivet-check -- ...` for validation, or `cargo clippy --workspace -- -D warnings` to check both packages.
