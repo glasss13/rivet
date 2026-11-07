@@ -11,7 +11,11 @@ open Lean Meta Elab Term
 deriving instance ToExpr for Reg
 deriving instance ToExpr for Reg32
 deriving instance ToExpr for Reg8
-deriving instance ToExpr for Mem8
+deriving instance ToExpr for Reg16
+deriving instance ToExpr for Width
+deriving instance ToExpr for Scale
+deriving instance ToExpr for Address
+deriving instance ToExpr for Operand
 deriving instance ToExpr for Op
 deriving instance ToExpr for Instruction
 

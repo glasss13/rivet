@@ -39,6 +39,59 @@ def next (state : MachineState) : MachineState := { state with status := state.s
 def read64 (memory : Nat → Fin 256) (address : Nat) : Nat :=
   (List.range 8).foldr (fun offset value => (memory (address+offset)).val + 256*value) 0
 
+def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
+  (address.base.map registers).getD 0 +
+    (address.index.map registers).getD 0 * BitVec.ofNat 64 address.scale.value +
+    BitVec.ofInt 64 address.displacement
+
+/-- Multi-byte accesses must fit the address space and have permission for every byte. -/
+def permits (permission : Nat → Bool) (address size : Nat) : Bool :=
+  address + size ≤ word && (List.range size).all (fun offset => permission (address + offset))
+
+def readMemory (memory : Nat → Fin 256) (address : Nat) (width : Width) : BitVec 64 :=
+  BitVec.ofNat 64 ((List.range width.bytes).foldr
+    (fun offset value => (memory (address + offset)).val + 256 * value) 0)
+
+/-- Write a whole value after its complete range has passed permission checks. -/
+def MachineState.writeMemory (state : MachineState) (address : Nat) (width : Width)
+    (value : BitVec 64) : MachineState :=
+  (List.range width.bytes).foldl (fun current offset =>
+    current.storeByte (address + offset)
+      ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩) state
+
+def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
+  | .reg8 register => ((state.registers register.parent).setWidth 8).setWidth 64
+  | .reg16 register => ((state.registers register.parent).setWidth 16).setWidth 64
+  | .reg32 register => ((state.registers register.parent).setWidth 32).setWidth 64
+  | .reg64 register => state.registers register
+  | .memory width address => readMemory state.memory (address.evaluate state.registers).toNat width
+  | .immediate value => BitVec.ofInt 64 value
+
+def MachineState.writeOperand (state : MachineState) (operand : Operand) (value : BitVec 64) : MachineState :=
+  match operand with
+  | .reg8 register => state.write register.parent
+      ((state.registers register.parent &&& ~~~(255#64)) ||| ((value.setWidth 8).setWidth 64))
+  | .reg16 register => state.write register.parent
+      ((state.registers register.parent &&& ~~~(65535#64)) ||| ((value.setWidth 16).setWidth 64))
+  | .reg32 register => state.write register.parent ((value.setWidth 32).setWidth 64)
+  | .reg64 register => state.write register value
+  | .memory width address => state.writeMemory (address.evaluate state.registers).toNat width value
+  | .immediate _ => state
+
+def MachineState.canRead (state : MachineState) : Operand → Bool
+  | .memory width address => permits state.readable (address.evaluate state.registers).toNat width.bytes
+  | _ => true
+
+def MachineState.canWrite (state : MachineState) : Operand → Bool
+  | .memory width address => permits state.writable (address.evaluate state.registers).toNat width.bytes
+  | .immediate _ => false
+  | _ => true
+
+def MachineState.recordRead (state : MachineState) : Operand → MachineState
+  | .memory width address => { state with readHistory := state.readHistory ++
+      [⟨(address.evaluate state.registers).toNat, width.bytes⟩] }
+  | _ => state
+
 def stepOp (operation : Op) (state : MachineState) : MachineState :=
   match operation with
   | .xor destination sourceRegister =>
@@ -48,15 +101,15 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
   | .test leftRegister rightRegister =>
     next { state with zeroFlag := (state.registers leftRegister &&& state.registers rightRegister) == 0, carryFlag := false }
   | .movzx destination memoryOperand =>
-    let address := (state.registers memoryOperand.base).toNat
+    let address := (memoryOperand.evaluate state.registers).toNat
     if state.readable address then
       next { state.write destination.parent (BitVec.ofNat 64 (state.memory address).val) with readHistory := state.readHistory ++ [⟨address,1⟩] }
     else { state with status := .fault }
-  | .mov destination sourceRegister => next (state.write destination (state.registers sourceRegister))
-  | .store8 destination sourceRegister =>
-    let address := (state.registers destination.base).toNat
-    if state.writable address then
-      next (state.storeByte address ⟨(state.registers sourceRegister.parent).toNat % 256, Nat.mod_lt _ (by decide)⟩)
+  | .mov destination source =>
+    if validMove destination source && state.canRead source && state.canWrite destination then
+      -- Read and address calculation use the pre-instruction registers, including aliases.
+      let result := state.writeOperand destination (state.readOperand source)
+      next { result with readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .cmp leftRegister rightRegister =>
     next { state with

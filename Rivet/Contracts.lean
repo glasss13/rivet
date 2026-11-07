@@ -223,7 +223,7 @@ theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : 
 
 theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
     (location : initial.status = .running index) (allowed : initial.readable (initial.registers base).toNat = true)
-    (code : InstructionAt program index (.movzx destination (.bytePtr base)) := by decide +kernel) :
+    (code : InstructionAt program index (.movzx destination (Address.baseOnly base)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write destination.parent (BitVec.ofNat 64 (initial.memory (initial.registers base).toNat).val) with
       status := .running (index+1), readHistory := initial.readHistory ++ [⟨(initial.registers base).toNat,1⟩] }) := by
   constructor
@@ -231,7 +231,7 @@ theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base 
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
+  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, Address.evaluate, Address.baseOnly, Scale.value] <;> try rfl
 
 theorem add (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
@@ -307,17 +307,20 @@ theorem return_ (program : Program) (index : Nat) (initial : MachineState)
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
   simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp, read64]
-theorem move (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
+theorem move (program : Program) (index : Nat) (destination source : Operand) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
+    (valid : validMove destination source = true := by decide +kernel)
+    (readable : initial.canRead source = true := by rfl)
+    (writable : initial.canWrite destination = true := by rfl)
     (code : InstructionAt program index (.mov destination source) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial.write destination (initial.registers source) with
-      status := .running (index+1) }) := by
+    Ensures program (· = initial) (· = { initial.writeOperand destination (initial.readOperand source) with
+      status := .running (index+1), readHistory := (initial.recordRead source).readHistory }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp [stepOp, next, ExecutionStatus.advance, MachineState.write, location]
+  simp [stepOp, next, ExecutionStatus.advance, location, valid, readable, writable]
 
 theorem compare (program : Program) (index : Nat) (left right : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
@@ -335,7 +338,7 @@ theorem compare (program : Program) (index : Nat) (left right : Reg) (initial : 
 
 theorem write_byte (program : Program) (index : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
     (location : initial.status = .running index) (allowed : initial.writable (initial.registers base).toNat = true)
-    (code : InstructionAt program index (.store8 (.bytePtr base) source) := by decide +kernel) :
+    (code : InstructionAt program index (.mov (.memory .byte (Address.baseOnly base)) (.reg8 source)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.storeByte (initial.registers base).toNat
       ⟨(initial.registers source.parent).toNat % 256, Nat.mod_lt _ (by decide)⟩ with
       status := .running (index+1) }) := by
@@ -344,7 +347,14 @@ theorem write_byte (program : Program) (index : Nat) (base : Reg) (source : Reg8
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp [stepOp, next, ExecutionStatus.advance, MachineState.storeByte, location, allowed]
+  have bound : (initial.registers base).toNat + 1 ≤ word := by
+    have := (initial.registers base).isLt
+    unfold word
+    omega
+  simp [stepOp, validMove, Operand.width, MachineState.canRead, MachineState.canWrite,
+    MachineState.writeOperand, MachineState.readOperand, MachineState.recordRead,
+    MachineState.writeMemory, Width.bytes, Address.evaluate, Address.baseOnly, Scale.value,
+    permits, next, ExecutionStatus.advance, MachineState.storeByte, location, allowed, bound]
 
 theorem branch_below (program : Program) (index target : Nat) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
