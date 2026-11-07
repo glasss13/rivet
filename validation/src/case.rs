@@ -1,285 +1,149 @@
+use rivet_import::operand::{Address, Operand, Scale, Width};
+use rivet_import::{
+    Instruction,
+    program::{BinaryOp, Condition, Operation, ShiftOp, XmmMove},
+};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    operand::{Address, Operand, Scale, Width},
-    register::{Register32, Register64, Xmm},
-};
+use crate::register::{Register32, Register64, Xmm};
 use Register32::*;
 use Register64::*;
-use strum::{Display, EnumCount, VariantArray};
+use strum::{EnumCount, VariantArray};
 
 // Excludes the appended return instruction.
 const MAX_BODY_INSTRUCTIONS: usize = 8;
 const MAX_DATA_BYTES: usize = 32;
 const MAX_PROGRAM_STEPS: usize = 64;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum BinaryOp {
-    Add,
-    Sub,
-    Sbb,
-    Cmp,
-    Test,
-    And,
-    Or,
-    Xor,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum ShiftOp {
-    Shl,
-    Shr,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum XmmMove {
-    Movups,
-    Movdqu,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
-#[serde(rename_all = "camelCase")]
-pub enum Condition {
-    #[strum(serialize = "e")]
-    Equal,
-    #[strum(serialize = "ne")]
-    NotEqual,
-    #[strum(serialize = "b")]
-    Below,
-    #[strum(serialize = "ae")]
-    AboveOrEqual,
-    #[strum(serialize = "be")]
-    BelowOrEqual,
-    #[strum(serialize = "a")]
-    Above,
-    #[strum(serialize = "s")]
-    Sign,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, EnumCount)]
-#[serde(rename_all = "lowercase")]
-pub enum Operation {
-    Binary {
-        operation: BinaryOp,
-        destination: Operand,
-        source: Operand,
-    },
-    Lea {
-        destination: Register64,
-        source: Address,
-    },
-    Movzx {
-        destination: Register32,
-        source: Operand,
-    },
-    Movsxd {
-        destination: Register64,
-        source: Operand,
-    },
-    Mov {
-        destination: Operand,
-        source: Operand,
-    },
-    Jmp {
-        target: usize,
-    },
-    Jcc {
-        condition: Condition,
-        target: usize,
-    },
-    Setcc {
-        condition: Condition,
-        destination: Operand,
-    },
-    Cmovcc {
-        condition: Condition,
-        destination: Operand,
-        source: Operand,
-    },
-    Inc {
-        destination: Register64,
-    },
-    Dec {
-        destination: Register64,
-    },
-    Ret,
-    Not {
-        destination: Operand,
-    },
-    Imul {
-        destination: Operand,
-        source: Operand,
-        immediate: Option<i128>,
-    },
-    Shift {
-        operation: ShiftOp,
-        destination: Operand,
-        count: u8,
-    },
-    #[serde(rename = "loadXmm")]
-    LoadXmm {
-        operation: XmmMove,
-        destination: Xmm,
-        source: Address,
-    },
-    #[serde(rename = "storeXmm")]
-    StoreXmm {
-        operation: XmmMove,
-        destination: Address,
-        source: Xmm,
-    },
-    Movd {
-        destination: Xmm,
-        source: Register32,
-    },
-    Pshufd {
-        destination: Xmm,
-        source: Xmm,
-        order: u8,
-    },
-    Push {
-        source: Register64,
-    },
-    Pop {
-        destination: Register64,
-    },
-}
-impl Operation {
-    pub fn memory_address(&self) -> Option<&Address> {
-        match self {
-            Self::Binary {
-                destination: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Binary {
-                source: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Mov {
-                destination: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Mov {
-                source: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Not {
-                destination: Operand::Memory { address, .. },
-            }
-            | Self::Setcc {
-                destination: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Cmovcc {
-                source: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Imul {
-                source: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Movzx {
-                source: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::Movsxd {
-                source: Operand::Memory { address, .. },
-                ..
-            }
-            | Self::LoadXmm {
-                source: address, ..
-            }
-            | Self::StoreXmm {
-                destination: address,
-                ..
-            } => Some(address),
-            _ => None,
+pub fn memory_address(operation: &Operation) -> Option<&Address> {
+    match operation {
+        Operation::Binary {
+            destination: Operand::Memory { address, .. },
+            ..
         }
+        | Operation::Binary {
+            source: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::Mov {
+            destination: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::Mov {
+            source: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::Not {
+            destination: Operand::Memory { address, .. },
+        }
+        | Operation::Setcc {
+            destination: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::Cmovcc {
+            source: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::Imul {
+            source: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::Movzx {
+            source: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::Movsxd {
+            source: Operand::Memory { address, .. },
+            ..
+        }
+        | Operation::LoadXmm {
+            source: address, ..
+        }
+        | Operation::StoreXmm {
+            destination: address,
+            ..
+        } => Some(address),
+        _ => None,
     }
-    fn assembly(self) -> String {
-        match self {
-            Self::Binary {
-                operation,
-                destination,
-                source,
-            } => format!("{operation} {destination}, {source}"),
-            Self::Movzx {
-                destination,
-                source,
-            } => format!("movzx {destination}, {source}"),
-            Self::Movsxd {
-                destination,
-                source,
-            } => format!("movsxd {destination}, {source}"),
-            Self::Lea {
-                destination,
-                source,
-            } => format!("lea {destination}, {source}"),
-            Self::Mov {
-                destination,
-                source,
-            } => format!("mov {destination}, {source}"),
-            Self::Jmp { target } => format!("jmp rivet_instruction_{target}"),
-            Self::Jcc { condition, target } => format!("j{condition} rivet_instruction_{target}"),
-            Self::Setcc {
-                condition,
-                destination,
-            } => format!("set{condition} {destination}"),
-            Self::Cmovcc {
-                condition,
-                destination,
-                source,
-            } => format!("cmov{condition} {destination}, {source}"),
-            Self::Inc { destination } => format!("inc {destination}"),
-            Self::Dec { destination } => format!("dec {destination}"),
-            Self::Ret => "ret".into(),
-            Self::Not { destination } => format!("not {destination}"),
-            Self::Imul {
-                destination,
-                source,
-                immediate,
-            } => match immediate {
-                Some(value) => format!("imul {destination}, {source}, {value}"),
-                None => format!("imul {destination}, {source}"),
-            },
-            Self::Shift {
-                operation,
-                destination,
-                count,
-            } => format!("{operation} {destination}, {count}"),
-            Self::LoadXmm {
-                operation,
-                destination,
-                source,
-            } => format!("{operation} {destination}, XMMWORD PTR {source}"),
-            Self::StoreXmm {
-                operation,
-                destination,
-                source,
-            } => format!("{operation} XMMWORD PTR {destination}, {source}"),
-            Self::Movd {
-                destination,
-                source,
-            } => format!("movd {destination}, {source}"),
-            Self::Pshufd {
-                destination,
-                source,
-                order,
-            } => format!("pshufd {destination}, {source}, {order}"),
-            Self::Push { source } => format!("push {source}"),
-            Self::Pop { destination } => format!("pop {destination}"),
-        }
+}
+fn assembly(operation: Operation) -> String {
+    match operation {
+        Operation::Binary {
+            operation,
+            destination,
+            source,
+        } => format!("{operation} {destination}, {source}"),
+        Operation::Movzx {
+            destination,
+            source,
+        } => format!("movzx {destination}, {source}"),
+        Operation::Movsxd {
+            destination,
+            source,
+        } => format!("movsxd {destination}, {source}"),
+        Operation::Lea {
+            destination,
+            source,
+        } => format!("lea {destination}, {source}"),
+        Operation::Mov {
+            destination,
+            source,
+        } => format!("mov {destination}, {source}"),
+        Operation::Jmp { target } => format!("jmp rivet_instruction_{target}"),
+        Operation::Jcc { condition, target } => format!("j{condition} rivet_instruction_{target}"),
+        Operation::Setcc {
+            condition,
+            destination,
+        } => format!("set{condition} {destination}"),
+        Operation::Cmovcc {
+            condition,
+            destination,
+            source,
+        } => format!("cmov{condition} {destination}, {source}"),
+        Operation::Inc { destination } => format!("inc {destination}"),
+        Operation::Dec { destination } => format!("dec {destination}"),
+        Operation::Ret => "ret".into(),
+        Operation::Not { destination } => format!("not {destination}"),
+        Operation::Imul {
+            destination,
+            source,
+            immediate,
+        } => match immediate {
+            Some(value) => format!("imul {destination}, {source}, {value}"),
+            None => format!("imul {destination}, {source}"),
+        },
+        Operation::Shift {
+            operation,
+            destination,
+            count,
+        } => format!("{operation} {destination}, {count}"),
+        Operation::LoadXmm {
+            operation,
+            destination,
+            source,
+        } => format!("{operation} {destination}, XMMWORD PTR {source}"),
+        Operation::StoreXmm {
+            operation,
+            destination,
+            source,
+        } => format!("{operation} XMMWORD PTR {destination}, {source}"),
+        Operation::Movd {
+            destination,
+            source,
+        } => format!("movd {destination}, {source}"),
+        Operation::Pshufd {
+            destination,
+            source,
+            order,
+        } => format!("pshufd {destination}, {source}, {order}"),
+        Operation::Push { source } => format!("push {source}"),
+        Operation::Pop { destination } => format!("pop {destination}"),
     }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Case {
+    // Branch targets are instruction indices until assembly resolves the labels.
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
     pub xmm_registers: [[u32; 4]; 16],
@@ -297,20 +161,12 @@ impl Case {
         for (index, operation) in self.program.iter().enumerate() {
             source.push_str(&format!(
                 "rivet_instruction_{index}:\n    {}\n",
-                operation.assembly()
+                assembly(*operation)
             ));
         }
         source.push_str("rivet_end:\n");
         source
     }
-}
-
-#[derive(Serialize)]
-pub struct Instruction {
-    pub address: u64,
-    pub length: u64,
-    pub op: Operation,
-    pub line: u64,
 }
 
 // The same program and initial state are used by both runners.
@@ -520,10 +376,12 @@ fn random_instruction(
             source: register_or_memory(generator, Width::Dword, whole_program),
         },
         4 => random_operands(generator, whole_program, None),
-        5 => Operation::Jmp { target },
+        5 => Operation::Jmp {
+            target: target as u64,
+        },
         6 => Operation::Jcc {
             condition: sample(generator, Condition::VARIANTS),
-            target,
+            target: target as u64,
         },
         7 => Operation::Setcc {
             condition: sample(generator, Condition::VARIANTS),

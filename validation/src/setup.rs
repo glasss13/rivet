@@ -1,6 +1,6 @@
 //! Prepare the common initial state before either runner executes.
 use crate::{
-    case::{Case, ExecutionInput, Instruction, Operation},
+    case::{Case, ExecutionInput, memory_address},
     register::Register64::Rsp,
 };
 use anyhow::{Context, Result, ensure};
@@ -10,6 +10,7 @@ use nix::{
     unistd::{SysconfVar, sysconf},
 };
 use object::{Object, ObjectSection, ObjectSymbol};
+use rivet_import::program::Operation;
 use std::{fs, process::Command, ptr::NonNull};
 
 // Own the native allocations for as long as execution needs their addresses.
@@ -117,7 +118,7 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
     } else {
         base + 64
     };
-    for address in case.program.iter().filter_map(Operation::memory_address) {
+    for address in case.program.iter().filter_map(memory_address) {
         if let Some(index) = address.index {
             values[index as usize] = case.registers[index as usize] % 16;
         }
@@ -142,23 +143,7 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
         values[Rsp as usize] = guard;
     }
     let input = ExecutionInput {
-        program: case
-            .program
-            .iter()
-            .enumerate()
-            .map(|(index, &operation)| {
-                let mut operation = operation;
-                if let Operation::Jmp { target } | Operation::Jcc { target, .. } = &mut operation {
-                    *target = memory.code.as_ptr() as usize + memory.offsets[*target] as usize;
-                }
-                Instruction {
-                    address: memory.code.as_ptr() as u64 + memory.offsets[index],
-                    length: memory.offsets[index + 1] - memory.offsets[index],
-                    op: operation,
-                    line: 0,
-                }
-            })
-            .collect(),
+        program: rivet_import::decode(&memory.code, memory.code.as_ptr() as u64)?,
         registers: values,
         xmm_registers: case.xmm_registers,
         sign_flag: case.sign_flag,

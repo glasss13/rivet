@@ -14,7 +14,14 @@ The namespace defaults to the function name. Import the generated module into a
 proof and use `Example.program` and `Example.entry`. Rust is only needed to run
 the importer; checking the generated module and its proofs requires only Lean.
 
-The initial scope is deliberately small:
+The crate also exposes `rivet_import::decode(bytes, base_address)`, returning
+`Vec<Instruction>` with absolute addresses and structured operations. Shared
+instruction, operand, and register types live in `program`, `operand`, and
+`register`. They support Serde serialization for the validator's existing Lean
+JSON protocol. ELF handling and Lean source emission belong to the CLI; the
+library only needs a contiguous code range and its starting address.
+
+The supported scope is deliberately small:
 
 - Fixed-address, little-endian ELF64 executables, without dynamic loading or
   relocation records. Object files and PIE executables must be linked first.
