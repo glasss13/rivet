@@ -161,6 +161,19 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
 
 def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
+  | .movd destination source =>
+    let value := ((state.registers source.parent).setWidth 32).setWidth 128
+    next { state with xmmRegisters := fun register =>
+      if register = destination then value else state.xmmRegisters register }
+  | .pshufd destination source order =>
+    if order < 256 then
+      let original := (state.xmmRegisters source).toNat
+      let value := BitVec.ofNat 128 ((List.range 4).foldr (fun lane result =>
+        let selected := order / 4^lane % 4
+        (original / 2^(32 * selected)) % 2^32 + 2^32 * result) 0)
+      next { state with xmmRegisters := fun register =>
+        if register = destination then value else state.xmmRegisters register }
+    else { state with status := .fault }
   | .loadXmm _ destination source =>
     let address := (source.evaluate state.registers).toNat
     if permits state.readable address 16 then

@@ -134,6 +134,15 @@ pub enum Operation {
         destination: Address,
         source: Xmm,
     },
+    Movd {
+        destination: Xmm,
+        source: Register32,
+    },
+    Pshufd {
+        destination: Xmm,
+        source: Xmm,
+        order: u8,
+    },
     Push {
         source: Register64,
     },
@@ -254,6 +263,15 @@ impl Operation {
                 destination,
                 source,
             } => format!("{operation} XMMWORD PTR {destination}, {source}"),
+            Self::Movd {
+                destination,
+                source,
+            } => format!("movd {destination}, {source}"),
+            Self::Pshufd {
+                destination,
+                source,
+                order,
+            } => format!("pshufd {destination}, {source}, {order}"),
             Self::Push { source } => format!("push {source}"),
             Self::Pop { destination } => format!("pop {destination}"),
         }
@@ -565,8 +583,17 @@ fn random_instruction(
             destination: random_address(generator, whole_program),
             source: sample(generator, Xmm::VARIANTS),
         },
-        17 => Operation::Push { source: register },
-        18 => Operation::Pop {
+        17 => Operation::Movd {
+            destination: sample(generator, Xmm::VARIANTS),
+            source: sample(generator, Register32::VARIANTS),
+        },
+        18 => Operation::Pshufd {
+            destination: sample(generator, Xmm::VARIANTS),
+            source: sample(generator, Xmm::VARIANTS),
+            order: generator.u8(..),
+        },
+        19 => Operation::Push { source: register },
+        20 => Operation::Pop {
             destination: register,
         },
         _ => unreachable!(),

@@ -254,6 +254,17 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
       unless validBinary operation destination source do throw "invalid scalar operands or immediate"
       return .binary operation destination source
     | _ => throw "scalar instruction requires two operands"
+  else if mnemonic == "movd" || mnemonic == "pshufd" then
+    let operands := (splitChars ',' (joinTokens parts.tail).toList).map fun operand =>
+      clean (String.ofList (operand.map Char.toLower))
+    match mnemonic, operands with
+    | "movd", [destination, source] =>
+      return .movd (← parseXmm destination) (← parseRegister32 source)
+    | "pshufd", [destination, source, order] =>
+      let order ← parseInteger order
+      unless 0 ≤ order && order < 256 do throw "PSHUFD requires an immediate from 0 to 255"
+      return .pshufd (← parseXmm destination) (← parseXmm source) order.toNat
+    | _, _ => throw "expected MOVD xmm, r32 or PSHUFD xmm, xmm, imm8"
   else if mnemonic == "movups" || mnemonic == "movdqu" then
     let operation := if mnemonic == "movups" then XmmMove.movups else .movdqu
     let operands := (splitChars ',' (joinTokens parts.tail).toList).map fun operand =>
