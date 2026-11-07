@@ -6,12 +6,9 @@ namespace Rivet
 @[simp] private theorem writeMemory_registers (state : MachineState) (address : Nat) (width : Width)
     (value : BitVec 64) : (state.writeMemory address width value).registers = state.registers := rfl
 
-@[simp] theorem MachineState.writeMemory_status (state : MachineState) (address : Nat) (width : Width)
-    (value : BitVec 64) : (state.writeMemory address width value).status = state.status := rfl
-
 @[simp] theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
     (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
-  cases operand <;> simp [MachineState.writeOperand, MachineState.write]
+  cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
 
 @[simp] private theorem writeMemory_readHistory (state : MachineState) (address : Nat) (width : Width)
     (value : BitVec 64) : (state.writeMemory address width value).readHistory = state.readHistory := rfl
@@ -27,20 +24,20 @@ theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {u
     simp only [stepOp, MachineState.binary]
     split
     · split
-      · cases destination <;> simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
+      · cases destination <;> simp_all [modifies, next, MachineState.writeOperand, MachineState.write, Ne.symm]
       · rfl
     · rfl
   | shift operation destination count =>
     simp only [stepOp]
     split
     · split <;> cases destination <;>
-        simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
+        simp_all [modifies, next, MachineState.writeOperand, MachineState.write, Ne.symm]
     · rfl
   | imul destination source immediate | not destination | mov destination source | setcc _ destination | cmovcc _ destination source =>
     simp only [stepOp]
     split
     · cases destination <;>
-        simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
+        simp_all [modifies, next, MachineState.writeOperand, MachineState.write, Ne.symm]
     · rfl
   | _ =>
     simp_all [modifies, stepOp, next, MachineState.write, Ne.symm] <;>

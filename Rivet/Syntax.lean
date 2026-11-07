@@ -6,12 +6,12 @@ def word : Nat := 2^64
 inductive Reg where
   | rax | rbx | rcx | rdx | rsi | rdi | rbp | rsp
   | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 -- Widths are expressed by x86 register aliases and the memory operand type.
 inductive Reg32 where
   | eax | ebx | ecx | edx | esi | edi | ebp | esp
   | r8d | r9d | r10d | r11d | r12d | r13d | r14d | r15d
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 @[simp] def Reg32.parent : Reg32 → Reg
   | .eax => .rax
   | .ebx => .rbx
@@ -33,7 +33,7 @@ inductive Reg32 where
 /-- Low-byte aliases; legacy high-byte registers are not supported. -/
 inductive Reg8 where
   | al | bl | cl | dl | sil | dil | bpl | spl | r8l | r9l | r10l | r11l | r12l | r13l | r14l | r15l
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 @[simp] def Reg8.parent : Reg8 → Reg
   | .al => .rax
   | .bl => .rbx
@@ -53,7 +53,7 @@ inductive Reg8 where
   | .r15l => .r15
 inductive Reg16 where
   | ax | bx | cx | dx | si | di | bp | sp | r8w | r9w | r10w | r11w | r12w | r13w | r14w | r15w
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 @[simp] def Reg16.parent : Reg16 → Reg
   | .ax => .rax
   | .bx => .rbx
@@ -76,15 +76,15 @@ inductive Reg16 where
 inductive Xmm where
   | xmm0 | xmm1 | xmm2 | xmm3 | xmm4 | xmm5 | xmm6 | xmm7
   | xmm8 | xmm9 | xmm10 | xmm11 | xmm12 | xmm13 | xmm14 | xmm15
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 inductive XmmMove where
   | movups | movdqu
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 inductive Width where
   | byte | word | dword | qword
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 def Width.bytes : Width → Nat
   | .byte => 1 | .word => 2 | .dword => 4 | .qword => 8
@@ -93,7 +93,7 @@ def Width.bits (width : Width) : Nat := 8 * width.bytes
 
 inductive Scale where
   | one | two | four | eight
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 def Scale.value : Scale → Nat
   | .one => 1 | .two => 2 | .four => 4 | .eight => 8
@@ -104,9 +104,7 @@ structure Address where
   index : Option Reg := none
   scale : Scale := .one
   displacement : Int := 0
-  deriving DecidableEq, Repr
-
-def Address.baseOnly (register : Reg) : Address := { base := some register }
+  deriving DecidableEq
 
 inductive Operand where
   | reg8 (register : Reg8)
@@ -115,17 +113,12 @@ inductive Operand where
   | reg64 (register : Reg)
   | memory (width : Width) (address : Address)
   | immediate (value : Int)
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 def Operand.width : Operand → Option Width
   | .reg8 _ => some .byte | .reg16 _ => some .word
   | .reg32 _ => some .dword | .reg64 _ => some .qword
   | .memory width _ => some width | .immediate _ => none
-
-def Operand.register : Operand → Option Reg
-  | .reg8 register => some register.parent | .reg16 register => some register.parent
-  | .reg32 register => some register.parent | .reg64 register => some register
-  | _ => none
 
 /-- MOV requires equal widths, no memory-to-memory transfer, and an encodable immediate. -/
 def validMove (destination source : Operand) : Bool :=
@@ -141,7 +134,7 @@ def validMove (destination source : Operand) : Bool :=
 /-- Scalar operations sharing the same width and operand rules. -/
 inductive BinaryOp where
   | add | sub | sbb | cmp | test | and | or | xor
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 def BinaryOp.writes : BinaryOp → Bool
   | .cmp | .test => false
@@ -158,7 +151,7 @@ def validBinary (operation : BinaryOp) (destination source : Operand) : Bool :=
 /-- Conditions supported by the modeled zero, carry, and sign flags. -/
 inductive Condition where
   | equal | notEqual | below | aboveOrEqual | belowOrEqual | above | sign
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 def validConditionalMove (destination source : Operand) : Bool :=
   match destination with
@@ -175,7 +168,7 @@ def validImul (destination source : Operand) (immediate : Option Int) : Bool :=
 
 inductive ShiftOp where
   | shl | shr
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 
 /-- The immediate-count register forms needed by LZ4. -/
 def validShift (destination : Operand) (count : Nat) : Bool :=
@@ -205,14 +198,19 @@ inductive Op where
   | pop (destination : Reg)
   | call (target : Nat)
   | ret
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 /-- Whether an instruction can write a register, including implicit RSP updates. -/
-def modifies : Op → Reg → Bool
+def modifies (operation : Op) (register : Reg) : Bool :=
+  let destinationRegister : Operand → Option Reg
+    | .reg8 register => some register.parent | .reg16 register => some register.parent
+    | .reg32 register => some register.parent | .reg64 register => some register
+    | _ => none
+  match operation, register with
   | .movzx destination _, register => destination.parent == register
-  | .binary operation destination _, register => operation.writes && destination.register == some register
+  | .binary operation destination _, register => operation.writes && destinationRegister destination == some register
   | .shift _ destination _, register | .imul destination _ _, register
   | .not destination, register | .mov destination _, register | .setcc _ destination, register
-  | .cmovcc _ destination _, register => destination.register == some register
+  | .cmovcc _ destination _, register => destinationRegister destination == some register
   | .lea destination _, register | .movsxd destination _, register
   | .inc destination, register | .dec destination, register => destination == register
   | .pop destination, register => register == .rsp || destination == register
@@ -223,7 +221,7 @@ structure Instruction where
   address : Nat
   length : Nat
   op : Op
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 abbrev Program := List Instruction
 
 /-- Fetch at an exact byte address. Invalid addresses or x86 instruction lengths do not execute. -/
@@ -237,5 +235,5 @@ def Program.nextAddress (program : Program) (address : Nat) : Nat :=
 structure Access where
   address : Nat
   size : Nat
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 end Rivet
