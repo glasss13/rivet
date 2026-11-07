@@ -17,6 +17,7 @@ deriving instance ToExpr for Scale
 deriving instance ToExpr for Address
 deriving instance ToExpr for BinaryOp
 deriving instance ToExpr for Operand
+deriving instance ToExpr for Condition
 deriving instance ToExpr for Op
 deriving instance ToExpr for Instruction
 

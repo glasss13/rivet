@@ -208,6 +208,16 @@ def parseMove (operands : String) : Except String Op := do
     return .mov destination source
   | _ => throw "MOV requires two operands"
 
+def parseCondition : String → Except String Condition
+  | "e" | "z" => .ok .equal
+  | "ne" | "nz" => .ok .notEqual
+  | "b" => .ok .below
+  | "ae" => .ok .aboveOrEqual
+  | "be" => .ok .belowOrEqual
+  | "a" => .ok .above
+  | "s" => .ok .sign
+  | suffix => .error ("unsupported condition: " ++ suffix)
+
 def parseOp (labels : Labels) (source : String) : Except String Op := do
   let parts := tokens source
   let mnemonic := parts.headD ""
@@ -222,6 +232,27 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
       unless validBinary operation destination source do throw "invalid scalar operands or immediate"
       return .binary operation destination source
     | _ => throw "scalar instruction requires two operands"
+  else if mnemonic.toList.take 4 == ['c', 'm', 'o', 'v'] then
+    let condition ← parseCondition (String.ofList (mnemonic.toList.drop 4))
+    match (splitChars ',' (joinTokens parts.tail).toList).map String.ofList with
+    | [destination, source] =>
+      let destination ← parseOperand destination
+      let source ← parseOperand source
+      unless validConditionalMove destination source do throw "CMOV requires a 16/32/64-bit register and matching register or memory source"
+      return .cmovcc condition destination source
+    | _ => throw "CMOV requires two operands"
+  else if mnemonic.toList.take 3 == ['s', 'e', 't'] then
+    let condition ← parseCondition (String.ofList (mnemonic.toList.drop 3))
+    let destination ← parseOperand (joinTokens parts.tail)
+    unless destination.width == some .byte do throw "SET requires a byte register or memory destination"
+    return .setcc condition destination
+  else if mnemonic.toList.head? == some 'j' then
+    match parts with
+    | [_, labelName] =>
+      let destination ← target labels labelName
+      if mnemonic == "jmp" then return .jmp destination
+      return .jcc (← parseCondition (String.ofList (mnemonic.toList.drop 1))) destination
+    | _ => throw "jump requires a label"
   else match parts with
   | "lea" :: destination :: "," :: address =>
     return .lea (← parseRegister destination) (← parseAddress (joinTokens address))
@@ -242,9 +273,6 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
     | _ => throw "MOVABS requires a 64-bit register and immediate"
   | ["inc", destination] => return .inc (← parseRegister destination)
   | ["dec", destination] => return .dec (← parseRegister destination)
-  | ["jb", labelName] => return .jb (← target labels labelName)
-  | ["jz", labelName] => return .jz (← target labels labelName)
-  | ["jnz", labelName] => return .jnz (← target labels labelName)
   | ["ret"] => pure .ret
   | _ => .error ("unsupported instruction: " ++ source)
 
@@ -288,7 +316,7 @@ def parse (source : String) : Except String Program := do
     | .ok operation => pure (Instruction.mk operation lineNumber)
     | .error message => .error ("line " ++ toString lineNumber ++ ": " ++ message))
   if program.any (fun instruction => match instruction.op with
-      | .jb targetIndex | .jz targetIndex | .jnz targetIndex => targetIndex ≥ program.length
+      | .jmp targetIndex | .jcc _ targetIndex => targetIndex ≥ program.length
       | _ => false) then throw "branch target outside function"
   return program
 end Rivet

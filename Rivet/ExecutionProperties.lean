@@ -27,6 +27,20 @@ namespace Rivet
     (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
+@[simp] private theorem writeOperand_readHistory (state : MachineState) (operand : Operand)
+    (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
+  cases operand <;> simp [MachineState.writeOperand, MachineState.write]
+  rename_i width address
+  unfold MachineState.writeMemory
+  generalize (address.evaluate state.registers).toNat = start
+  generalize List.range width.bytes = offsets
+  induction offsets generalizing state with
+  | nil => rfl
+  | cons offset offsets inductionHypothesis =>
+    simpa [List.foldl, MachineState.storeByte] using inductionHypothesis
+      (state.storeByte (start + offset)
+        ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩)
+
 theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (unchanged : modifies operation register = false) :
     (stepOp operation state).registers register = state.registers register := by
   cases operation with
@@ -37,7 +51,7 @@ theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (u
       · cases destination <;> simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
       · rfl
     · rfl
-  | mov destination source =>
+  | mov destination source | setcc _ destination | cmovcc _ destination source =>
     simp only [stepOp]
     split
     · cases destination <;>
@@ -87,7 +101,8 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
         split
         · cases destination <;> cases source <;> simp_all [next, MachineState.recordRead]
         · exact recorded
-      | mov destination source | movzx destination source | movsxd destination source =>
+      | mov destination source | movzx destination source | movsxd destination source
+      | cmovcc _ destination source =>
         simp only [stepOp]
         split
         · cases source <;> simp_all [next, MachineState.recordRead, MachineState.write]
