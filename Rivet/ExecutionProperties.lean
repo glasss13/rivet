@@ -42,7 +42,7 @@ namespace Rivet
     (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
-theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (undefinedFlags : FlagValues) (unchanged : modifies operation register = false) :
+theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} (unchanged : modifies operation register = false) :
     (stepOp operation state undefinedFlags).registers register = state.registers register := by
   cases operation with
   | binary operation destination source =>
@@ -62,7 +62,7 @@ theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (u
     simp_all [modifies, stepOp, next, MachineState.write, Ne.symm] <;>
       split <;> simp_all [Ne.symm]
 
-theorem step_preserves (program : Program) (state : MachineState) (register : Reg) (undefinedFlags : FlagValues)
+theorem step_preserves (program : Program) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues}
     (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
     (step program state undefinedFlags).registers register = state.registers register := by
   unfold step
@@ -75,22 +75,22 @@ theorem step_preserves (program : Program) (state : MachineState) (register : Re
   · rfl
 
 /-- A register untouched by every instruction is preserved for any amount of fuel. -/
-theorem execute_preserves (program : Program) (steps : Nat) (state : MachineState) (register : Reg) (choices : FlagChoices)
+theorem execute_preserves (program : Program) (steps : Nat) (state : MachineState) (register : Reg) {choices : FlagChoices}
     (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
     (execute program steps state choices).registers register = state.registers register := by
   induction steps generalizing state choices with
   | zero => rfl
-  | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_preserves program state register (choices 0) unchanged]
+  | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_preserves program state register unchanged]
 
-theorem execute_stopped (program : Program) (steps : Nat) (state : MachineState) (choices : FlagChoices) (stopped : state.status.isRunning = false) :
+theorem execute_stopped (program : Program) (steps : Nat) (state : MachineState) {choices : FlagChoices} (stopped : state.status.isRunning = false) :
     execute program steps state choices = state := by
   have stepUnchanged (undefinedFlags : FlagValues) : step program state undefinedFlags = state := by
     cases status : state.status <;> simp_all [step, ExecutionStatus.isRunning]
   induction steps generalizing choices with
   | zero => rfl
-  | succ steps inductionHypothesis => simpa [execute, stepUnchanged] using inductionHypothesis (choices.drop 1)
+  | succ steps inductionHypothesis => simpa [execute, stepUnchanged] using inductionHypothesis (choices := choices.drop 1)
 
-theorem step_reads_monotone (program : Program) (state : MachineState) (access : Access) (undefinedFlags : FlagValues)
+theorem step_reads_monotone (program : Program) (state : MachineState) (access : Access) {undefinedFlags : FlagValues}
     (recorded : access ∈ state.readHistory) : access ∈ (step program state undefinedFlags).readHistory := by
   unfold step
   split
@@ -113,11 +113,11 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
     · exact recorded
   · exact recorded
 
-theorem execute_reads_monotone (program : Program) (state : MachineState) (steps : Nat) (access : Access) (choices : FlagChoices)
+theorem execute_reads_monotone (program : Program) (state : MachineState) (steps : Nat) (access : Access) {choices : FlagChoices}
     (recorded : access ∈ state.readHistory) : access ∈ (execute program steps state choices).readHistory := by
   induction steps generalizing state choices with
   | zero => exact recorded
   | succ steps inductionHypothesis =>
-    exact inductionHypothesis (step program state (choices 0)) (choices.drop 1) (step_reads_monotone program state access (choices 0) recorded)
+    exact inductionHypothesis (step program state (choices 0)) (step_reads_monotone program state access recorded)
 
 end Rivet
