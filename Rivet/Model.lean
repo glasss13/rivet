@@ -158,9 +158,24 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
   | .above => !state.carryFlag && !state.zeroFlag
   | .sign => state.signFlag
 
-def stepOp (operation : Op) (state : MachineState) (_undefinedFlags : FlagValues) : MachineState :=
+def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
   | .binary operation destination source => state.binary operation destination source
+  | .imul destination source immediate =>
+    if validImul destination source immediate && state.canRead source then
+      let width := (destination.width.getD .qword).bits
+      let sourceValue := (state.readOperand source).setWidth width
+      let multiplier := match immediate with
+        | none => (state.readOperand destination).setWidth width
+        | some value => BitVec.ofInt width value
+      let product := sourceValue.toInt * multiplier.toInt
+      let result := BitVec.ofInt width product
+      next { state.writeOperand destination (result.setWidth 64) with
+        carryFlag := result.toInt != product
+        signFlag := undefinedFlags.signFlag
+        zeroFlag := undefinedFlags.zeroFlag
+        readHistory := (state.recordRead source).readHistory }
+    else { state with status := .fault }
   | .lea destination address => next (state.write destination (address.evaluate state.registers))
   | .movzx destination source =>
     if (source.width == some .byte || source.width == some .word) && state.canRead source then

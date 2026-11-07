@@ -155,12 +155,21 @@ def validConditionalMove (destination source : Operand) : Bool :=
   | .reg16 _ | .reg32 _ | .reg64 _ => source.width == destination.width
   | _ => false
 
+/-- Truncating two/three-operand IMUL: a 16/32/64-bit register, matching
+register/memory source, and optionally an encodable immediate multiplier. -/
+def validImul (destination source : Operand) (immediate : Option Int) : Bool :=
+  validConditionalMove destination source &&
+    match immediate with
+    | none => true
+    | some value => validBinary .add destination (.immediate value)
+
 inductive Op where
   | binary (operation : BinaryOp) (destination source : Operand)
   | lea (destination : Reg) (source : Address)
   | movzx (destination : Reg32) (source : Operand)
   | movsxd (destination : Reg) (source : Operand)
   | mov (destination source : Operand)
+  | imul (destination source : Operand) (immediate : Option Int)
   | not (destination : Operand)
   | inc (destination : Reg)
   | dec (destination : Reg)
@@ -176,6 +185,7 @@ inductive Op where
 def modifies : Op → Reg → Bool
   | .movzx destination _, register => destination.parent == register
   | .binary operation destination _, register => operation.writes && destination.register == some register
+  | .imul destination _ _, register
   | .not destination, register | .mov destination _, register | .setcc _ destination, register
   | .cmovcc _ destination _, register => destination.register == some register
   | .lea destination _, register | .movsxd destination _, register
