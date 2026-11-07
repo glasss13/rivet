@@ -93,18 +93,20 @@ def MachineState.recordRead (state : MachineState) : Operand → MachineState
       [⟨(address.evaluate state.registers).toNat, width.bytes⟩] }
   | _ => state
 
-def BinaryOp.result (operation : BinaryOp) (left right : BitVec width) : BitVec width :=
+def BinaryOp.result (operation : BinaryOp) (left right : BitVec width) (carryIn : Bool) : BitVec width :=
   match operation with
   | .add => left + right
   | .sub | .cmp => left - right
+  | .sbb => left - right - (if carryIn then 1 else 0)
   | .and | .test => left &&& right
   | .or => left ||| right
   | .xor => left ^^^ right
 
-def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec width) : Bool :=
+def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec width) (carryIn : Bool) : Bool :=
   match operation with
   | .add => result < left
   | .sub | .cmp => left < right
+  | .sbb => left < right || (carryIn && left == right)
   | _ => false
 
 /-- Read both operands from the initial state; commit flags, memory, and history only on success. -/
@@ -114,12 +116,12 @@ def MachineState.binary (state : MachineState) (operation : BinaryOp) (destinati
     let width := destination.width.getD .qword
     let left := (state.readOperand destination).setWidth width.bits
     let right := (state.readOperand source).setWidth width.bits
-    let result := operation.result left right
+    let result := operation.result left right state.carryFlag
     let updated := if operation.writes then state.writeOperand destination (result.setWidth 64) else state
     next { updated with
       zeroFlag := result == 0
       signFlag := result.msb
-      carryFlag := operation.carry left right result,
+      carryFlag := operation.carry left right result state.carryFlag,
       readHistory := ((state.recordRead destination).recordRead source).readHistory }
   else { state with status := .fault }
 
@@ -152,6 +154,11 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
       -- Read and address calculation use the pre-instruction registers, including aliases.
       let result := state.writeOperand destination (state.readOperand source)
       next { result with readHistory := (state.recordRead source).readHistory }
+    else { state with status := .fault }
+  | .not destination =>
+    if state.canRead destination && state.canWrite destination then
+      next { state.writeOperand destination (~~~(state.readOperand destination)) with
+        readHistory := (state.recordRead destination).readHistory }
     else { state with status := .fault }
   | .inc destination =>
     let result := state.registers destination + 1

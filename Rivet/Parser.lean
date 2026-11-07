@@ -225,6 +225,7 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
   let mnemonic := parts.headD ""
   let operation : Option BinaryOp := match mnemonic with
     | "add" => some .add | "sub" => some .sub | "cmp" => some .cmp | "test" => some .test
+    | "sbb" => some .sbb
     | "and" => some .and | "or" => some .or | "xor" => some .xor | _ => none
   if let some operation := operation then
     match (splitChars ',' (joinTokens parts.tail).toList).map String.ofList with
@@ -273,6 +274,10 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
     match ← parseMove (joinTokens operands) with
     | .mov (.reg64 destination) (.immediate value) => return .mov (.reg64 destination) (.immediate value)
     | _ => throw "MOVABS requires a 64-bit register and immediate"
+  | "not" :: operands =>
+    let destination ← parseOperand (joinTokens operands)
+    unless destination.width.isSome do throw "NOT requires a register or sized memory operand"
+    return .not destination
   | ["inc", destination] => return .inc (← parseRegister destination)
   | ["dec", destination] => return .dec (← parseRegister destination)
   | ["push", source] => return .push (← parseRegister source)

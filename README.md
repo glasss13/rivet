@@ -42,7 +42,9 @@ def program : Program := assembly% source
 
 `lea r64, [address]` computes an address without reading memory or checking access permissions. `movzx r32, source` zero-extends a byte or word register/memory source; `movsxd r64, source` sign-extends a dword register/memory source. All three preserve flags. Extension loads check the full memory range and record its original effective address.
 
-`add`, `sub`, `cmp`, `test`, `and`, `or`, and `xor` support 8/16/32/64-bit register, immediate, and memory operands. Widths must match, at most one operand may be memory, and 64-bit forms accept only signed 32-bit immediates. TEST requires its memory operand, if any, first. CMP and TEST update flags without writing their operands. Arithmetic and logic memory destinations require read and write permission; CMP and TEST require only read permission.
+`add`, `sub`, `sbb`, `cmp`, `test`, `and`, `or`, and `xor` support 8/16/32/64-bit register, immediate, and memory operands. Widths must match, at most one operand may be memory, and 64-bit forms accept only signed 32-bit immediates. TEST requires its memory operand, if any, first. SBB subtracts the source and incoming CF, reporting unsigned borrow in CF. CMP and TEST update flags without writing their operands. Arithmetic and logic memory destinations require read and write permission; CMP and TEST require only read permission.
+
+`not` complements an 8/16/32/64-bit register or memory operand and preserves flags. A memory destination requires both read and write permission.
 
 `jmp` branches to a label. `jcc`, `setcc`, and `cmovcc` share the conditions E/Z (equal), NE/NZ (not equal), B (below), AE (above or equal), BE (below or equal), A (above), and S (sign), written as ordinary mnemonics such as `ja`, `sete`, and `cmovne`. SETcc writes 0 or 1 to a byte register or byte memory operand. CMOVcc accepts a 16/32/64-bit register destination and a matching register or memory source. Its memory source is read and checked even when the condition is false; a 32-bit destination clears its upper 32 bits in either case. All these instructions preserve flags.
 

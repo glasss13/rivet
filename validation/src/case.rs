@@ -19,6 +19,7 @@ const MAX_PROGRAM_STEPS: usize = 64;
 pub enum BinaryOp {
     Add,
     Sub,
+    Sbb,
     Cmp,
     Test,
     And,
@@ -92,6 +93,9 @@ pub enum Operation {
         destination: Register64,
     },
     Ret,
+    Not {
+        destination: Operand,
+    },
     Push {
         source: Register64,
     },
@@ -117,6 +121,9 @@ impl Operation {
             | Self::Mov {
                 source: Operand::Memory { address, .. },
                 ..
+            }
+            | Self::Not {
+                destination: Operand::Memory { address, .. },
             }
             | Self::Setcc {
                 destination: Operand::Memory { address, .. },
@@ -174,6 +181,7 @@ impl Operation {
             Self::Inc { destination } => format!("inc {destination}"),
             Self::Dec { destination } => format!("dec {destination}"),
             Self::Ret => "ret".into(),
+            Self::Not { destination } => format!("not {destination}"),
             Self::Push { source } => format!("push {source}"),
             Self::Pop { destination } => format!("pop {destination}"),
         }
@@ -442,8 +450,14 @@ fn random_instruction(
             destination: if whole_program { Rsi } else { register },
         },
         11 => Operation::Ret,
-        12 => Operation::Push { source: register },
-        13 => Operation::Pop {
+        12 => {
+            let width = sample(generator, Width::VARIANTS);
+            Operation::Not {
+                destination: register_or_memory(generator, width, whole_program),
+            }
+        }
+        13 => Operation::Push { source: register },
+        14 => Operation::Pop {
             destination: register,
         },
         _ => unreachable!(),
