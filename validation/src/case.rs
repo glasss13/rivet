@@ -513,11 +513,7 @@ fn random_instruction(
                 sample(generator, &[Width::Dword, Width::Qword]),
                 if whole_program { Rcx } else { register },
             ),
-            count: if generator.bool() {
-                sample(generator, &[0, 1, 2, 3, 4, 16, 31, 32, 33, 63, 64, 65, 255])
-            } else {
-                generator.u8(..)
-            },
+            count: generator.u8(..),
         },
         15 => Operation::Push { source: register },
         16 => Operation::Pop {
