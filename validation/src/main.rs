@@ -1,5 +1,5 @@
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("rivet-check currently requires x86-64 Linux");
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
+compile_error!("rivet-check currently requires x86-64 Linux with glibc");
 
 mod case;
 mod native;

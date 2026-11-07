@@ -72,6 +72,16 @@ inductive Reg16 where
   | .r14w => .r14
   | .r15w => .r15
 
+/-- The sixteen legacy 128-bit XMM registers available in 64-bit mode. -/
+inductive Xmm where
+  | xmm0 | xmm1 | xmm2 | xmm3 | xmm4 | xmm5 | xmm6 | xmm7
+  | xmm8 | xmm9 | xmm10 | xmm11 | xmm12 | xmm13 | xmm14 | xmm15
+  deriving DecidableEq, Repr
+
+inductive XmmMove where
+  | movups | movdqu
+  deriving DecidableEq, Repr
+
 inductive Width where
   | byte | word | dword | qword
   deriving DecidableEq, Repr
@@ -172,6 +182,8 @@ def validShift (destination : Operand) (count : Nat) : Bool :=
   (match destination with | .reg32 _ | .reg64 _ => true | _ => false) && count < 256
 
 inductive Op where
+  | loadXmm (operation : XmmMove) (destination : Xmm) (source : Address)
+  | storeXmm (operation : XmmMove) (destination : Address) (source : Xmm)
   | binary (operation : BinaryOp) (destination source : Operand)
   | lea (destination : Reg) (source : Address)
   | movzx (destination : Reg32) (source : Operand)

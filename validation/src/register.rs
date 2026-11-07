@@ -91,6 +91,37 @@ pub enum Register8 {
     R15b,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Display, VariantArray, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum Xmm {
+    Xmm0,
+    Xmm1,
+    Xmm2,
+    Xmm3,
+    Xmm4,
+    Xmm5,
+    Xmm6,
+    Xmm7,
+    Xmm8,
+    Xmm9,
+    Xmm10,
+    Xmm11,
+    Xmm12,
+    Xmm13,
+    Xmm14,
+    Xmm15,
+}
+
+// Four little-endian 32-bit words per XMM register, matching Linux's register set.
+pub(crate) fn xmm_values(registers: &libc::user_fpregs_struct) -> [[u32; 4]; 16] {
+    registers.xmm_space.as_chunks::<4>().0.try_into().unwrap()
+}
+
+pub(crate) fn set_xmm_registers(registers: &mut libc::user_fpregs_struct, values: [[u32; 4]; 16]) {
+    registers.xmm_space.copy_from_slice(values.as_flattened());
+}
+
 pub(crate) fn register_values(registers: &libc::user_regs_struct) -> [u64; 16] {
     [
         registers.rax,

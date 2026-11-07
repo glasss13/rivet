@@ -9,6 +9,8 @@ public meta section
 open Lean Meta Elab Term
 
 deriving instance ToExpr for Reg
+deriving instance ToExpr for Xmm
+deriving instance ToExpr for XmmMove
 deriving instance ToExpr for Reg32
 deriving instance ToExpr for Reg8
 deriving instance ToExpr for Reg16
