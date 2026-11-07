@@ -39,16 +39,6 @@ pub struct Address {
     pub scale: Scale,
     pub displacement: i32,
 }
-impl Address {
-    pub fn base_only(base: Register64) -> Self {
-        Self {
-            base: Some(base),
-            index: None,
-            scale: Scale::One,
-            displacement: 0,
-        }
-    }
-}
 impl fmt::Display for Address {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "[")?;

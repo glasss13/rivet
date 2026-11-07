@@ -212,10 +212,18 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
   match tokens source with
   | ["xor", destination, ",", operand] => return .xor (← parseRegister32 destination) (← parseRegister32 operand)
   | ["test", left, ",", right] => return .test (← parseRegister left) (← parseRegister right)
-  | "movzx" :: destination :: "," :: memory =>
-    match ← parseOperand (joinTokens memory) with
-    | .memory .byte address => return .movzx (← parseRegister32 destination) address
-    | _ => throw "MOVZX currently requires a byte memory source"
+  | "lea" :: destination :: "," :: address =>
+    return .lea (← parseRegister destination) (← parseAddress (joinTokens address))
+  | "movzx" :: destination :: "," :: source =>
+    let source ← parseOperand (joinTokens source)
+    unless source.width == some .byte || source.width == some .word do
+      throw "MOVZX requires a byte or word register or memory source"
+    return .movzx (← parseRegister32 destination) source
+  | "movsxd" :: destination :: "," :: source =>
+    let source ← parseOperand (joinTokens source)
+    unless source.width == some .dword do
+      throw "MOVSXD requires a dword register or memory source"
+    return .movsxd (← parseRegister destination) source
   | "mov" :: operands => parseMove (joinTokens operands)
   | "movabs" :: operands =>
     match ← parseMove (joinTokens operands) with

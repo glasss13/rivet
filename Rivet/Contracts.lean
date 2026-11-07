@@ -223,7 +223,7 @@ theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : 
 
 theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
     (location : initial.status = .running index) (allowed : initial.readable (initial.registers base).toNat = true)
-    (code : InstructionAt program index (.movzx destination (Address.baseOnly base)) := by decide +kernel) :
+    (code : InstructionAt program index (.movzx destination (.memory .byte (Address.baseOnly base))) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write destination.parent (BitVec.ofNat 64 (initial.memory (initial.registers base).toNat).val) with
       status := .running (index+1), readHistory := initial.readHistory ++ [⟨(initial.registers base).toNat,1⟩] }) := by
   constructor
@@ -231,7 +231,13 @@ theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base 
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, Address.evaluate, Address.baseOnly, Scale.value] <;> try rfl
+  have bound : (initial.registers base).toNat + 1 ≤ word := by
+    have := (initial.registers base).isLt
+    unfold word
+    omega
+  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, Address.evaluate, Address.baseOnly, Scale.value,
+    Operand.width, MachineState.canRead, permits, Width.bytes, MachineState.readOperand,
+    readMemory, MachineState.recordRead] <;> try rfl
 
 theorem add (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)

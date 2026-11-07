@@ -100,10 +100,16 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
     next { state.write destination.parent (result.setWidth 64) with zeroFlag := result == 0, carryFlag := false }
   | .test leftRegister rightRegister =>
     next { state with zeroFlag := (state.registers leftRegister &&& state.registers rightRegister) == 0, carryFlag := false }
-  | .movzx destination memoryOperand =>
-    let address := (memoryOperand.evaluate state.registers).toNat
-    if state.readable address then
-      next { state.write destination.parent (BitVec.ofNat 64 (state.memory address).val) with readHistory := state.readHistory ++ [⟨address,1⟩] }
+  | .lea destination address => next (state.write destination (address.evaluate state.registers))
+  | .movzx destination source =>
+    if (source.width == some .byte || source.width == some .word) && state.canRead source then
+      next { state.write destination.parent (state.readOperand source) with
+        readHistory := (state.recordRead source).readHistory }
+    else { state with status := .fault }
+  | .movsxd destination source =>
+    if source.width == some .dword && state.canRead source then
+      next { state.write destination ((state.readOperand source).setWidth 32 |>.signExtend 64) with
+        readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .mov destination source =>
     if validMove destination source && state.canRead source && state.canWrite destination then

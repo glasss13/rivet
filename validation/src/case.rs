@@ -24,9 +24,17 @@ pub enum Operation {
         left: Register64,
         right: Register64,
     },
+    Lea {
+        destination: Register64,
+        source: Address,
+    },
     Movzx {
         destination: Register32,
-        source: Address,
+        source: Operand,
+    },
+    Movsxd {
+        destination: Register64,
+        source: Operand,
     },
     Mov {
         destination: Operand,
@@ -60,12 +68,19 @@ pub enum Operation {
 impl Operation {
     pub fn memory_address(&self) -> Option<&Address> {
         match self {
-            Self::Movzx { source, .. } => Some(source),
             Self::Mov {
                 destination: Operand::Memory { address, .. },
                 ..
             }
             | Self::Mov {
+                source: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Movzx {
+                source: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Movsxd {
                 source: Operand::Memory { address, .. },
                 ..
             } => Some(address),
@@ -82,7 +97,15 @@ impl Operation {
             Self::Movzx {
                 destination,
                 source,
-            } => format!("movzx {destination}, BYTE PTR {source}"),
+            } => format!("movzx {destination}, {source}"),
+            Self::Movsxd {
+                destination,
+                source,
+            } => format!("movsxd {destination}, {source}"),
+            Self::Lea {
+                destination,
+                source,
+            } => format!("lea {destination}, {source}"),
             Self::Mov {
                 destination,
                 source,
@@ -161,11 +184,13 @@ pub struct Snapshot {
 }
 
 fn random_word(generator: &mut fastrand::Rng) -> u64 {
-    const EDGES: [u64; 10] = [
+    const EDGES: [u64; 12] = [
         0,
         1,
         255,
         256,
+        (1 << 31) - 1,
+        1 << 31,
         u32::MAX as u64,
         1 << 32,
         (1 << 63) - 1,
@@ -272,6 +297,22 @@ fn random_move(generator: &mut fastrand::Rng, whole_program: bool) -> Operation 
     }
 }
 
+fn extension_source(generator: &mut fastrand::Rng, width: Width, whole_program: bool) -> Operand {
+    if generator.bool() {
+        Operand::Memory {
+            width,
+            address: random_address(generator, whole_program),
+        }
+    } else {
+        let register = if whole_program {
+            Rdx
+        } else {
+            sample(generator, Register64::VARIANTS)
+        };
+        Operand::register(width, register)
+    }
+}
+
 fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
     if generator.bool() {
         return random_move(generator, false);
@@ -286,10 +327,13 @@ fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
         1 => binary_instruction(generator, Register64::VARIANTS, |left, right| {
             Operation::Test { left, right }
         }),
-        2 => Operation::Movzx {
-            destination: sample(generator, Register32::VARIANTS),
-            source: random_address(generator, false),
-        },
+        2 => {
+            let width = sample(generator, &[Width::Byte, Width::Word]);
+            Operation::Movzx {
+                destination: sample(generator, Register32::VARIANTS),
+                source: extension_source(generator, width, false),
+            }
+        }
         3 => binary_instruction(generator, Register64::VARIANTS, |destination, source| {
             Operation::Add {
                 destination,
@@ -310,6 +354,14 @@ fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
         }),
         10 => Operation::Jb { target: 2 },
         11 => Operation::Ret,
+        12 => Operation::Lea {
+            destination: sample(generator, Register64::VARIANTS),
+            source: random_address(generator, false),
+        },
+        13 => Operation::Movsxd {
+            destination: sample(generator, Register64::VARIANTS),
+            source: extension_source(generator, Width::Dword, false),
+        },
         _ => unreachable!(),
     }
 }
@@ -325,10 +377,13 @@ fn random_program_instruction(generator: &mut fastrand::Rng, target: usize) -> O
             left: Rsi,
             right: Rsi,
         },
-        2 => Operation::Movzx {
-            destination: Edx,
-            source: Address::base_only(Rdi),
-        },
+        2 => {
+            let width = sample(generator, &[Width::Byte, Width::Word]);
+            Operation::Movzx {
+                destination: Edx,
+                source: extension_source(generator, width, true),
+            }
+        }
         3 => Operation::Add {
             destination: Rax,
             source: Rdx,
@@ -344,6 +399,14 @@ fn random_program_instruction(generator: &mut fastrand::Rng, target: usize) -> O
         },
         10 => Operation::Jb { target },
         11 => Operation::Ret,
+        12 => Operation::Lea {
+            destination: Rcx,
+            source: random_address(generator, true),
+        },
+        13 => Operation::Movsxd {
+            destination: Rdx,
+            source: extension_source(generator, Width::Dword, true),
+        },
         _ => unreachable!(),
     }
 }
