@@ -221,7 +221,6 @@ structure Instruction where
   address : Nat
   length : Nat
   op : Op
-  line : Nat := 0
   deriving DecidableEq, Repr
 abbrev Program := List Instruction
 

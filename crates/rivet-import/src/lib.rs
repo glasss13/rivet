@@ -26,7 +26,6 @@ pub fn decode(bytes: &[u8], base: u64) -> Result<Vec<Instruction>> {
             address: instruction.ip(),
             length: instruction.len() as u64,
             op,
-            line: 0,
         });
     }
     for instruction in &program {

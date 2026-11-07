@@ -147,5 +147,4 @@ pub struct Instruction {
     pub address: u64,
     pub length: u64,
     pub op: Operation,
-    pub line: u64,
 }
