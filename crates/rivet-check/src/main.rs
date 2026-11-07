@@ -122,7 +122,7 @@ fn run(args: Arguments) -> Result<u8> {
 
     let mut generator = fastrand::Rng::with_seed(args.seed);
     for idx in 0..args.cases {
-        let case = case::generate(&mut generator);
+        let case = case::generate(&mut generator)?;
         if let Some(reason) =
             check(&model, &case).with_context(|| format!("case {idx}, seed {}", args.seed))?
         {

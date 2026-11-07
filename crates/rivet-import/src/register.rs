@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString, VariantArray};
+use strum::EnumString;
 
 // Order matches the register-value arrays and Lean's registerOrder.
-#[derive(
-    Clone, Copy, Debug, Serialize, Deserialize, Display, EnumString, VariantArray, PartialEq, Eq,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register64 {
@@ -26,9 +24,7 @@ pub enum Register64 {
     R15,
 }
 
-#[derive(
-    Clone, Copy, Debug, Serialize, Deserialize, Display, EnumString, VariantArray, PartialEq, Eq,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register32 {
@@ -50,9 +46,7 @@ pub enum Register32 {
     R15d,
 }
 
-#[derive(
-    Clone, Copy, Debug, Serialize, Deserialize, Display, EnumString, VariantArray, PartialEq, Eq,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register16 {
@@ -74,9 +68,7 @@ pub enum Register16 {
     R15w,
 }
 
-#[derive(
-    Clone, Copy, Debug, Serialize, Deserialize, Display, EnumString, VariantArray, PartialEq, Eq,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register8 {
@@ -88,27 +80,17 @@ pub enum Register8 {
     Dil,
     Bpl,
     Spl,
-    #[strum(serialize = "r8b", serialize = "r8l", to_string = "r8b")]
     R8l,
-    #[strum(serialize = "r9b", serialize = "r9l", to_string = "r9b")]
     R9l,
-    #[strum(serialize = "r10b", serialize = "r10l", to_string = "r10b")]
     R10l,
-    #[strum(serialize = "r11b", serialize = "r11l", to_string = "r11b")]
     R11l,
-    #[strum(serialize = "r12b", serialize = "r12l", to_string = "r12b")]
     R12l,
-    #[strum(serialize = "r13b", serialize = "r13l", to_string = "r13b")]
     R13l,
-    #[strum(serialize = "r14b", serialize = "r14l", to_string = "r14b")]
     R14l,
-    #[strum(serialize = "r15b", serialize = "r15l", to_string = "r15b")]
     R15l,
 }
 
-#[derive(
-    Clone, Copy, Debug, Serialize, Deserialize, Display, EnumString, VariantArray, PartialEq, Eq,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Xmm {
