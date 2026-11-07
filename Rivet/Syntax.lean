@@ -130,7 +130,7 @@ def validMove (destination source : Operand) : Bool :=
 
 /-- Scalar operations sharing the same width and operand rules. -/
 inductive BinaryOp where
-  | add | sub | cmp | test | and | or | xor
+  | add | sub | sbb | cmp | test | and | or | xor
   deriving DecidableEq, Repr
 
 def BinaryOp.writes : BinaryOp → Bool
@@ -161,6 +161,7 @@ inductive Op where
   | movzx (destination : Reg32) (source : Operand)
   | movsxd (destination : Reg) (source : Operand)
   | mov (destination source : Operand)
+  | not (destination : Operand)
   | inc (destination : Reg)
   | dec (destination : Reg)
   | jmp (target : Nat)
@@ -175,7 +176,7 @@ inductive Op where
 def modifies : Op → Reg → Bool
   | .movzx destination _, register => destination.parent == register
   | .binary operation destination _, register => operation.writes && destination.register == some register
-  | .mov destination _, register | .setcc _ destination, register
+  | .not destination, register | .mov destination _, register | .setcc _ destination, register
   | .cmovcc _ destination _, register => destination.register == some register
   | .lea destination _, register | .movsxd destination _, register
   | .inc destination, register | .dec destination, register => destination == register
