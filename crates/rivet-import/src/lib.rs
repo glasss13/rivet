@@ -62,10 +62,16 @@ fn condition(instruction: &Decoded) -> Result<Condition> {
 }
 
 fn address(instruction: &Decoded) -> Result<Address> {
-    ensure!(
-        !instruction.is_ip_rel_memory_operand(),
-        "RIP-relative operands are not supported yet"
-    );
+    if instruction.is_ip_rel_memory_operand() {
+        // iced resolves the displacement against the end of the instruction.
+        // Rivet evaluates the signed displacement modulo 2^64.
+        return Ok(Address {
+            base: None,
+            index: None,
+            scale: Scale::One,
+            displacement: instruction.ip_rel_memory_address() as i64,
+        });
+    }
     let optional = |value| {
         if value == Register::None {
             Ok(None)

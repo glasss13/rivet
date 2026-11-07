@@ -20,6 +20,8 @@ instruction, operand, and register types live in `program`, `operand`, and
 `register`. They support Serde serialization for the validator's existing Lean
 JSON protocol. ELF handling and Lean source emission belong to the CLI; the
 library only needs a contiguous code range and its starting address.
+Decode at the actual load address: resolved RIP-relative references must be
+regenerated if the code moves.
 
 The supported scope is deliberately small:
 
@@ -39,10 +41,10 @@ The supported scope is deliberately small:
 - Legacy MOVUPS/MOVDQU between memory and XMM registers, MOVD from a 32-bit
   general-purpose register into XMM, and PSHUFD between XMM registers with an
   immediate selector. Other SIMD forms, including AVX, are rejected.
-- Register aliases and 64-bit base/index/displacement addressing supported by
-  Rivet. High-byte registers, RIP-relative addressing, address-size overrides,
-  segment overrides, LOCK/REP prefixes, and calls are rejected. Mandatory SSE
-  prefixes are decoded as part of their instruction, not as REP operations.
+- Register aliases, 64-bit base/index/displacement addressing, and RIP-relative
+  operands resolved to absolute addresses. High-byte registers, address-size
+  overrides, segment overrides, LOCK/REP prefixes, and calls are rejected.
+  Mandatory SSE prefixes are decoded as part of their instruction, not as REP operations.
 
 Every byte in the symbol's range must decode into a supported instruction;
 embedded data and unsupported padding instructions are rejected. Direct branches
@@ -52,8 +54,10 @@ instruction address, and translation errors leave the output file untouched.
 This imports **function code only**. It does not map ELF segments, initialize
 memory, or construct a machine state. Proofs still supply the function's input
 memory, stack, registers, and permissions. That is enough for functions such as
-ByteSum; loading globals and modeling process startup can come later. RET retains
-Rivet's function-level successful-return semantics.
+ByteSum. RIP-relative references use the binary's addresses; proofs must supply
+any referenced data and its permissions in the initial memory. Table contents
+are not imported automatically. Loading globals and modeling process startup
+can come later. RET retains Rivet's function-level successful-return semantics.
 
 The importer and iced-x86 are trusted to translate the bytes correctly. Lean
 checks proofs about the generated program; it does not certify that translation
