@@ -42,8 +42,8 @@ namespace Rivet
     (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
-theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} (unchanged : modifies operation register = false) :
-    (stepOp operation state undefinedFlags).registers register = state.registers register := by
+theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : Nat} (unchanged : modifies operation register = false) :
+    (stepOp operation nextAddress state undefinedFlags).registers register = state.registers register := by
   cases operation with
   | binary operation destination source =>
     simp only [stepOp, MachineState.binary]
@@ -76,7 +76,7 @@ theorem step_preserves (program : Program) (state : MachineState) (register : Re
   · split
     · rename_i instruction instructionAtIndex
       apply op_preserves
-      exact unchanged instruction (List.mem_of_getElem? instructionAtIndex)
+      exact unchanged instruction (List.mem_of_find?_eq_some instructionAtIndex)
     · rfl
   · rfl
 

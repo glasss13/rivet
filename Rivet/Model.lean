@@ -4,7 +4,7 @@ public import Rivet.Syntax
 namespace Rivet
 
 inductive ExecutionStatus where
-  | running (instructionIndex : Nat)
+  | running (address : Nat)
   | returned (address : Nat)
   | fault
   deriving DecidableEq, Repr
@@ -56,11 +56,12 @@ def ExecutionStatus.isRunning : ExecutionStatus → Bool
   | .running _ => true
   | _ => false
 
-def ExecutionStatus.advance : ExecutionStatus → ExecutionStatus
-  | .running index => .running (index + 1)
+def ExecutionStatus.advance (nextAddress : Nat) : ExecutionStatus → ExecutionStatus
+  | .running _ => .running nextAddress
   | stopped => stopped
 
-def next (state : MachineState) : MachineState := { state with status := state.status.advance }
+def next (nextAddress : Nat) (state : MachineState) : MachineState :=
+  { state with status := state.status.advance nextAddress }
 def read64 (memory : Nat → Fin 256) (address : Nat) : Nat :=
   (List.range 8).foldr (fun offset value => (memory (address+offset)).val + 256*value) 0
 
@@ -134,7 +135,7 @@ def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec width) (ca
   | _ => false
 
 /-- Read both operands from the initial state; commit flags, memory, and history only on success. -/
-def MachineState.binary (state : MachineState) (operation : BinaryOp) (destination source : Operand) : MachineState :=
+def MachineState.binary (state : MachineState) (operation : BinaryOp) (destination source : Operand) (nextAddress : Nat) : MachineState :=
   if validBinary operation destination source && state.canRead destination && state.canRead source &&
       (!operation.writes || state.canWrite destination) then
     let width := destination.width.getD .qword
@@ -142,7 +143,7 @@ def MachineState.binary (state : MachineState) (operation : BinaryOp) (destinati
     let right := (state.readOperand source).setWidth width.bits
     let result := operation.result left right state.carryFlag
     let updated := if operation.writes then state.writeOperand destination (result.setWidth 64) else state
-    next { updated with
+    next nextAddress { updated with
       zeroFlag := result == 0
       signFlag := result.msb
       carryFlag := operation.carry left right result state.carryFlag,
@@ -159,11 +160,11 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
   | .above => !state.carryFlag && !state.zeroFlag
   | .sign => state.signFlag
 
-def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
+def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
   | .movd destination source =>
     let value := ((state.registers source.parent).setWidth 32).setWidth 128
-    next { state with xmmRegisters := fun register =>
+    next nextAddress { state with xmmRegisters := fun register =>
       if register = destination then value else state.xmmRegisters register }
   | .pshufd destination source order =>
     if order < 256 then
@@ -171,7 +172,7 @@ def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues)
       let value := BitVec.ofNat 128 ((List.range 4).foldr (fun lane result =>
         let selected := order / 4^lane % 4
         (original / 2^(32 * selected)) % 2^32 + 2^32 * result) 0)
-      next { state with xmmRegisters := fun register =>
+      next nextAddress { state with xmmRegisters := fun register =>
         if register = destination then value else state.xmmRegisters register }
     else { state with status := .fault }
   | .loadXmm _ destination source =>
@@ -179,7 +180,7 @@ def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues)
     if permits state.readable address 16 then
       let value := BitVec.ofNat 128 ((List.range 16).foldr
         (fun offset value => (state.memory (address + offset)).val + 256 * value) 0)
-      next { state with
+      next nextAddress { state with
         xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register
         readHistory := state.readHistory ++ [⟨address, 16⟩] }
     else { state with status := .fault }
@@ -187,12 +188,12 @@ def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues)
     let address := (destination.evaluate state.registers).toNat
     if permits state.writable address 16 then
       let value := state.xmmRegisters source
-      next { state with memory := fun otherAddress =>
+      next nextAddress { state with memory := (fun otherAddress =>
         if address ≤ otherAddress && otherAddress < address + 16 then
           ⟨(value.toNat / 256^(otherAddress - address)) % 256, Nat.mod_lt _ (by decide)⟩
-        else state.memory otherAddress }
+        else state.memory otherAddress) }
     else { state with status := .fault }
-  | .binary operation destination source => state.binary operation destination source
+  | .binary operation destination source => state.binary operation destination source nextAddress
   | .shift operation destination count =>
     if validShift destination count then
       let width := (destination.width.getD .qword).bits
@@ -204,8 +205,8 @@ def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues)
         | .shr => value >>> count
       -- Even a zero-count r32 shift clears the upper half of its parent register.
       let updated := state.writeOperand destination (result.setWidth 64)
-      if count == 0 then next updated else
-        next { updated with
+      if count == 0 then next nextAddress updated else
+        next nextAddress { updated with
           carryFlag := value.getLsbD (match operation with | .shl => width - count | .shr => count - 1)
           zeroFlag := result == 0
           signFlag := result.msb }
@@ -219,59 +220,59 @@ def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues)
         | some value => BitVec.ofInt width value
       let product := sourceValue.toInt * multiplier.toInt
       let result := BitVec.ofInt width product
-      next { state.writeOperand destination (result.setWidth 64) with
+      next nextAddress { state.writeOperand destination (result.setWidth 64) with
         carryFlag := result.toInt != product
         signFlag := undefinedFlags.signFlag
         zeroFlag := undefinedFlags.zeroFlag
         readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
-  | .lea destination address => next (state.write destination (address.evaluate state.registers))
+  | .lea destination address => next nextAddress (state.write destination (address.evaluate state.registers))
   | .movzx destination source =>
     if (source.width == some .byte || source.width == some .word) && state.canRead source then
-      next { state.write destination.parent (state.readOperand source) with
+      next nextAddress { state.write destination.parent (state.readOperand source) with
         readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .movsxd destination source =>
     if source.width == some .dword && state.canRead source then
-      next { state.write destination ((state.readOperand source).setWidth 32 |>.signExtend 64) with
+      next nextAddress { state.write destination ((state.readOperand source).setWidth 32 |>.signExtend 64) with
         readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .mov destination source =>
     if validMove destination source && state.canRead source && state.canWrite destination then
       -- Read and address calculation use the pre-instruction registers, including aliases.
       let result := state.writeOperand destination (state.readOperand source)
-      next { result with readHistory := (state.recordRead source).readHistory }
+      next nextAddress { result with readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .not destination =>
     if state.canRead destination && state.canWrite destination then
-      next { state.writeOperand destination (~~~(state.readOperand destination)) with
+      next nextAddress { state.writeOperand destination (~~~(state.readOperand destination)) with
         readHistory := (state.recordRead destination).readHistory }
     else { state with status := .fault }
   | .inc destination =>
     let result := state.registers destination + 1
-    next { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
+    next nextAddress { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
   | .dec destination =>
     let result := state.registers destination - 1
-    next { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
+    next nextAddress { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
   | .jmp target => { state with status := .running target }
   | .jcc condition target =>
-    { state with status := if condition.holds state then .running target else state.status.advance }
+    { state with status := if condition.holds state then .running target else state.status.advance nextAddress }
   | .setcc condition destination =>
     if destination.width == some .byte && state.canWrite destination then
-      next (state.writeOperand destination (if condition.holds state then 1 else 0))
+      next nextAddress (state.writeOperand destination (if condition.holds state then 1 else 0))
     else { state with status := .fault }
   | .cmovcc condition destination source =>
     -- Memory sources are read even when the condition is false. Writing the old
     -- destination through its operand also clears the upper half of r32.
     if validConditionalMove destination source && state.canRead source then
       let value := if condition.holds state then state.readOperand source else state.readOperand destination
-      next { state.writeOperand destination value with readHistory := (state.recordRead source).readHistory }
+      next nextAddress { state.writeOperand destination value with readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .push source =>
     let pointer := state.registers .rsp - 8
     if permits state.writable pointer.toNat 8 then
       -- PUSH RSP stores the original pointer, before decrementing it.
-      next ((state.writeMemory pointer.toNat .qword (state.registers source)).write .rsp pointer)
+      next nextAddress ((state.writeMemory pointer.toNat .qword (state.registers source)).write .rsp pointer)
     else { state with status := .fault }
   | .pop destination =>
     let address := (state.registers .rsp).toNat
@@ -279,7 +280,7 @@ def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues)
       -- Write the destination last: POP RSP replaces the incremented pointer.
       let result := (state.write .rsp (state.registers .rsp + 8)).write destination
         (readMemory state.memory address .qword)
-      next { result with readHistory := state.readHistory ++ [⟨address,8⟩] }
+      next nextAddress { result with readHistory := state.readHistory ++ [⟨address,8⟩] }
     else { state with status := .fault }
   | .ret =>
     let address := (state.registers .rsp).toNat
@@ -291,8 +292,8 @@ def stepOp (operation : Op) (state : MachineState) (undefinedFlags : FlagValues)
 
 def step (program : Program) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match state.status with
-  | .running index => match program[index]? with
-    | some instruction => stepOp instruction.op state undefinedFlags
+  | .running address => match program.fetch address with
+    | some instruction => stepOp instruction.op ((address + instruction.length) % word) state undefinedFlags
     | none => { state with status := .fault }
   | _ => state
 
@@ -309,8 +310,8 @@ def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
   (state.registers .rsp).toNat + 8 ≤ word ∧
     (List.range 8).all (fun offset => state.readable ((state.registers .rsp).toNat + offset)) = true
 
-def AtInstruction (state : MachineState) (index : Nat) : Prop :=
-  state.status = .running index
+def AtInstruction (state : MachineState) (address : Nat) : Prop :=
+  state.status = .running address
 
 theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState)
     {choices : FlagChoices} :

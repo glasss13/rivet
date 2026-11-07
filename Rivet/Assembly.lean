@@ -32,16 +32,32 @@ cbv_simproc ↓ stringCharacters (String.toList _) := fun expression => do
   return .step characters (mkApp (mkConst ``String.toList_ofList) characters)
 
 /-- Parse constant assembly once and retain a kernel-checked certificate of the result. -/
-elab "assembly% " source:term : term => do
+elab "assembly% " source:term " at " base:term " with " sizes:term : term => do
   let expression ← elabTermEnsuringType source (some (mkConst ``String))
   let some text := Sym.getStringValue? (← whnf expression) |
     throwErrorAt source "expected a constant assembly string"
-  let program ← match Rivet.parse text with
+  let baseExpression ← elabTermEnsuringType base (some (mkConst ``Nat))
+  let some baseAddress := (← whnf baseExpression).rawNatLit? |
+    throwErrorAt base "expected a constant base address"
+  let sizesType := mkApp (mkConst ``List [Level.zero]) (mkConst ``Nat)
+  let mut sizesExpression ← elabTermEnsuringType sizes (some sizesType)
+  let mut instructionLengths := []
+  repeat
+    sizesExpression ← whnf sizesExpression
+    if sizesExpression.isAppOfArity ``List.nil 1 then break
+    unless sizesExpression.isAppOfArity ``List.cons 3 do
+      throwErrorAt sizes "expected a constant list of instruction lengths"
+    let some size := (← whnf (sizesExpression.getArg! 1)).rawNatLit? |
+      throwErrorAt sizes "expected constant instruction lengths"
+    instructionLengths := size :: instructionLengths
+    sizesExpression := sizesExpression.getArg! 2
+  instructionLengths := instructionLengths.reverse
+  let program ← match Rivet.parse text baseAddress instructionLengths with
     | .ok program => pure program
     | .error message => throwErrorAt source message
   let instructions ← exprToSyntax (← mkListLit (mkConst ``Instruction) (program.map toExpr))
   elabTerm (← `((⟨$instructions, by decide_cbv⟩ :
-    { program : Program // parse $source = .ok program }).val)) (some (mkConst ``Program))
+    { program : Program // parse $source $base $sizes = .ok program }).val)) (some (mkConst ``Program))
 
 end
 end Rivet

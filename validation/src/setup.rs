@@ -1,6 +1,6 @@
 //! Prepare the common initial state before either runner executes.
 use crate::{
-    case::{Case, ExecutionInput, Operation},
+    case::{Case, ExecutionInput, Instruction, Operation},
     register::Register64::Rsp,
 };
 use anyhow::{Context, Result, ensure};
@@ -142,7 +142,23 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
         values[Rsp as usize] = guard;
     }
     let input = ExecutionInput {
-        program: case.program.clone(),
+        program: case
+            .program
+            .iter()
+            .enumerate()
+            .map(|(index, &operation)| {
+                let mut operation = operation;
+                if let Operation::Jmp { target } | Operation::Jcc { target, .. } = &mut operation {
+                    *target = memory.code.as_ptr() as usize + memory.offsets[*target] as usize;
+                }
+                Instruction {
+                    address: memory.code.as_ptr() as u64 + memory.offsets[index],
+                    length: memory.offsets[index + 1] - memory.offsets[index],
+                    op: operation,
+                    line: 0,
+                }
+            })
+            .collect(),
         registers: values,
         xmm_registers: case.xmm_registers,
         sign_flag: case.sign_flag,

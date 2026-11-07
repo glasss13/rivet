@@ -128,9 +128,7 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
     let mut snapshots = vec![snapshot(
         &registers,
         &floating_point,
-        Status::Running {
-            instruction_index: 0,
-        },
+        Status::Running { address: code_base },
         &process_memory,
         input.memory_base,
         input.memory.len(),
@@ -147,36 +145,38 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
         };
         registers = ptrace::getregs(child.pid)?;
         floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
-        let status =
-            match signal {
-                Signal::SIGSEGV | Signal::SIGBUS => Status::Fault,
-                Signal::SIGTRAP => {
-                    ensure!(
-                        ptrace::getsiginfo(child.pid)?.si_code == libc::TRAP_TRACE,
-                        "unexpected breakpoint instead of single-step stop"
-                    );
-                    if *opcode == 0xc3 {
-                        Status::Returned {
+        let status = match signal {
+            Signal::SIGSEGV | Signal::SIGBUS => Status::Fault,
+            Signal::SIGTRAP => {
+                ensure!(
+                    ptrace::getsiginfo(child.pid)?.si_code == libc::TRAP_TRACE,
+                    "unexpected breakpoint instead of single-step stop"
+                );
+                if *opcode == 0xc3 {
+                    Status::Returned {
+                        address: registers.rip,
+                    }
+                } else {
+                    if registers
+                        .rip
+                        .checked_sub(code_base)
+                        .is_some_and(|offset| memory.offsets.contains(&offset))
+                    {
+                        Status::Running {
                             address: registers.rip,
                         }
                     } else {
-                        match registers.rip.checked_sub(code_base).and_then(|offset| {
-                            memory.offsets.iter().position(|&entry| entry == offset)
-                        }) {
-                            Some(index) => Status::Running {
-                                instruction_index: index as u64,
-                            },
-                            None => Status::Outside {
-                                address: registers.rip,
-                            },
+                        Status::Outside {
+                            address: registers.rip,
                         }
                     }
                 }
-                _ => Status::Signal {
-                    number: signal as i32,
-                    address: registers.rip,
-                },
-            };
+            }
+            _ => Status::Signal {
+                number: signal as i32,
+                address: registers.rip,
+            },
+        };
         let finished = !matches!(status, Status::Running { .. });
         snapshots.push(snapshot(
             &registers,

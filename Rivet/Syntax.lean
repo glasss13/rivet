@@ -218,10 +218,21 @@ def modifies : Op → Reg → Bool
   | _, _ => false
 
 structure Instruction where
+  address : Nat
+  length : Nat
   op : Op
-  line : Nat
+  line : Nat := 0
   deriving DecidableEq, Repr
 abbrev Program := List Instruction
+
+/-- Fetch at an exact byte address. Invalid addresses or x86 instruction lengths do not execute. -/
+def Program.fetch (program : Program) (address : Nat) : Option Instruction :=
+  program.find? fun instruction => instruction.address == address && address < word &&
+    0 < instruction.length && instruction.length ≤ 15
+
+/-- The byte address following an instruction, with 64-bit address arithmetic. -/
+def Program.nextAddress (program : Program) (address : Nat) : Nat :=
+  ((program.fetch address).map fun instruction => (address + instruction.length) % word).getD address
 structure Access where
   address : Nat
   size : Nat

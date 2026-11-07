@@ -1,6 +1,6 @@
 # Rivet
 
-A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Programs retain instruction operands, widths, source lines, and resolved branch targets. Lean is the only required toolchain; its version is pinned in `lean-toolchain`.
+A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Programs retain instruction operands, widths, source lines, byte addresses, encoding lengths, and resolved branch targets. Lean is the only required toolchain; its version is pinned in `lean-toolchain`.
 
 ```sh
 lake build
@@ -8,7 +8,7 @@ lake build
 
 `import Rivet` provides the whole library. `Rivet.Model` defines the public `MachineState` and execution functions; `Rivet.Contracts` defines uncounted block contracts (`Ensures`), successful function contracts (`Returns`), and instruction rules proved against that interpreter. The API also exposes fault absorption, monotone read histories, and preservation of registers untouched by a program. `Rivet.Parser` defines the accepted source grammar. `Rivet.ExecutionProperties` provides generic register-preservation and read-history properties. General-purpose registers have type `BitVec 64`; XMM registers have type `BitVec 128`. Register widths are guaranteed by construction.
 
-The interpreter and contracts use the same state record. Access registers with `state.registers .rax`, natural-number values with `(state.registers .rax).toNat`, memory with `state.memory address`, and execution status with `state.status`. Status is `.running instructionIndex`, `.returned address`, or `.fault`; there is no observation wrapper or separate proof-state representation.
+The interpreter and contracts use the same state record. Access registers with `state.registers .rax`, natural-number values with `(state.registers .rax).toNat`, memory with `state.memory address`, and execution status with `state.status`. Status is `.running address`, `.returned address`, or `.fault`; there is no observation wrapper or separate proof-state representation.
 
 Proof contracts separate reachability, successful return, and ongoing safety:
 
@@ -26,7 +26,7 @@ Use `Ensures.intro` to build a contract by proving a block contract for each ini
 
 `Returns.to_return` uses a universal return contract to show that every reachable state has a successful continuation satisfying the postcondition. Final states can differ between choice supplies; arbitrary reachable states are not assumed to lie on one deterministic path. Together with `Reaches.reads_mono`, `Reaches.not_fault`, and `Reaches.preserves_register`, this supports safety proofs for all execution prefixes without calculating a return budget. `contract.never_faults initially` derives fault freedom directly from a `Returns` contract and its precondition.
 
-`execute program steps initial choices` remains available for low-level bounded execution. `FlagChoices` is `Nat → FlagValues`, providing candidate SF/ZF/CF bits by execution step, not instruction address. `step program state undefinedFlags` and `stepOp operation state undefinedFlags` take one set of candidates. Instruction semantics use candidates only for undefined outputs; defined flags are calculated and preserved flags retain their previous values. Choices stay outside `MachineState`. Low-level `choices.drop count` describes the unused suffix; `execute_add` and `execute_execute` use it to describe split execution. Block-contract composition advances the supply internally, including across loops, instead of restarting it. Stream-splicing operations and their supporting lemmas are private. Choice arguments in low-level execution/preservation theorems are implicit and inferred from the execution being discussed; only executable calls need explicit candidates. No default choice supply is implicit in the API.
+`execute program steps initial choices` remains available for low-level bounded execution. `FlagChoices` is `Nat → FlagValues`, providing candidate SF/ZF/CF bits by execution step, not instruction address. `step program state undefinedFlags` and `stepOp operation nextAddress state undefinedFlags` take one set of candidates. Instruction semantics use candidates only for undefined outputs; defined flags are calculated and preserved flags retain their previous values. Choices stay outside `MachineState`. Low-level `choices.drop count` describes the unused suffix; `execute_add` and `execute_execute` use it to describe split execution. Block-contract composition advances the supply internally, including across loops, instead of restarting it. Stream-splicing operations and their supporting lemmas are private. Choice arguments in low-level execution/preservation theorems are implicit and inferred from the execution being discussed; only executable calls need explicit candidates. No default choice supply is implicit in the API.
 
 IMUL consumes the SF/ZF candidates on successful execution. Other currently supported instructions define or preserve the modeled flags and ignore the candidates. The native differential validator supplies the flags observed after each native instruction and compares the complete resulting state. Proof contracts require correctness for all supplies, not merely the values observed on one CPU.
 
@@ -36,11 +36,15 @@ Define a program directly from assembly in your proof module:
 import Rivet
 open Rivet
 
-def source : String := include_str "input.s"
-def program : Program := assembly% source
+def source : String := ".globl answer\nanswer:\nmov eax, 42\nret"
+def program : Program := assembly% source at 0x401000 with [5, 1]
 ```
 
-`include_str` embeds the file contents at elaboration time, relative to the Lean source file. `assembly%` runs the existing parser and stores its resulting instructions with a kernel-checked proof that they equal the parsed source. Invalid assembly is an elaboration error. Later proofs use the stored program without evaluating the parser again. There is no generated instruction-list file or separate parser implementation, and no native-evaluation axiom is required. Recompile the containing Lean module after changing its assembly input. `parse` remains available for runtime parsing.
+`include_str "input.s"` can supply the source from a file relative to the Lean module. Assembly syntax alone does not determine encoding lengths: supply the base address and one length per instruction from the assembler's chosen encoding. `assembly%` stores the parsed program with a kernel-checked certificate that it equals `parse source baseAddress instructionLengths`. This checks the syntax and supplied layout, not correspondence between those lengths and machine-code bytes. Invalid lengths, mismatched counts, and layouts extending beyond 2^64 are rejected. Recompile the module when the source or layout changes. No assembler is invoked by Lean.
+
+Each `Instruction` contains `address`, `length`, `op`, and an optional source `line` (default zero). `Program` remains a list, but list positions no longer control execution. `Program.fetch` finds an instruction at an exact byte address, accepting only 64-bit addresses and lengths from 1 to 15. Missing addresses, including undeclared addresses in the middle of an instruction, fault when fetched. Ordinary execution advances to `(address + length) % 2^64`; branches use byte addresses. `Program.nextAddress` exposes that fallthrough for contracts; callers should establish `InstructionAt` at that address first. Lookup uses the first matching valid entry.
+
+`AtInstruction state address`, `InstructionAt program address operation`, and the instruction rules now refer to byte addresses. The uncounted `Ensures`, `Returns`, `Always`, and `Diverges` contracts are unchanged. RET still ends the modeled function with `.returned address`; this change does not add CALL, intra-program returns, RIP-relative operands, ELF loading, or instruction decoding. Instruction fetch still uses the supplied decoded program rather than reading executable bytes from memory.
 
 `mov` supports 8/16/32/64-bit registers, integer immediates, and sized memory operands. Addresses support a base, an optional index scaled by 1/2/4/8, and a signed 32-bit displacement, for example `mov eax, DWORD PTR [rdi + 8*rcx - 4]`. Decimal literals without leading zeroes and hexadecimal literals are accepted; `movabs r64, immediate` is also supported. Byte and word register writes preserve the remaining bits; 32-bit writes clear the upper half. Memory-to-memory moves, mismatched widths, and unencodable immediates are rejected. A 64-bit memory destination accepts a signed 32-bit immediate, as required by its encoding.
 
