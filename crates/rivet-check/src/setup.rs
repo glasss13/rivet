@@ -110,8 +110,17 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
     if instructions[0].mnemonic() == Mnemonic::Ret && case.fault_memory {
         values[Rsp as usize] = guard;
     }
+    if instructions[0].mnemonic() == Mnemonic::Call && case.fault_memory {
+        // Exercise CALL's stack write at the guard or read-only data boundary.
+        values[Rsp as usize] = if case.read_only_data {
+            base + 8
+        } else {
+            guard + 8
+        };
+    }
     let input = ExecutionInput {
         program: rivet_import::decode(&memory.code, memory.code.as_ptr() as u64)?,
+        stop_address: continuation,
         registers: values,
         xmm_registers: case.xmm_registers,
         sign_flag: case.sign_flag,

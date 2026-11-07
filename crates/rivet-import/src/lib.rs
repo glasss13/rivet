@@ -12,7 +12,7 @@ pub use program::Instruction;
 use program::{BinaryOp, Condition, Operation, ShiftOp, XmmMove};
 use std::str::FromStr;
 
-/// Decode a contiguous code range. Direct branches must target instructions in this range.
+/// Decode a contiguous code range. Targets may lie in other ranges of the program.
 pub fn decode(bytes: &[u8], base: u64) -> Result<Vec<Instruction>> {
     ensure!(!bytes.is_empty(), "empty code range");
     base.checked_add(bytes.len() as u64)
@@ -27,17 +27,6 @@ pub fn decode(bytes: &[u8], base: u64) -> Result<Vec<Instruction>> {
             length: instruction.len() as u64,
             op,
         });
-    }
-    for instruction in &program {
-        if let Operation::Jmp { target } | Operation::Jcc { target, .. } = instruction.op {
-            ensure!(
-                program
-                    .binary_search_by_key(&target, |instruction| instruction.address)
-                    .is_ok(),
-                "at {:#x}: branch target is not an instruction boundary inside the function",
-                instruction.address
-            );
-        }
     }
     Ok(program)
 }
@@ -331,6 +320,9 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
             }
         }
         Ret if instruction.code() == Code::Retnq => Operation::Ret,
+        Call if instruction.code() == Code::Call_rel32_64 => Operation::Call {
+            target: instruction.near_branch_target(),
+        },
         _ => bail!("unsupported instruction {:?}", instruction.code()),
     })
 }

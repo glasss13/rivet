@@ -4,7 +4,7 @@ use crate::{
     register::{register_values, set_registers, set_xmm_registers, xmm_values},
     setup::NativeMemory,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use nix::{
     errno::Errno,
     libc,
@@ -134,11 +134,15 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
         input.memory.len(),
     )?];
     for _ in 0..input.steps {
-        let opcode = registers
-            .rip
-            .checked_sub(code_base)
-            .and_then(|offset| memory.code.get(offset as usize))
-            .context("native execution left test code")?;
+        ensure!(
+            registers
+                .rip
+                .checked_sub(code_base)
+                .is_some_and(
+                    |offset| offset < memory.code.len() as u64 && memory.offsets.contains(&offset)
+                ),
+            "native execution left test code"
+        );
         ptrace::step(child.pid, None)?;
         let WaitStatus::Stopped(_, signal) = child.wait()? else {
             bail!("native worker exited unexpectedly");
@@ -152,23 +156,17 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
                     ptrace::getsiginfo(child.pid)?.si_code == libc::TRAP_TRACE,
                     "unexpected breakpoint instead of single-step stop"
                 );
-                if *opcode == 0xc3 {
-                    Status::Returned {
+                if registers
+                    .rip
+                    .checked_sub(code_base)
+                    .is_some_and(|offset| memory.offsets.contains(&offset))
+                {
+                    Status::Running {
                         address: registers.rip,
                     }
                 } else {
-                    if registers
-                        .rip
-                        .checked_sub(code_base)
-                        .is_some_and(|offset| memory.offsets.contains(&offset))
-                    {
-                        Status::Running {
-                            address: registers.rip,
-                        }
-                    } else {
-                        Status::Outside {
-                            address: registers.rip,
-                        }
+                    Status::Outside {
+                        address: registers.rip,
                     }
                 }
             }
@@ -177,7 +175,8 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
                 address: registers.rip,
             },
         };
-        let finished = !matches!(status, Status::Running { .. });
+        let finished =
+            !matches!(status, Status::Running { .. }) || registers.rip == input.stop_address;
         snapshots.push(snapshot(
             &registers,
             &floating_point,

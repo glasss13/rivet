@@ -15,11 +15,6 @@ theorem execute_execute (program : Program) (later earlier : Nat) (initial : Mac
     execute program later (execute program earlier initial choices) (choices.drop earlier) =
       execute program (earlier + later) initial choices := (execute_add program earlier later initial).symm
 
-@[simp] theorem execute_returned (program : Program) (steps : Nat) (initial : MachineState)
-    {choices : FlagChoices} (returned : initial.status = .returned address) :
-    execute program steps initial choices = initial :=
-  execute_stopped program steps initial (by simp [returned, ExecutionStatus.isRunning])
-
 @[simp] theorem execute_fault (program : Program) (steps : Nat) (initial : MachineState)
     {choices : FlagChoices} (faulted : initial.status = .fault) :
     execute program steps initial choices = initial :=
@@ -142,15 +137,6 @@ theorem Ensures.consequence (contract : Ensures program precondition postconditi
   obtain ⟨final, reached, result⟩ := contract.allChoices initial (strengthenPrecondition _ assumption) choices
   exact ⟨final, reached, weakenPostcondition _ result⟩
 
-/-- Successful return for every choice supply, independently of the postcondition. -/
-def Returns (program : Program) (precondition postcondition : MachineState → Prop) : Prop :=
-  Ensures program precondition (fun final => (∃ address, final.status = .returned address) ∧ postcondition final)
-
-theorem Ensures.returns (contract : Ensures program precondition postcondition)
-    (returned : ∀ final, postcondition final → ∃ address, final.status = .returned address) :
-    Returns program precondition postcondition :=
-  contract.consequence (fun _ assumption => assumption) (fun final result => ⟨returned final result, result⟩)
-
 /-- Iterate blocks while a natural-valued measure decreases. No instruction counts enter the rule. -/
 theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : MachineState → Nat)
     (body : ∀ initial, invariant initial → ¬ finished initial →
@@ -189,36 +175,11 @@ theorem Reaches.stopped (reached : Reaches program initial final)
   exact execute_stopped _ _ _ stopped
 
 theorem Reaches.not_fault (reached : Reaches program initial final)
-    (returned : final.status = .returned address) : initial.status ≠ .fault := by
+    (notFaulted : final.status ≠ .fault) : initial.status ≠ .fault := by
   intro faulted
   have equal := reached.stopped (by simp [faulted, ExecutionStatus.isRunning])
   subst final
-  simp [faulted] at returned
-
-/-- A universal return contract supplies a successful continuation of any reachable
-prefix. Different choice supplies may return different final states. -/
-theorem Returns.to_return (contract : Returns program precondition postcondition)
-    (initially : precondition initial) (reachable : Reaches program initial state) :
-    ∃ final, Reaches program state final ∧ (∃ address, final.status = .returned address) ∧ postcondition final := by
-  obtain ⟨choices, earlier, rfl⟩ := reachable
-  obtain ⟨final, ⟨later, rfl⟩, ⟨address, returned⟩, result⟩ := contract.allChoices initial initially choices
-  refine ⟨execute program later initial choices, ?_, ⟨address, returned⟩, result⟩
-  by_cases order : earlier ≤ later
-  · exact ⟨choices.drop earlier, later - earlier, by rw [execute_execute]; congr 1; omega⟩
-  · have equal : execute program earlier initial choices = execute program later initial choices := by
-      have := execute_returned program (earlier - later) _ (choices := choices.drop later) returned
-      rw [execute_execute] at this
-      simpa [Nat.add_sub_of_le (by omega : later ≤ earlier)] using this
-    rw [equal]
-    exact Reaches.refl
-
-/-- Successful return for all choices rules out faults at every reachable state. -/
-theorem Returns.never_faults (contract : Returns program precondition postcondition)
-    (initially : precondition initial) :
-    Always program initial (fun state => state.status ≠ .fault) := by
-  intro state reachable
-  obtain ⟨final, continuation, ⟨address, returned⟩, _⟩ := contract.to_return initially reachable
-  exact continuation.not_fault returned
+  exact notFaulted faulted
 
 theorem Reaches.reads_mono (reached : Reaches program initial final)
     (recorded : access ∈ initial.readHistory) : access ∈ final.readHistory := by
@@ -380,11 +341,26 @@ theorem branch_nonzero (program : Program) (address target : Nat) (initial : Mac
   simp_all [ExecutionStatus.advance, stepOp, Condition.holds]
   cases initial.zeroFlag <;> rfl
 
+theorem call (program : Program) (address target : Nat) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (writable : permits initial.writable (initial.registers .rsp - 8).toNat 8 = true := by rfl)
+    (code : InstructionAt program address (.call target) := by decide +kernel) :
+    Ensures program (· = initial) (· = {
+      (initial.writeMemory (initial.registers .rsp - 8).toNat .qword
+        (BitVec.ofNat 64 (program.nextAddress address))).write .rsp (initial.registers .rsp - 8) with
+      status := .running target }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp only [stepOp]
+  rw [ite_eq_left writable]
+
 theorem return_ (program : Program) (address : Nat) (initial : MachineState)
     (location : initial.status = .running address) (slot : initial.ValidReturnSlot)
     (code : InstructionAt program address .ret := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write .rsp (initial.registers .rsp + 8) with
-      status := .returned initial.returnAddress, readHistory := initial.readHistory ++ [⟨(initial.registers .rsp).toNat,8⟩] }) := by
+      status := .running initial.returnAddress, readHistory := initial.readHistory ++ [⟨(initial.registers .rsp).toNat,8⟩] }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
