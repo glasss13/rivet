@@ -59,20 +59,13 @@ pub fn module(function: &Function<'_>, namespace: &str) -> Result<String> {
 
 fn register(register: Register) -> Result<String> {
     ensure!(
-        register.is_gpr()
+        (register.is_gpr()
             && !matches!(
                 register,
                 Register::AH | Register::BH | Register::CH | Register::DH
-            ),
+            ))
+            || (Register::XMM0..=Register::XMM15).contains(&register),
         "unsupported register {register:?}"
-    );
-    Ok(format!(".{register:?}").to_ascii_lowercase())
-}
-
-fn xmm(register: Register) -> Result<String> {
-    ensure!(
-        (Register::XMM0..=Register::XMM15).contains(&register),
-        "expected XMM0–XMM15"
     );
     Ok(format!(".{register:?}").to_ascii_lowercase())
 }
@@ -249,7 +242,7 @@ fn operation(instruction: &Instruction, bytes: &[u8]) -> Result<String> {
             );
             format!(
                 ".movd {} {}",
-                xmm(instruction.op0_register())?,
+                register(instruction.op0_register())?,
                 register(instruction.op1_register())?
             )
         }
@@ -261,8 +254,8 @@ fn operation(instruction: &Instruction, bytes: &[u8]) -> Result<String> {
             );
             format!(
                 ".pshufd {} {} {}",
-                xmm(instruction.op0_register())?,
-                xmm(instruction.op1_register())?,
+                register(instruction.op0_register())?,
+                register(instruction.op1_register())?,
                 instruction.immediate8()
             )
         }
@@ -271,13 +264,13 @@ fn operation(instruction: &Instruction, bytes: &[u8]) -> Result<String> {
             match (instruction.op0_kind(), instruction.op1_kind()) {
                 (OpKind::Register, OpKind::Memory) => format!(
                     ".loadXmm .{name} {} {}",
-                    xmm(instruction.op0_register())?,
+                    register(instruction.op0_register())?,
                     address(instruction)?
                 ),
                 (OpKind::Memory, OpKind::Register) => format!(
                     ".storeXmm .{name} {} {}",
                     address(instruction)?,
-                    xmm(instruction.op1_register())?
+                    register(instruction.op1_register())?
                 ),
                 _ => bail!("{name} requires a memory operand"),
             }
