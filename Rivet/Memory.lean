@@ -111,17 +111,6 @@ def readBytes (memory : Nat → Fin 256) (address size : Nat) : BitVec (8 * size
   BitVec.ofNat (8 * size) ((List.range size).foldr
     (fun offset value => (memory (address + offset)).val + 256 * value) 0)
 
-/-- A byte-range equality is sufficient to replace a multi-byte read. -/
-theorem readBytes_congr (first second : Nat → Fin 256) (address size : Nat)
-    (equal : ∀ offset < size, first (address + offset) = second (address + offset)) :
-    readBytes first address size = readBytes second address size := by
-  have same : (List.range size).map (fun offset => first (address + offset)) =
-      (List.range size).map (fun offset => second (address + offset)) :=
-    List.map_congr_left (by intro offset member; exact equal offset (List.mem_range.mp member))
-  simpa only [readBytes, List.foldr_map] using congrArg
-    (fun bytes : List (Fin 256) => BitVec.ofNat (8 * size)
-      (bytes.foldr (fun byte value => byte.val + 256 * value) 0)) same
-
 /-- A multi-byte instruction access must fit the word address space and have
 permission for every byte. -/
 def permits (permission : Nat → Bool) (address size : Nat) : Bool :=
