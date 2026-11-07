@@ -49,10 +49,6 @@ def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 6
   { state with registers := fun otherRegister =>
       if otherRegister = register then value else state.registers otherRegister }
 
-/-- Update one byte; permission checks belong to the instruction semantics. -/
-def MachineState.storeByte (state : MachineState) (address : Nat) (value : Fin 256) : MachineState :=
-  { state with memory := state.memory.storeByte address value }
-
 def ExecutionStatus.isRunning : ExecutionStatus → Bool
   | .running _ => true
   | _ => false
@@ -63,35 +59,23 @@ def ExecutionStatus.advance (nextAddress : Nat) : ExecutionStatus → ExecutionS
 
 def next (nextAddress : Nat) (state : MachineState) : MachineState :=
   { state with status := state.status.advance nextAddress }
-def read64 (memory : Nat → Fin 256) (address : Nat) : Nat :=
-  (List.range 8).foldr (fun offset value => (memory (address+offset)).val + 256*value) 0
-
 def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
   (address.base.map registers).getD 0 +
     (address.index.map registers).getD 0 * BitVec.ofNat 64 address.scale.value +
     BitVec.ofInt 64 address.displacement
 
-/-- Multi-byte accesses must fit the address space and have permission for every byte. -/
-def permits (permission : Nat → Bool) (address size : Nat) : Bool :=
-  address + size ≤ word && (List.range size).all (fun offset => permission (address + offset))
-
-def readMemory (memory : Nat → Fin 256) (address : Nat) (width : Width) : BitVec 64 :=
-  BitVec.ofNat 64 ((List.range width.bytes).foldr
-    (fun offset value => (memory (address + offset)).val + 256 * value) 0)
-
 /-- Write a whole value after its complete range has passed permission checks. -/
 def MachineState.writeMemory (state : MachineState) (address : Nat) (width : Width)
     (value : BitVec 64) : MachineState :=
-  (List.range width.bytes).foldl (fun current offset =>
-    current.storeByte (address + offset)
-      ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩) state
+  { state with memory := state.memory.storeBytes address width.bytes (fun offset =>
+      ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩) }
 
 def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
   | .reg8 register => ((state.registers register.parent).setWidth 8).setWidth 64
   | .reg16 register => ((state.registers register.parent).setWidth 16).setWidth 64
   | .reg32 register => ((state.registers register.parent).setWidth 32).setWidth 64
   | .reg64 register => state.registers register
-  | .memory width address => readMemory state.memory (address.evaluate state.registers).toNat width
+  | .memory width address => (readBytes state.memory (address.evaluate state.registers).toNat width.bytes).setWidth 64
   | .immediate value => BitVec.ofInt 64 value
 
 def MachineState.writeOperand (state : MachineState) (operand : Operand) (value : BitVec 64) : MachineState :=
@@ -180,8 +164,7 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
   | .loadXmm _ destination source =>
     let address := (source.evaluate state.registers).toNat
     if permits state.readable address 16 then
-      let value := BitVec.ofNat 128 ((List.range 16).foldr
-        (fun offset value => (state.memory (address + offset)).val + 256 * value) 0)
+      let value := readBytes state.memory address 16
       next nextAddress { state with
         xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register
         readHistory := state.readHistory ++ [⟨address, 16⟩] }
@@ -279,7 +262,7 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     if permits state.readable address 8 then
       -- Write the destination last: POP RSP replaces the incremented pointer.
       let result := (state.write .rsp (state.registers .rsp + 8)).write destination
-        (readMemory state.memory address .qword)
+        (readBytes state.memory address 8)
       next nextAddress { result with readHistory := state.readHistory ++ [⟨address,8⟩] }
     else { state with status := .fault }
   | .call target =>
@@ -292,7 +275,7 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     let address := (state.registers .rsp).toNat
     if address + 8 ≤ word && (List.range 8).all (fun offset => state.readable (address+offset)) then
       { state.write .rsp (state.registers .rsp + 8) with
-        status := .running (read64 state.memory address)
+        status := .running ((readBytes state.memory address 8).toNat)
         readHistory := state.readHistory ++ [⟨address,8⟩] }
     else { state with status := .fault }
 
@@ -310,7 +293,7 @@ def execute (program : Program) (steps : Nat) (state : MachineState) (choices : 
 
 /-- The little-endian address stored in the current stack return slot. -/
 def MachineState.returnAddress (state : MachineState) : Nat :=
-  read64 state.memory (state.registers .rsp).toNat
+  (readBytes state.memory (state.registers .rsp).toNat 8).toNat
 
 def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
   (state.registers .rsp).toNat + 8 ≤ word ∧

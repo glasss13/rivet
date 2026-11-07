@@ -276,7 +276,14 @@ theorem read_byte (program : Program) (address : Nat) (destination : Reg32) (bas
     omega
   simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, Address.evaluate, Address.baseOnly, Scale.value,
     Operand.width, MachineState.canRead, permits, Width.bytes, MachineState.readOperand,
-    readMemory, MachineState.recordRead] <;> try rfl
+    readBytes, MachineState.recordRead] <;> try rfl
+  have byte (value : Fin 256) :
+      ({toFin := value} : BitVec 8).setWidth 64 = BitVec.ofNat 64 value.val := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofNat]
+    rfl
+  rw [byte]
+  rfl
 
 theorem add (program : Program) (address : Nat) (destination source : Reg) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
@@ -365,7 +372,7 @@ theorem return_ (program : Program) (address : Nat) (initial : MachineState)
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp, read64]
+  simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp]
 theorem move (program : Program) (address : Nat) (destination source : Operand) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
     (valid : validMove destination source = true := by decide +kernel)
@@ -405,8 +412,8 @@ theorem compare (program : Program) (address : Nat) (left right : Reg) (initial 
 theorem write_byte (program : Program) (address : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
     (location : initial.status = .running address) (allowed : initial.writable (initial.registers base).toNat = true)
     (code : InstructionAt program address (.mov (.memory .byte (Address.baseOnly base)) (.reg8 source)) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial.storeByte (initial.registers base).toNat
-      ⟨(initial.registers source.parent).toNat % 256, Nat.mod_lt _ (by decide)⟩ with
+    Ensures program (· = initial) (· = { initial.writeMemory (initial.registers base).toNat .byte
+      (((initial.registers source.parent).setWidth 8).setWidth 64) with
       status := .running (program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -418,8 +425,9 @@ theorem write_byte (program : Program) (address : Nat) (base : Reg) (source : Re
     omega
   simp [stepOp, validMove, Operand.width, MachineState.canRead, MachineState.canWrite,
     MachineState.writeOperand, MachineState.readOperand, MachineState.recordRead,
-    MachineState.writeMemory, Width.bytes, Address.evaluate, Address.baseOnly, Scale.value,
-    permits, next, ExecutionStatus.advance, MachineState.storeByte, location, allowed, bound]
+    Width.bytes, Address.evaluate, Address.baseOnly, Scale.value,
+    permits, next, ExecutionStatus.advance, location, allowed, bound]
+  rfl
 
 theorem branch_below (program : Program) (address target : Nat) (initial : MachineState)
     (location : initial.status = .running address := by rfl)

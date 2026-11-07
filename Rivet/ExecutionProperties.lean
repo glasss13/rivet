@@ -4,39 +4,17 @@ public import Rivet.Model
 namespace Rivet
 
 @[simp] private theorem writeMemory_registers (state : MachineState) (address : Nat) (width : Width)
-    (value : BitVec 64) : (state.writeMemory address width value).registers = state.registers := by
-  unfold MachineState.writeMemory
-  generalize List.range width.bytes = offsets
-  induction offsets generalizing state with
-  | nil => rfl
-  | cons offset offsets inductionHypothesis =>
-    simpa [List.foldl, MachineState.storeByte] using inductionHypothesis
-      (state.storeByte (address + offset) ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩)
+    (value : BitVec 64) : (state.writeMemory address width value).registers = state.registers := rfl
 
 @[simp] theorem MachineState.writeMemory_status (state : MachineState) (address : Nat) (width : Width)
-    (value : BitVec 64) : (state.writeMemory address width value).status = state.status := by
-  unfold MachineState.writeMemory
-  generalize List.range width.bytes = offsets
-  induction offsets generalizing state with
-  | nil => rfl
-  | cons offset offsets inductionHypothesis =>
-    simpa [List.foldl, MachineState.storeByte] using inductionHypothesis
-      (state.storeByte (address + offset) ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩)
+    (value : BitVec 64) : (state.writeMemory address width value).status = state.status := rfl
 
 @[simp] theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
     (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
 @[simp] private theorem writeMemory_readHistory (state : MachineState) (address : Nat) (width : Width)
-    (value : BitVec 64) : (state.writeMemory address width value).readHistory = state.readHistory := by
-  unfold MachineState.writeMemory
-  generalize List.range width.bytes = offsets
-  induction offsets generalizing state with
-  | nil => rfl
-  | cons offset offsets inductionHypothesis =>
-    simpa [List.foldl, MachineState.storeByte] using inductionHypothesis
-      (state.storeByte (address + offset)
-        ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩)
+    (value : BitVec 64) : (state.writeMemory address width value).readHistory = state.readHistory := rfl
 
 @[simp] private theorem writeOperand_readHistory (state : MachineState) (operand : Operand)
     (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by

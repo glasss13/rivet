@@ -3,3 +3,8 @@ version = "0.1.0"
 defaultTargets = ["Rivet"]
 [[lean_lib]]
 name = "Rivet"
+
+[[lean_lib]]
+name = "RivetTests"
+srcDir = "tests"
+roots = ["Memory"]
