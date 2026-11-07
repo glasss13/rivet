@@ -64,26 +64,37 @@ with unsupported instructions also cause import to fail; link only the code you
 need (for example, using function sections and linker garbage collection).
 Errors report the instruction address, and translation errors leave the output file untouched.
 
-Each loadable segment becomes a `MemoryRegion` with `address`, `size`, `bytes`,
-`readable`, and `writable`. File bytes are stored in a `ByteArray`; the remainder
-up to the memory size is zero-filled without expanding the generated source.
-This includes code bytes, constant tables, initialized globals, and BSS.
+Each loadable segment becomes a `MemoryRegion` with `address`, `size`, `contents`,
+`readable`, and `writable`. `contents` maps byte offsets to `Fin 256` values.
+Imported contents use a `ByteArray` and return zero past its end, so BSS does not
+expand the generated source. Handwritten regions can use symbolic byte functions.
 
-Apply the regions once when constructing the initial state:
+Construct the complete memory layout before constructing the machine state:
 
 ```lean
-def initial (supplied : Rivet.MachineState) : Rivet.MachineState :=
-  { Rivet.initializeMemory Example.regions supplied with
-    status := .running Example.entry }
+def initial (registers : Rivet.Reg → BitVec 64)
+    (stack input output : Rivet.MemoryRegion) : Except String Rivet.MachineState := do
+  let memory ← Rivet.Memory.ofRegions (Example.regions ++ [stack, input, output])
+  return {
+    memory
+    registers
+    zeroFlag := false
+    status := .running Example.entry
+    readHistory := [] }
 ```
 
-`initializeMemory` replaces both bytes and permissions inside each region;
-permissions are not ORed with the supplied state. Outside those ranges, the
-supplied memory and permissions remain unchanged. Registers, flags, status, and
-read history are unchanged by the helper itself. Supply the stack and buffers
-at addresses outside the imported ranges. Later regions take precedence if
-manually constructed regions overlap; the ELF importer rejects overlapping
-segments. For manual regions, bytes past `size` are ignored.
+`Memory.ofRegions` rejects overlap and addresses beyond the 64-bit address space.
+A `Memory` also carries its layout validity proof, so direct record construction
+must establish the same invariant. For concrete layouts, the `valid` field is
+proved automatically; symbolic layouts can supply that proof explicitly.
+
+`MachineState.memory` is a `Memory`, not an unrestricted byte function. It remains
+callable as `state.memory address`; `state.readable` and `state.writable` derive
+permissions from its regions. Addresses outside every region are inaccessible
+and inspect as zero. Buffers that alias should share a region rather than declare
+overlapping regions. Stores change contents without changing layout or permissions.
+Low-level store helpers rely on instruction semantics to check write permissions.
+`initializeMemory` and the separate permission fields are removed.
 
 These are the ELF-declared byte ranges and read/write flags, not an exact Linux
 page map. Page rounding, shared boundary pages, dynamic loading, process startup,

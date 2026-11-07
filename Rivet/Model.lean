@@ -1,5 +1,5 @@
 module
-public import Rivet.Syntax
+public import Rivet.Memory
 @[expose] public section
 namespace Rivet
 
@@ -13,11 +13,13 @@ structure MachineState where
   signFlag : Bool := false
   zeroFlag : Bool
   carryFlag : Bool := false
-  memory : Nat → Fin 256
-  readable : Nat → Bool
-  writable : Nat → Bool := fun _ => false
+  memory : Memory
   status : ExecutionStatus
   readHistory : List Access
+
+/-- Permissions are determined by the memory regions, not independent state fields. -/
+@[simp] abbrev MachineState.readable (state : MachineState) : Nat → Bool := state.memory.readable
+@[simp] abbrev MachineState.writable (state : MachineState) : Nat → Bool := state.memory.writable
 
 /-- Candidate values for flags an instruction leaves undefined. Defined and preserved
 flags must not use these values. This is execution input, not architectural state. -/
@@ -49,7 +51,7 @@ def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 6
 
 /-- Update one byte; permission checks belong to the instruction semantics. -/
 def MachineState.storeByte (state : MachineState) (address : Nat) (value : Fin 256) : MachineState :=
-  { state with memory := fun otherAddress => if otherAddress = address then value else state.memory otherAddress }
+  { state with memory := state.memory.storeByte address value }
 
 def ExecutionStatus.isRunning : ExecutionStatus → Bool
   | .running _ => true
@@ -188,10 +190,8 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     let address := (destination.evaluate state.registers).toNat
     if permits state.writable address 16 then
       let value := state.xmmRegisters source
-      next nextAddress { state with memory := (fun otherAddress =>
-        if address ≤ otherAddress && otherAddress < address + 16 then
-          ⟨(value.toNat / 256^(otherAddress - address)) % 256, Nat.mod_lt _ (by decide)⟩
-        else state.memory otherAddress) }
+      next nextAddress { state with memory := state.memory.storeBytes address 16 (fun offset =>
+        ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩) }
     else { state with status := .fault }
   | .binary operation destination source => state.binary operation destination source nextAddress
   | .shift operation destination count =>

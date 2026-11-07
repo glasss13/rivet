@@ -47,7 +47,7 @@ pub fn module(
     for (index, region) in regions.iter().enumerate() {
         writeln!(
             source,
-            "  {{ address := {:#x}, size := {:#x}, readable := {}, writable := {}, bytes := ⟨#[",
+            "  {{ address := {:#x}, size := {:#x}, readable := {}, writable := {}, contents := let bytes : ByteArray := ⟨#[",
             region.address, region.size, region.readable, region.writable
         )?;
         for chunk in region.bytes.chunks(16) {
@@ -60,7 +60,7 @@ pub fn module(
         }
         writeln!(
             source,
-            "  ]⟩ }}{}",
+            "  ]⟩; fun offset => (bytes[offset]?.getD 0).toFin }}{}",
             if index + 1 < regions.len() { "," } else { "" }
         )?;
     }
