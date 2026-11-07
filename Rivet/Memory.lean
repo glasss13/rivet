@@ -76,18 +76,22 @@ def Memory.storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fi
   funext other
   simp [Memory.writable, Memory.storeBytes, List.any_map, MemoryRegion.contains, Function.comp_def]
 
-/-- A raw store updates a mapped byte. Mapping suffices; instruction permissions
-are checked by the interpreter, not by this memory operation. -/
+/-- Inside a store, mapping suffices to recover the written byte. Outside it,
+no mapping or permission assumption is needed. -/
 theorem Memory.read_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
-    (other : Nat) (mapped : ∃ region ∈ memory.regions, region.contains other = true) :
+    (other : Nat) (mapped : address ≤ other ∧ other < address + size →
+      ∃ region ∈ memory.regions, region.contains other = true) :
     (memory.storeBytes address size bytes) other =
       if address ≤ other ∧ other < address + size then bytes (other - address) else memory other := by
   simp only [Memory.storeBytes, Memory.read, List.find?_map, Function.comp_def, MemoryRegion.contains]
   cases found : memory.regions.find?
       (fun region => region.address ≤ other && other < region.address + region.size) with
   | none =>
-    obtain ⟨region, member, contains⟩ := mapped
-    exact False.elim ((List.find?_eq_none.mp found region member) contains)
+    have outside : ¬ (address ≤ other ∧ other < address + size) := by
+      intro inside
+      obtain ⟨region, member, contains⟩ := mapped inside
+      exact (List.find?_eq_none.mp found region member) contains
+    simp [outside]
   | some region =>
     have bounds : region.address ≤ other ∧ other < region.address + region.size := by
       simpa using List.find?_some found
@@ -97,15 +101,9 @@ theorem Memory.read_storeBytes (memory : Memory) (address size : Nat) (bytes : N
 theorem Memory.read_storeBytes_outside (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
     (other : Nat) (outside : other < address ∨ address + size ≤ other) :
     (memory.storeBytes address size bytes) other = memory other := by
-  simp only [Memory.storeBytes, Memory.read, List.find?_map, Function.comp_def, MemoryRegion.contains]
-  cases found : memory.regions.find?
-      (fun region => region.address ≤ other && other < region.address + region.size) with
-  | none => rfl
-  | some region =>
-    have bounds : region.address ≤ other ∧ other < region.address + region.size := by
-      simpa using List.find?_some found
-    have excluded : ¬ (address ≤ other ∧ other < address + size) := by omega
-    simp [Nat.add_sub_of_le bounds.1, excluded]
+  have excluded : ¬ (address ≤ other ∧ other < address + size) := by omega
+  rw [memory.read_storeBytes address size bytes other (by intro inside; exact False.elim (excluded inside))]
+  exact ite_eq_right excluded
 
 /-- Little-endian bytes, independent of scalar or vector instruction widths.
 This raw read does not check permissions. -/
@@ -117,18 +115,12 @@ def readBytes (memory : Nat → Fin 256) (address size : Nat) : BitVec (8 * size
 theorem readBytes_congr (first second : Nat → Fin 256) (address size : Nat)
     (equal : ∀ offset < size, first (address + offset) = second (address + offset)) :
     readBytes first address size = readBytes second address size := by
-  unfold readBytes
-  congr 1
-  have fold (offsets : List Nat)
-      (same : ∀ offset ∈ offsets, first (address + offset) = second (address + offset)) :
-      offsets.foldr (fun offset value => (first (address + offset)).val + 256 * value) 0 =
-      offsets.foldr (fun offset value => (second (address + offset)).val + 256 * value) 0 := by
-    induction offsets with
-    | nil => rfl
-    | cons offset rest ih =>
-      simp only [List.foldr_cons]
-      rw [same offset (by simp), ih (by intro i member; exact same i (by simp [member]))]
-  exact fold _ (by intro offset member; exact equal offset (List.mem_range.mp member))
+  have same : (List.range size).map (fun offset => first (address + offset)) =
+      (List.range size).map (fun offset => second (address + offset)) :=
+    List.map_congr_left (by intro offset member; exact equal offset (List.mem_range.mp member))
+  simpa only [readBytes, List.foldr_map] using congrArg
+    (fun bytes : List (Fin 256) => BitVec.ofNat (8 * size)
+      (bytes.foldr (fun byte value => byte.val + 256 * value) 0)) same
 
 /-- A multi-byte instruction access must fit the word address space and have
 permission for every byte. -/
