@@ -2,7 +2,7 @@
 
 A Lean library for reasoning about restricted Intel-syntax x86-64 assembly. Programs retain instruction operands, widths, source lines, byte addresses, encoding lengths, and resolved branch targets. Lean is the only required toolchain; its version is pinned in `lean-toolchain`.
 
-The optional [binary importer](importer/README.md) uses Rust and iced-x86 to generate a Lean program directly from a named function in a linked ELF executable. Its initial scope covers scalar functions without global data or calls; generated modules require only Lean to use.
+The optional [binary importer](importer/README.md) uses Rust and iced-x86 to generate a Lean program directly from a named function in a linked ELF executable. It supports Rivet's scalar and SSE instruction forms, without loading global data or supporting calls; generated modules require only Lean to use.
 
 ```sh
 lake build
