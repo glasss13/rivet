@@ -25,9 +25,17 @@ The initial scope is deliberately small:
 - Scalar MOV, ADD/SUB/SBB/CMP/TEST/AND/OR/XOR; 64-bit LEA, INC/DEC and register
   PUSH/POP; MOVZX into 32-bit registers; MOVSXD into 64-bit registers; plain RET;
   and direct JMP/JE/JNE/JB/JAE/JBE/JA/JS within the selected function.
+- NOT on scalar registers or memory; two/three-operand IMUL at 16/32/64 bits;
+  SHL/SHR on 32/64-bit registers with immediate counts (including the implicit
+  count-one encoding). CL counts and memory shifts are rejected.
+- SETcc and CMOVcc for E/NE/B/AE/BE/A/S, matching Rivet's modeled flags.
+- Legacy MOVUPS/MOVDQU between memory and XMM registers, MOVD from a 32-bit
+  general-purpose register into XMM, and PSHUFD between XMM registers with an
+  immediate selector. Other SIMD forms, including AVX, are rejected.
 - Register aliases and 64-bit base/index/displacement addressing supported by
   Rivet. High-byte registers, RIP-relative addressing, address-size overrides,
-  segment overrides, LOCK/REP prefixes, SIMD, and calls are rejected.
+  segment overrides, LOCK/REP prefixes, and calls are rejected. Mandatory SSE
+  prefixes are decoded as part of their instruction, not as REP operations.
 
 Every byte in the symbol's range must decode into a supported instruction;
 embedded data and unsupported padding instructions are rejected. Direct branches

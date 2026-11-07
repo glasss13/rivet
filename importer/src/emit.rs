@@ -1,7 +1,8 @@
 use crate::elf::Function;
 use anyhow::{Context, Result, bail, ensure};
 use iced_x86::{
-    Code, Decoder, DecoderOptions, EncodingKind, Instruction, Mnemonic, OpKind, Register,
+    Code, ConditionCode, Decoder, DecoderOptions, EncodingKind, Instruction, Mnemonic, OpKind,
+    Register,
 };
 use std::fmt::Write;
 
@@ -58,14 +59,28 @@ pub fn module(function: &Function<'_>, namespace: &str) -> Result<String> {
 
 fn register(register: Register) -> Result<String> {
     ensure!(
-        register.is_gpr()
+        (register.is_gpr()
             && !matches!(
                 register,
                 Register::AH | Register::BH | Register::CH | Register::DH
-            ),
+            ))
+            || (Register::XMM0..=Register::XMM15).contains(&register),
         "unsupported register {register:?}"
     );
     Ok(format!(".{register:?}").to_ascii_lowercase())
+}
+
+fn condition(instruction: &Instruction) -> Result<&'static str> {
+    Ok(match instruction.condition_code() {
+        ConditionCode::e => "equal",
+        ConditionCode::ne => "notEqual",
+        ConditionCode::b => "below",
+        ConditionCode::ae => "aboveOrEqual",
+        ConditionCode::be => "belowOrEqual",
+        ConditionCode::a => "above",
+        ConditionCode::s => "sign",
+        other => bail!("unsupported condition {other:?}"),
+    })
 }
 
 fn address(instruction: &Instruction) -> Result<String> {
@@ -180,6 +195,86 @@ fn operation(instruction: &Instruction, bytes: &[u8]) -> Result<String> {
             first()?,
             second()?
         ),
+        Not => format!(".not {}", first()?),
+        Shl | Shr => {
+            ensure!(
+                instruction.op0_kind() == OpKind::Register
+                    && (instruction.op0_register().is_gpr32()
+                        || instruction.op0_register().is_gpr64())
+                    && instruction.op1_kind() == OpKind::Immediate8,
+                "shifts require a 32/64-bit register and an immediate count"
+            );
+            format!(
+                ".shift .{} {} {}",
+                format!("{:?}", instruction.mnemonic()).to_ascii_lowercase(),
+                first()?,
+                instruction.immediate8()
+            )
+        }
+        Imul => {
+            ensure!(
+                instruction.op_count() >= 2,
+                "one-operand IMUL is not supported"
+            );
+            let immediate = if instruction.op_count() == 3 {
+                format!("(some ({}))", instruction.immediate(2) as i64)
+            } else {
+                "none".into()
+            };
+            format!(".imul {} {} {immediate}", first()?, second()?)
+        }
+        Sete | Setne | Setb | Setae | Setbe | Seta | Sets => {
+            format!(".setcc .{} {}", condition(instruction)?, first()?)
+        }
+        Cmove | Cmovne | Cmovb | Cmovae | Cmovbe | Cmova | Cmovs => {
+            format!(
+                ".cmovcc .{} {} {}",
+                condition(instruction)?,
+                first()?,
+                second()?
+            )
+        }
+        Movd => {
+            ensure!(
+                instruction.code() == Code::Movd_xmm_rm32
+                    && instruction.op1_kind() == OpKind::Register,
+                "MOVD requires an XMM destination and a 32-bit register source"
+            );
+            format!(
+                ".movd {} {}",
+                register(instruction.op0_register())?,
+                register(instruction.op1_register())?
+            )
+        }
+        Pshufd => {
+            ensure!(
+                instruction.code() == Code::Pshufd_xmm_xmmm128_imm8
+                    && instruction.op1_kind() == OpKind::Register,
+                "PSHUFD requires register operands"
+            );
+            format!(
+                ".pshufd {} {} {}",
+                register(instruction.op0_register())?,
+                register(instruction.op1_register())?,
+                instruction.immediate8()
+            )
+        }
+        Movups | Movdqu => {
+            let name = format!("{:?}", instruction.mnemonic()).to_ascii_lowercase();
+            match (instruction.op0_kind(), instruction.op1_kind()) {
+                (OpKind::Register, OpKind::Memory) => format!(
+                    ".loadXmm .{name} {} {}",
+                    register(instruction.op0_register())?,
+                    address(instruction)?
+                ),
+                (OpKind::Memory, OpKind::Register) => format!(
+                    ".storeXmm .{name} {} {}",
+                    address(instruction)?,
+                    register(instruction.op1_register())?
+                ),
+                _ => bail!("{name} requires a memory operand"),
+            }
+        }
         Mov => format!(".mov {} {}", first()?, second()?),
         Lea => format!(".lea {} {}", register64()?, address(instruction)?),
         Movzx => {
@@ -211,17 +306,11 @@ fn operation(instruction: &Instruction, bytes: &[u8]) -> Result<String> {
                 instruction.op0_kind() == OpKind::NearBranch64,
                 "unsupported branch form"
             );
-            let condition = match instruction.mnemonic() {
-                Je => "equal",
-                Jne => "notEqual",
-                Jb => "below",
-                Jae => "aboveOrEqual",
-                Jbe => "belowOrEqual",
-                Ja => "above",
-                Js => "sign",
-                _ => unreachable!(),
-            };
-            format!(".jcc .{condition} {:#x}", instruction.near_branch64())
+            format!(
+                ".jcc .{} {:#x}",
+                condition(instruction)?,
+                instruction.near_branch64()
+            )
         }
         Ret if instruction.code() == Code::Retnq => ".ret".into(),
         _ => bail!("unsupported instruction {:?}", instruction.code()),
