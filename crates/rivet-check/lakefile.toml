@@ -4,7 +4,7 @@ defaultTargets = ["model"]
 
 [[require]]
 name = "rivet"
-path = ".."
+path = "../.."
 
 [[require]]
 name = "json"

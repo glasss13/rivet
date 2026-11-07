@@ -37,7 +37,7 @@ pub struct Address {
     pub base: Option<Register64>,
     pub index: Option<Register64>,
     pub scale: Scale,
-    pub displacement: i32,
+    pub displacement: i64,
 }
 impl fmt::Display for Address {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -22,8 +22,10 @@ fn main() -> Result<()> {
     let args = Arguments::parse();
     let bytes = fs::read(&args.input).context("reading ELF file")?;
     let function = elf::function(&bytes, &args.function)?;
+    let program = rivet_import::decode(function.bytes, function.address)?;
     let source = emit::module(
-        &function,
+        &program,
+        function.address,
         args.namespace.as_deref().unwrap_or(&args.function),
     )?;
     fs::write(&args.output, source).context("writing Lean module")?;
