@@ -51,16 +51,88 @@ inductive Reg8 where
   | .r13b => .r13
   | .r14b => .r14
   | .r15b => .r15
-structure Mem8 where
-  bytePtr ::
-  base : Reg
+inductive Reg16 where
+  | ax | bx | cx | dx | si | di | bp | sp | r8w | r9w | r10w | r11w | r12w | r13w | r14w | r15w
   deriving DecidableEq, Repr
+@[simp] def Reg16.parent : Reg16 → Reg
+  | .ax => .rax
+  | .bx => .rbx
+  | .cx => .rcx
+  | .dx => .rdx
+  | .si => .rsi
+  | .di => .rdi
+  | .bp => .rbp
+  | .sp => .rsp
+  | .r8w => .r8
+  | .r9w => .r9
+  | .r10w => .r10
+  | .r11w => .r11
+  | .r12w => .r12
+  | .r13w => .r13
+  | .r14w => .r14
+  | .r15w => .r15
+
+inductive Width where
+  | byte | word | dword | qword
+  deriving DecidableEq, Repr
+
+def Width.bytes : Width → Nat
+  | .byte => 1 | .word => 2 | .dword => 4 | .qword => 8
+
+def Width.bits (width : Width) : Nat := 8 * width.bytes
+
+inductive Scale where
+  | one | two | four | eight
+  deriving DecidableEq, Repr
+
+def Scale.value : Scale → Nat
+  | .one => 1 | .two => 2 | .four => 4 | .eight => 8
+
+/-- A 64-bit effective address; displacement is signed and arithmetic wraps. -/
+structure Address where
+  base : Option Reg := none
+  index : Option Reg := none
+  scale : Scale := .one
+  displacement : Int := 0
+  deriving DecidableEq, Repr
+
+def Address.baseOnly (register : Reg) : Address := { base := some register }
+
+inductive Operand where
+  | reg8 (register : Reg8)
+  | reg16 (register : Reg16)
+  | reg32 (register : Reg32)
+  | reg64 (register : Reg)
+  | memory (width : Width) (address : Address)
+  | immediate (value : Int)
+  deriving DecidableEq, Repr
+
+def Operand.width : Operand → Option Width
+  | .reg8 _ => some .byte | .reg16 _ => some .word
+  | .reg32 _ => some .dword | .reg64 _ => some .qword
+  | .memory width _ => some width | .immediate _ => none
+
+def Operand.register : Operand → Option Reg
+  | .reg8 register => some register.parent | .reg16 register => some register.parent
+  | .reg32 register => some register.parent | .reg64 register => some register
+  | _ => none
+
+/-- MOV requires equal widths, no memory-to-memory transfer, and an encodable immediate. -/
+def validMove (destination source : Operand) : Bool :=
+  match destination.width with
+  | none => false
+  | some width =>
+    match destination, source with
+    | .memory _ _, .memory _ _ => false
+    | .memory .qword _, .immediate value => -(2^31) ≤ value && value < 2^31
+    | _, .immediate value => -(2^(width.bits-1)) ≤ value && value < 2^width.bits
+    | _, _ => source.width == some width
+
 inductive Op where
   | xor (destination source : Reg32)
   | test (left right : Reg)
-  | movzx (destination : Reg32) (source : Mem8)
-  | mov (destination source : Reg)
-  | store8 (destination : Mem8) (source : Reg8)
+  | movzx (destination : Reg32) (source : Address)
+  | mov (destination source : Operand)
   | cmp (left right : Reg)
   | add (destination source : Reg)
   | inc (destination : Reg)
@@ -73,7 +145,8 @@ inductive Op where
 /-- Whether an instruction can write a register, including RET advancing RSP. -/
 def modifies : Op → Reg → Bool
   | .xor destination _, register | .movzx destination _, register => destination.parent == register
-  | .mov destination _, register | .add destination _, register | .inc destination, register | .dec destination, register => destination == register
+  | .mov destination _, register => destination.register == some register
+  | .add destination _, register | .inc destination, register | .dec destination, register => destination == register
   | .ret, register => register == .rsp
   | _, _ => false
 

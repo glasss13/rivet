@@ -89,23 +89,138 @@ def parseRegister8 : String → Except String Reg8
   | "r15b" => .ok .r15b
   | name => .error ("unsupported register: " ++ name)
 
-def parseMemory8 (source : String) : Except String Mem8 := do
-  match source.toList with
-  | '[' :: rest =>
-    match rest.reverse with
-    | ']' :: name => return ⟨← parseRegister (String.ofList name.reverse)⟩
-    | _ => throw "expected [register]"
-  | _ => throw "expected [register]"
+def parseRegister16 : String → Except String Reg16
+  | "ax" => .ok .ax
+  | "bx" => .ok .bx
+  | "cx" => .ok .cx
+  | "dx" => .ok .dx
+  | "si" => .ok .si
+  | "di" => .ok .di
+  | "bp" => .ok .bp
+  | "sp" => .ok .sp
+  | "r8w" => .ok .r8w
+  | "r9w" => .ok .r9w
+  | "r10w" => .ok .r10w
+  | "r11w" => .ok .r11w
+  | "r12w" => .ok .r12w
+  | "r13w" => .ok .r13w
+  | "r14w" => .ok .r14w
+  | "r15w" => .ok .r15w
+  | name => .error ("unsupported register: " ++ name)
+
+def joinTokens (parts : List String) : String :=
+  String.ofList (List.intercalate [' '] (parts.map String.toList))
+
+def startsInteger (source : String) : Bool :=
+  source.toList.head?.any (fun character => character.isDigit || character == '-' || character == '+')
+
+/-- Decimal or hexadecimal integer literals, with an optional sign. -/
+def parseInteger (source : String) : Except String Int := do
+  let (negative, characters) := match source.toList with
+    | '-' :: rest => (true, rest)
+    | '+' :: rest => (false, rest)
+    | rest => (false, rest)
+  if characters.head? == some '0' && characters.length > 1 &&
+      characters[1]? != some 'x' && characters[1]? != some 'X' then
+    throw "use decimal without leading zeroes, or hexadecimal with 0x"
+  let (radix, digits) := match characters with
+    | '0' :: 'x' :: rest | '0' :: 'X' :: rest => (16, rest)
+    | rest => (10, rest)
+  if digits.isEmpty then throw "expected integer"
+  let value ← digits.foldlM (fun value character => do
+    let digit := if '0' ≤ character && character ≤ '9' then character.toNat - '0'.toNat
+      else if 'a' ≤ character.toLower && character.toLower ≤ 'f' then character.toLower.toNat - 'a'.toNat + 10
+      else radix
+    if digit ≥ radix then throw ("invalid integer: " ++ source)
+    pure (value * radix + digit)) 0
+  return if negative then -(Int.ofNat value) else Int.ofNat value
+
+def parseScale : Int → Except String Scale
+  | 1 => .ok .one | 2 => .ok .two | 4 => .ok .four | 8 => .ok .eight
+  | _ => .error "address scale must be 1, 2, 4, or 8"
+
+def parseAddress (source : String) : Except String Address := do
+  let words := (splitChars ' ' (source.toList.map (fun character =>
+    if character == '\t' then ' ' else character))).filter (!·.isEmpty)
+  for (left, right) in words.zip (words.drop 1) do
+    let isName := fun character : Char => character.isAlpha || character.isDigit
+    if left.getLast?.any isName && right.head?.any isName then
+      throw "whitespace inside an address term"
+  let compact := String.ofList words.flatten
+  let inner ← match compact.toList with
+    | '[' :: rest => match rest.reverse with
+      | ']' :: characters => pure (String.ofList characters.reverse)
+      | _ => throw "expected [address]"
+    | _ => throw "expected [address]"
+  let expanded := inner.toList.flatMap (fun character => if character == '-' then ['+', '-'] else [character])
+  let groups := (splitChars '+' expanded).map String.ofList
+  let terms := if inner.toList.head? == some '-' then groups.drop 1 else groups
+  let address ← terms.foldlM (fun (address : Address) term => do
+    if term.toList.isEmpty then throw "empty address term"
+    match (splitChars '*' term.toList).map String.ofList with
+    | [left, right] =>
+      if address.index.isSome then throw "multiple index registers"
+      let (register, scale) ← if startsInteger left then
+        pure (← parseRegister right, ← parseScale (← parseInteger left))
+      else pure (← parseRegister left, ← parseScale (← parseInteger right))
+      if register == .rsp then throw "rsp cannot be an index register"
+      return { address with index := some register, scale }
+    | [single] =>
+      if startsInteger single then
+        return { address with displacement := address.displacement + (← parseInteger single) }
+      let register ← parseRegister single
+      if address.base.isNone then return { address with base := some register }
+      if address.index.isSome then throw "too many address registers"
+      if register == .rsp then
+        return { address with base := some register, index := address.base }
+      return { address with index := some register }
+    | _ => throw "invalid address term") {}
+  if address.index == some .rsp then throw "rsp cannot be an index register"
+  unless -(2^31) ≤ address.displacement && address.displacement < 2^31 do
+    throw "address displacement exceeds signed 32 bits"
+  return address
+
+def parseOperand (source : String) : Except String Operand := do
+  let source := String.ofList ((clean source).toList.map Char.toLower)
+  match tokens source with
+  | size :: "ptr" :: address =>
+    let width ← match size with
+      | "byte" => pure Width.byte | "word" => pure Width.word
+      | "dword" => pure Width.dword | "qword" => pure Width.qword
+      | _ => throw "unsupported memory width"
+    return .memory width (← parseAddress (joinTokens address))
+  | [name] =>
+    if startsInteger name then
+      return .immediate (← parseInteger name)
+    if let .ok register := parseRegister name then return .reg64 register
+    if let .ok register := parseRegister32 name then return .reg32 register
+    if let .ok register := parseRegister16 name then return .reg16 register
+    if let .ok register := parseRegister8 name then return .reg8 register
+    throw ("unsupported operand: " ++ name)
+  | _ => throw "expected register, integer, or sized memory operand"
+
+def parseMove (operands : String) : Except String Op := do
+  match (splitChars ',' operands.toList).map String.ofList with
+  | [destination, source] =>
+    let destination ← parseOperand destination
+    let source ← parseOperand source
+    unless validMove destination source do throw "invalid MOV operands or immediate"
+    return .mov destination source
+  | _ => throw "MOV requires two operands"
 
 def parseOp (labels : Labels) (source : String) : Except String Op := do
   match tokens source with
   | ["xor", destination, ",", operand] => return .xor (← parseRegister32 destination) (← parseRegister32 operand)
   | ["test", left, ",", right] => return .test (← parseRegister left) (← parseRegister right)
-  | ["movzx", destination, ",", "BYTE", "PTR", memory] =>
-    return .movzx (← parseRegister32 destination) (← parseMemory8 memory)
-  | ["mov", "BYTE", "PTR", memory, ",", operand] =>
-    return .store8 (← parseMemory8 memory) (← parseRegister8 operand)
-  | ["mov", destination, ",", operand] => return .mov (← parseRegister destination) (← parseRegister operand)
+  | "movzx" :: destination :: "," :: memory =>
+    match ← parseOperand (joinTokens memory) with
+    | .memory .byte address => return .movzx (← parseRegister32 destination) address
+    | _ => throw "MOVZX currently requires a byte memory source"
+  | "mov" :: operands => parseMove (joinTokens operands)
+  | "movabs" :: operands =>
+    match ← parseMove (joinTokens operands) with
+    | .mov (.reg64 destination) (.immediate value) => return .mov (.reg64 destination) (.immediate value)
+    | _ => throw "MOVABS requires a 64-bit register and immediate"
   | ["cmp", left, ",", right] => return .cmp (← parseRegister left) (← parseRegister right)
   | ["add", destination, ",", operand] => return .add (← parseRegister destination) (← parseRegister operand)
   | ["inc", destination] => return .inc (← parseRegister destination)

@@ -50,6 +50,28 @@ pub enum Register32 {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Display, VariantArray, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
+pub enum Register16 {
+    Ax,
+    Bx,
+    Cx,
+    Dx,
+    Si,
+    Di,
+    Bp,
+    Sp,
+    R8w,
+    R9w,
+    R10w,
+    R11w,
+    R12w,
+    R13w,
+    R14w,
+    R15w,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Display, VariantArray, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum Register8 {
     Al,
     Bl,

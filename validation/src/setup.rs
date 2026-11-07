@@ -110,15 +110,21 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
     }
     let mut values = case.registers;
     values[Rsp as usize] = base + stack_offset as u64;
-    let data_pointer = if case.fault_memory { guard } else { base + 64 };
-    for operation in &case.program {
-        let base_register = match operation {
-            Operation::Movzx { source, .. } => Some(source.base),
-            Operation::Store8 { destination, .. } => Some(destination.base),
-            _ => None,
-        };
-        if let Some(register) = base_register {
+    // Include accesses starting just before the guard page, so wider accesses
+    // can fault after their first byte. Other cases exercise unaligned data.
+    let data_pointer = if case.fault_memory {
+        guard - 8
+    } else {
+        base + 64
+    };
+    for address in case.program.iter().filter_map(Operation::memory_address) {
+        if let Some(index) = address.index {
+            values[index as usize] = case.registers[index as usize] % 16;
+        }
+        if let Some(register) = address.base {
             values[register as usize] = data_pointer + case.registers[register as usize] % 16;
+        } else if let Some(index) = address.index {
+            values[index as usize] = data_pointer / address.scale.value();
         }
     }
     if case.program[0] == Operation::Ret && case.fault_memory {

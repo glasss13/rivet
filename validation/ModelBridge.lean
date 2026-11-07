@@ -9,7 +9,11 @@ open Rivet Json
 deriving instance FromJson for Reg
 deriving instance FromJson for Reg8
 deriving instance FromJson for Reg32
-deriving instance FromJson for Mem8
+deriving instance FromJson for Reg16
+deriving instance FromJson for Width
+deriving instance FromJson for Scale
+deriving instance FromJson for Address
+deriving instance FromJson for Operand
 deriving instance FromJson for Op
 
 structure Request where

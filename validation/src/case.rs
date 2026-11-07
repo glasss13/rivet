@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::register::{Register8, Register32, Register64};
+use crate::{
+    operand::{Address, Operand, Scale, Width},
+    register::{Register32, Register64},
+};
 use Register32::*;
 use Register64::*;
 use strum::{EnumCount, VariantArray};
@@ -9,11 +12,6 @@ use strum::{EnumCount, VariantArray};
 const MAX_BODY_INSTRUCTIONS: usize = 8;
 const MAX_DATA_BYTES: usize = 32;
 const MAX_PROGRAM_STEPS: usize = 64;
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Memory8 {
-    pub base: Register64,
-}
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, EnumCount)]
 #[serde(rename_all = "lowercase")]
@@ -28,15 +26,11 @@ pub enum Operation {
     },
     Movzx {
         destination: Register32,
-        source: Memory8,
+        source: Address,
     },
     Mov {
-        destination: Register64,
-        source: Register64,
-    },
-    Store8 {
-        destination: Memory8,
-        source: Register8,
+        destination: Operand,
+        source: Operand,
     },
     Cmp {
         left: Register64,
@@ -64,6 +58,20 @@ pub enum Operation {
     Ret,
 }
 impl Operation {
+    pub fn memory_address(&self) -> Option<&Address> {
+        match self {
+            Self::Movzx { source, .. } => Some(source),
+            Self::Mov {
+                destination: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Mov {
+                source: Operand::Memory { address, .. },
+                ..
+            } => Some(address),
+            _ => None,
+        }
+    }
     fn assembly(self) -> String {
         match self {
             Self::Xor {
@@ -74,15 +82,11 @@ impl Operation {
             Self::Movzx {
                 destination,
                 source,
-            } => format!("movzx {destination}, BYTE PTR [{}]", source.base),
+            } => format!("movzx {destination}, BYTE PTR {source}"),
             Self::Mov {
                 destination,
                 source,
             } => format!("mov {destination}, {source}"),
-            Self::Store8 {
-                destination,
-                source,
-            } => format!("mov BYTE PTR [{}], {source}", destination.base),
             Self::Cmp { left, right } => format!("cmp {left}, {right}"),
             Self::Jb { target } => format!("jb rivet_instruction_{target}"),
             Self::Add {
@@ -193,7 +197,85 @@ fn binary_instruction<Operand: Copy>(
     instruction(destination, source)
 }
 
+fn random_address(generator: &mut fastrand::Rng, whole_program: bool) -> Address {
+    let base = if whole_program {
+        Rdi
+    } else {
+        sample(generator, Register64::VARIANTS)
+    };
+    let index = if whole_program {
+        Rbx
+    } else {
+        sample(generator, Register64::VARIANTS)
+    };
+    let index = (generator.bool() && index != Rsp && index != base).then_some(index);
+    Address {
+        base: if !whole_program && index.is_some() && generator.usize(..4) == 0 {
+            None
+        } else {
+            Some(base)
+        },
+        index,
+        scale: sample(generator, Scale::VARIANTS),
+        displacement: sample(generator, &[-64, -8, -7, -1, 0, 1, 7, 8, 31, 63]),
+    }
+}
+
+fn random_move(generator: &mut fastrand::Rng, whole_program: bool) -> Operation {
+    let width = sample(generator, Width::VARIANTS);
+    let destination = if whole_program {
+        Rcx
+    } else {
+        sample(generator, Register64::VARIANTS)
+    };
+    let source = if whole_program {
+        Rdx
+    } else if generator.bool() {
+        destination
+    } else {
+        sample(generator, Register64::VARIANTS)
+    };
+    let register = Operand::register(width, destination);
+    let source = Operand::register(width, source);
+    let memory = Operand::Memory {
+        width,
+        address: random_address(generator, whole_program),
+    };
+    let form = generator.usize(..5);
+    let bits = if form == 4 && width == Width::Qword {
+        32
+    } else {
+        width.bits()
+    };
+    let unsigned = (random_word(generator) as i128) & ((1i128 << bits) - 1);
+    let value = if (form == 4 && width == Width::Qword) || generator.bool() {
+        if unsigned >= 1i128 << (bits - 1) {
+            unsigned - (1i128 << bits)
+        } else {
+            unsigned
+        }
+    } else {
+        unsigned
+    };
+    let immediate = Operand::Immediate { value };
+    let (destination, source) = match form {
+        0 => (register, source),
+        1 => (register, immediate),
+        2 => (register, memory),
+        3 => (memory, source),
+        4 => (memory, immediate),
+        _ => unreachable!(),
+    };
+    Operation::Mov {
+        destination,
+        source,
+    }
+}
+
 fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
+    if generator.bool() {
+        return random_move(generator, false);
+    }
     match generator.usize(..Operation::COUNT) {
         0 => binary_instruction(generator, Register32::VARIANTS, |destination, source| {
             Operation::Xor {
@@ -206,9 +288,7 @@ fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
         }),
         2 => Operation::Movzx {
             destination: sample(generator, Register32::VARIANTS),
-            source: Memory8 {
-                base: sample(generator, Register64::VARIANTS),
-            },
+            source: random_address(generator, false),
         },
         3 => binary_instruction(generator, Register64::VARIANTS, |destination, source| {
             Operation::Add {
@@ -224,23 +304,12 @@ fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
         },
         6 => Operation::Jz { target: 2 },
         7 => Operation::Jnz { target: 2 },
-        8 => binary_instruction(generator, Register64::VARIANTS, |destination, source| {
-            Operation::Mov {
-                destination,
-                source,
-            }
-        }),
-        9 => Operation::Store8 {
-            destination: Memory8 {
-                base: sample(generator, Register64::VARIANTS),
-            },
-            source: sample(generator, Register8::VARIANTS),
-        },
-        10 => binary_instruction(generator, Register64::VARIANTS, |left, right| {
+        8 => random_move(generator, false),
+        9 => binary_instruction(generator, Register64::VARIANTS, |left, right| {
             Operation::Cmp { left, right }
         }),
-        11 => Operation::Jb { target: 2 },
-        12 => Operation::Ret,
+        10 => Operation::Jb { target: 2 },
+        11 => Operation::Ret,
         _ => unreachable!(),
     }
 }
@@ -258,7 +327,7 @@ fn random_program_instruction(generator: &mut fastrand::Rng, target: usize) -> O
         },
         2 => Operation::Movzx {
             destination: Edx,
-            source: Memory8 { base: Rdi },
+            source: Address::base_only(Rdi),
         },
         3 => Operation::Add {
             destination: Rax,
@@ -268,20 +337,13 @@ fn random_program_instruction(generator: &mut fastrand::Rng, target: usize) -> O
         5 => Operation::Dec { destination: Rsi },
         6 => Operation::Jz { target },
         7 => Operation::Jnz { target },
-        8 => Operation::Mov {
-            destination: Rcx,
-            source: Rdx,
-        },
-        9 => Operation::Store8 {
-            destination: Memory8 { base: Rdi },
-            source: Register8::Dl,
-        },
-        10 => Operation::Cmp {
+        8 => random_move(generator, true),
+        9 => Operation::Cmp {
             left: Rax,
             right: Rdx,
         },
-        11 => Operation::Jb { target },
-        12 => Operation::Ret,
+        10 => Operation::Jb { target },
+        11 => Operation::Ret,
         _ => unreachable!(),
     }
 }

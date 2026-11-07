@@ -3,9 +3,42 @@ public import Rivet.Model
 @[expose] public section
 namespace Rivet
 
+@[simp] private theorem writeMemory_registers (state : MachineState) (address : Nat) (width : Width)
+    (value : BitVec 64) : (state.writeMemory address width value).registers = state.registers := by
+  unfold MachineState.writeMemory
+  generalize List.range width.bytes = offsets
+  induction offsets generalizing state with
+  | nil => rfl
+  | cons offset offsets inductionHypothesis =>
+    simpa [List.foldl, MachineState.storeByte] using inductionHypothesis
+      (state.storeByte (address + offset) ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩)
+
+@[simp] theorem MachineState.writeMemory_status (state : MachineState) (address : Nat) (width : Width)
+    (value : BitVec 64) : (state.writeMemory address width value).status = state.status := by
+  unfold MachineState.writeMemory
+  generalize List.range width.bytes = offsets
+  induction offsets generalizing state with
+  | nil => rfl
+  | cons offset offsets inductionHypothesis =>
+    simpa [List.foldl, MachineState.storeByte] using inductionHypothesis
+      (state.storeByte (address + offset) ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩)
+
+@[simp] theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
+    (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
+  cases operand <;> simp [MachineState.writeOperand, MachineState.write]
+
 theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (unchanged : modifies operation register = false) :
     (stepOp operation state).registers register = state.registers register := by
-  cases operation <;> simp_all [modifies, stepOp, next, MachineState.write, MachineState.storeByte, Ne.symm] <;> split <;> simp_all [Ne.symm]
+  cases operation with
+  | mov destination source =>
+    simp only [stepOp]
+    split
+    · cases destination <;>
+        simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
+    · rfl
+  | _ =>
+    simp_all [modifies, stepOp, next, MachineState.write, Ne.symm] <;>
+      split <;> simp_all [Ne.symm]
 
 theorem step_preserves (program : Program) (state : MachineState) (register : Reg)
     (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
@@ -41,7 +74,14 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
   split
   · split
     · rename_i instruction instructionAtIndex
-      cases instruction.op <;> simp_all [stepOp, next, MachineState.write, MachineState.storeByte] <;> split <;> simp_all
+      cases instruction.op with
+      | mov destination source =>
+        simp only [stepOp]
+        split
+        · cases source <;> simp_all [next, MachineState.recordRead]
+        · exact recorded
+      | _ =>
+        simp_all [stepOp, next, MachineState.write] <;> split <;> simp_all
     · exact recorded
   · exact recorded
 
