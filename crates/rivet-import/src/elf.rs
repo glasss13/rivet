@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, ensure};
 use object::{
     Architecture, Object, ObjectKind, ObjectSymbol, SymbolFlags, SymbolKind,
-    elf::{PF_X, PT_DYNAMIC, PT_INTERP, PT_LOAD, SHT_REL, SHT_RELA, SHT_RELR, STT_FUNC},
+    elf::{
+        PF_R, PF_W, PF_X, PT_DYNAMIC, PT_INTERP, PT_LOAD, SHT_REL, SHT_RELA, SHT_RELR, STT_FUNC,
+    },
     read::elf::{ElfFile64, ProgramHeader, SectionHeader},
 };
 
@@ -13,6 +15,15 @@ pub struct Function<'a> {
 pub struct Image<'a> {
     pub entry: u64,
     pub functions: Vec<Function<'a>>,
+    pub regions: Vec<MemoryRegion<'a>>,
+}
+
+pub struct MemoryRegion<'a> {
+    pub address: u64,
+    pub size: u64,
+    pub bytes: &'a [u8],
+    pub readable: bool,
+    pub writable: bool,
 }
 
 pub fn image<'a>(bytes: &'a [u8], entry_name: &str) -> Result<Image<'a>> {
@@ -38,6 +49,47 @@ pub fn image<'a>(bytes: &'a [u8], entry_name: &str) -> Result<Image<'a>> {
             .any(|header| matches!(header.sh_type(endian), SHT_REL | SHT_RELA | SHT_RELR)),
         "relocation records are not supported; link the executable without --emit-relocs"
     );
+    let mut regions = Vec::new();
+    for header in file.elf_program_headers() {
+        if header.p_type(endian) != PT_LOAD {
+            continue;
+        }
+        let address = header.p_vaddr(endian);
+        let size = header.p_memsz(endian);
+        let flags = header.p_flags(endian);
+        ensure!(
+            header.p_filesz(endian) <= size,
+            "segment file size exceeds memory size"
+        );
+        address
+            .checked_add(size)
+            .context("segment address overflow")?;
+        ensure!(
+            flags & (PF_W | PF_X) != (PF_W | PF_X),
+            "writable executable segments are not supported"
+        );
+        let data = header
+            .data(endian, bytes)
+            .map_err(|()| anyhow::anyhow!("segment data outside ELF file"))?;
+        if size != 0 {
+            regions.push(MemoryRegion {
+                address,
+                size,
+                bytes: data,
+                readable: flags & PF_R == PF_R,
+                writable: flags & PF_W == PF_W,
+            });
+        }
+    }
+    regions.sort_by_key(|region| region.address);
+    for pair in regions.windows(2) {
+        ensure!(
+            pair[0].address + pair[0].size <= pair[1].address,
+            "overlapping loadable segments at {:#x} and {:#x}",
+            pair[0].address,
+            pair[1].address
+        );
+    }
     let symbols: Vec<_> = file
         .symbols()
         .filter(|symbol| !symbol.is_undefined() && symbol.kind() == SymbolKind::Text)
@@ -97,5 +149,9 @@ pub fn image<'a>(bytes: &'a [u8], entry_name: &str) -> Result<Image<'a>> {
             pair[1].address
         );
     }
-    Ok(Image { entry, functions })
+    Ok(Image {
+        entry,
+        functions,
+        regions,
+    })
 }
