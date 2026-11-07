@@ -375,19 +375,32 @@ def scanLine (scan : Scan) (lineNumber : Nat) (rawLine : String) : Except String
   if !scan.entrySeen then throw "instruction before function entry"
   return { scan with lines := scan.lines ++ [(lineNumber,lineSource)], count := scan.count+1 }
 
-def parse (source : String) : Except String Program := do
+/-- Assembly syntax does not determine encoding lengths. Supply the layout chosen by the assembler. -/
+def parse (source : String) (baseAddress : Nat) (instructionLengths : List Nat) : Except String Program := do
+  unless baseAddress < word do throw "base address exceeds 64 bits"
+  let mut address := baseAddress
+  let mut addresses := []
+  for length in instructionLengths do
+    unless 0 < length && length ≤ 15 && address + length ≤ word do
+      throw "invalid instruction length or address range"
+    addresses := address :: addresses
+    address := address + length
+  addresses := addresses.reverse ++ [address]
   let numberedLines := ((splitChars '\n' source.toList).map String.ofList).zipIdx 1
   let scan ← numberedLines.foldlM (fun scan (lineSource,lineNumber) =>
     match scanLine scan lineNumber lineSource with
     | .ok scan => pure scan
     | .error message => .error ("line " ++ toString lineNumber ++ ": " ++ message)) {}
   if scan.count == 0 then throw "empty function"
-  let program ← scan.lines.mapM (fun (lineNumber,lineSource) => do
-    match parseOp scan.labels lineSource with
-    | .ok operation => pure (Instruction.mk operation lineNumber)
-    | .error message => .error ("line " ++ toString lineNumber ++ ": " ++ message))
+  unless scan.count == instructionLengths.length do throw "expected one length per instruction"
+  let labels := scan.labels.map fun (name, index) => (name, addresses[index]!)
+  let program ← ((scan.lines.zip instructionLengths).zip addresses).mapM
+    (fun (((lineNumber, lineSource), length), address) => do
+      match parseOp labels lineSource with
+      | .ok operation => pure (Instruction.mk address length operation lineNumber)
+      | .error message => .error ("line " ++ toString lineNumber ++ ": " ++ message))
   if program.any (fun instruction => match instruction.op with
-      | .jmp targetIndex | .jcc _ targetIndex => targetIndex ≥ program.length
+      | .jmp targetAddress | .jcc _ targetAddress => targetAddress == address
       | _ => false) then throw "branch target outside function"
   return program
 end Rivet

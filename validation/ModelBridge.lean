@@ -20,10 +20,11 @@ deriving instance FromJson for ShiftOp
 deriving instance FromJson for Operand
 deriving instance FromJson for Condition
 deriving instance FromJson for Op
+deriving instance FromJson for Instruction
 deriving instance FromJson for FlagValues
 
 structure Request where
-  program : Array Op
+  program : Array Instruction
   registers : Array Nat
   xmmRegisters : Array (Array Nat)
   signFlag : Bool
@@ -69,7 +70,8 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     throw "invalid XMM register values"
   unless request.memory.size ≤ 65536 && request.memory.all (· < 256) do
     throw "invalid memory"
-  let program := request.program.toList.map fun operation => ⟨operation, 0⟩
+  let program := request.program.toList
+  let some first := program.head? | throw "empty program"
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
@@ -85,7 +87,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
       let value := if request.memoryBase ≤ address then
         request.memory[address - request.memoryBase]?.getD 0 else 0
       ⟨value % 256, Nat.mod_lt _ (by decide)⟩
-    status := .running 0
+    status := .running first.address
     readHistory := [] }
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]

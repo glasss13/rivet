@@ -305,11 +305,19 @@ impl Case {
     }
 }
 
+#[derive(Serialize)]
+pub struct Instruction {
+    pub address: u64,
+    pub length: u64,
+    pub op: Operation,
+    pub line: u64,
+}
+
 // The same program and initial state are used by both runners.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionInput {
-    pub program: Vec<Operation>,
+    pub program: Vec<Instruction>,
     pub registers: [u64; 16],
     pub xmm_registers: [[u32; 4]; 16],
     pub sign_flag: bool,
@@ -324,7 +332,7 @@ pub struct ExecutionInput {
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Status {
-    Running { instruction_index: u64 },
+    Running { address: u64 },
     Returned { address: u64 },
     Fault,
     Outside { address: u64 },

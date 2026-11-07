@@ -4,8 +4,8 @@ import Rivet.ExecutionProperties
 @[expose] public section
 namespace Rivet
 
-abbrev InstructionAt (program : Program) (index : Nat) (instruction : Op) : Prop :=
-  (program[index]?).map Instruction.op = some instruction
+abbrev InstructionAt (program : Program) (address : Nat) (instruction : Op) : Prop :=
+  (program.fetch address).map Instruction.op = some instruction
 
 @[simp] theorem execute_zero (program : Program) (initial : MachineState) {choices : FlagChoices} :
     execute program 0 initial choices = initial := by rfl
@@ -258,21 +258,21 @@ theorem Diverges.of_progress (invariant : MachineState → Prop) (initially : in
         rw [unchanged] at nextRunning
         simp [stoppedBool] at nextRunning
 
-private theorem one (code : InstructionAt program index instruction)
-    (location : initial.status = .running index) (undefinedFlags : FlagValues) :
-    step program initial undefinedFlags = stepOp instruction initial undefinedFlags := by
+private theorem one (code : InstructionAt program address instruction)
+    (location : initial.status = .running address) (undefinedFlags : FlagValues) :
+    step program initial undefinedFlags = stepOp instruction (program.nextAddress address) initial undefinedFlags := by
   simp only [step, location]
-  cases entry : program[index]? with
+  cases entry : program.fetch address with
   | none => simp [InstructionAt, entry] at code
-  | some found => simp [InstructionAt, entry] at code; simp [code]
+  | some found => simp [InstructionAt, entry] at code; simp [code, Program.nextAddress, entry]
 
 -- Every instruction has the same contract shape as a multi-instruction block.
 -- `code` is checked automatically for concrete programs, or supplied explicitly.
-theorem clear (program : Program) (index : Nat) (destination : Reg32) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.binary .xor (.reg32 destination) (.reg32 destination)) := by decide +kernel) :
+theorem clear (program : Program) (address : Nat) (destination : Reg32) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.binary .xor (.reg32 destination) (.reg32 destination)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write destination.parent 0 with
-      status := .running (index+1), zeroFlag := true, carryFlag := false, signFlag := false }) := by
+      status := .running (program.nextAddress address), zeroFlag := true, carryFlag := false, signFlag := false }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -284,11 +284,11 @@ theorem clear (program : Program) (index : Nat) (destination : Reg32) (initial :
   simp_all [ExecutionStatus.advance, MachineState.write]
   all_goals rfl
 
-theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.binary .test (.reg64 register) (.reg64 register)) := by decide +kernel) :
+theorem test_zero (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.binary .test (.reg64 register) (.reg64 register)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with
-      status := .running (index+1), zeroFlag := initial.registers register == 0, carryFlag := false, signFlag := (initial.registers register).msb }) := by
+      status := .running (program.nextAddress address), zeroFlag := initial.registers register == 0, carryFlag := false, signFlag := (initial.registers register).msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -300,11 +300,11 @@ theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : 
   simp_all [ExecutionStatus.advance]
   all_goals rfl
 
-theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
-    (location : initial.status = .running index) (allowed : initial.readable (initial.registers base).toNat = true)
-    (code : InstructionAt program index (.movzx destination (.memory .byte (Address.baseOnly base))) := by decide +kernel) :
+theorem read_byte (program : Program) (address : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
+    (location : initial.status = .running address) (allowed : initial.readable (initial.registers base).toNat = true)
+    (code : InstructionAt program address (.movzx destination (.memory .byte (Address.baseOnly base))) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write destination.parent (BitVec.ofNat 64 (initial.memory (initial.registers base).toNat).val) with
-      status := .running (index+1), readHistory := initial.readHistory ++ [⟨(initial.registers base).toNat,1⟩] }) := by
+      status := .running (program.nextAddress address), readHistory := initial.readHistory ++ [⟨(initial.registers base).toNat,1⟩] }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -317,12 +317,12 @@ theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base 
     Operand.width, MachineState.canRead, permits, Width.bytes, MachineState.readOperand,
     readMemory, MachineState.recordRead] <;> try rfl
 
-theorem add (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.binary .add (.reg64 destination) (.reg64 source)) := by decide +kernel) :
+theorem add (program : Program) (address : Nat) (destination source : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.binary .add (.reg64 destination) (.reg64 source)) := by decide +kernel) :
     let result := initial.registers destination + initial.registers source
     Ensures program (· = initial) (· = { initial.write destination result with
-      status := .running (index+1), zeroFlag := result == 0, carryFlag := result < initial.registers destination, signFlag := result.msb }) := by
+      status := .running (program.nextAddress address), zeroFlag := result == 0, carryFlag := result < initial.registers destination, signFlag := result.msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -334,34 +334,34 @@ theorem add (program : Program) (index : Nat) (destination source : Reg) (initia
   simp_all [ExecutionStatus.advance, MachineState.write]
   all_goals rfl
 
-theorem inc (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.inc register) := by decide +kernel) :
+theorem inc (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.inc register) := by decide +kernel) :
     let result := initial.registers register + 1
     Ensures program (· = initial) (· = { initial.write register result with
-      status := .running (index+1), zeroFlag := result == 0, signFlag := result.msb }) := by
+      status := .running (program.nextAddress address), zeroFlag := result == 0, signFlag := result.msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
   simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
 
-theorem dec (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.dec register) := by decide +kernel) :
+theorem dec (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.dec register) := by decide +kernel) :
     let result := initial.registers register - 1
     Ensures program (· = initial) (· = { initial.write register result with
-      status := .running (index+1), zeroFlag := result == 0, signFlag := result.msb }) := by
+      status := .running (program.nextAddress address), zeroFlag := result == 0, signFlag := result.msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
   simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
 
-theorem branch_zero (program : Program) (index target : Nat) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.jcc .equal target) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then target else index+1) }) := by
+theorem branch_zero (program : Program) (address target : Nat) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.jcc .equal target) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then target else program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -369,10 +369,10 @@ theorem branch_zero (program : Program) (index target : Nat) (initial : MachineS
   simp_all [ExecutionStatus.advance, stepOp, Condition.holds]
   split <;> rfl
 
-theorem branch_nonzero (program : Program) (index target : Nat) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.jcc .notEqual target) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then index+1 else target) }) := by
+theorem branch_nonzero (program : Program) (address target : Nat) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.jcc .notEqual target) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then program.nextAddress address else target) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -380,9 +380,9 @@ theorem branch_nonzero (program : Program) (index target : Nat) (initial : Machi
   simp_all [ExecutionStatus.advance, stepOp, Condition.holds]
   cases initial.zeroFlag <;> rfl
 
-theorem return_ (program : Program) (index : Nat) (initial : MachineState)
-    (location : initial.status = .running index) (slot : initial.ValidReturnSlot)
-    (code : InstructionAt program index .ret := by decide +kernel) :
+theorem return_ (program : Program) (address : Nat) (initial : MachineState)
+    (location : initial.status = .running address) (slot : initial.ValidReturnSlot)
+    (code : InstructionAt program address .ret := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write .rsp (initial.registers .rsp + 8) with
       status := .returned initial.returnAddress, readHistory := initial.readHistory ++ [⟨(initial.registers .rsp).toNat,8⟩] }) := by
   apply Ensures.of_step
@@ -390,25 +390,25 @@ theorem return_ (program : Program) (index : Nat) (initial : MachineState)
   subst actual
   rw [one code location undefinedFlags]
   simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp, read64]
-theorem move (program : Program) (index : Nat) (destination source : Operand) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
+theorem move (program : Program) (address : Nat) (destination source : Operand) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
     (valid : validMove destination source = true := by decide +kernel)
     (readable : initial.canRead source = true := by rfl)
     (writable : initial.canWrite destination = true := by rfl)
-    (code : InstructionAt program index (.mov destination source) := by decide +kernel) :
+    (code : InstructionAt program address (.mov destination source) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.writeOperand destination (initial.readOperand source) with
-      status := .running (index+1), readHistory := (initial.recordRead source).readHistory }) := by
+      status := .running (program.nextAddress address), readHistory := (initial.recordRead source).readHistory }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
   simp [stepOp, next, ExecutionStatus.advance, location, valid, readable, writable]
 
-theorem compare (program : Program) (index : Nat) (left right : Reg) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.binary .cmp (.reg64 left) (.reg64 right)) := by decide +kernel) :
+theorem compare (program : Program) (address : Nat) (left right : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.binary .cmp (.reg64 left) (.reg64 right)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with
-      status := .running (index+1)
+      status := .running (program.nextAddress address)
       zeroFlag := initial.registers left == initial.registers right,
       carryFlag := initial.registers left < initial.registers right,
       signFlag := (initial.registers left - initial.registers right).msb }) := by
@@ -426,12 +426,12 @@ theorem compare (program : Program) (index : Nat) (left right : Reg) (initial : 
   apply Bool.eq_iff_iff.mpr
   simp [BitVec.sub_eq_iff_eq_add]
 
-theorem write_byte (program : Program) (index : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
-    (location : initial.status = .running index) (allowed : initial.writable (initial.registers base).toNat = true)
-    (code : InstructionAt program index (.mov (.memory .byte (Address.baseOnly base)) (.reg8 source)) := by decide +kernel) :
+theorem write_byte (program : Program) (address : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
+    (location : initial.status = .running address) (allowed : initial.writable (initial.registers base).toNat = true)
+    (code : InstructionAt program address (.mov (.memory .byte (Address.baseOnly base)) (.reg8 source)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.storeByte (initial.registers base).toNat
       ⟨(initial.registers source.parent).toNat % 256, Nat.mod_lt _ (by decide)⟩ with
-      status := .running (index+1) }) := by
+      status := .running (program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -445,10 +445,10 @@ theorem write_byte (program : Program) (index : Nat) (base : Reg) (source : Reg8
     MachineState.writeMemory, Width.bytes, Address.evaluate, Address.baseOnly, Scale.value,
     permits, next, ExecutionStatus.advance, MachineState.storeByte, location, allowed, bound]
 
-theorem branch_below (program : Program) (index target : Nat) (initial : MachineState)
-    (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.jcc .below target) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with status := .running (if initial.carryFlag then target else index+1) }) := by
+theorem branch_below (program : Program) (address target : Nat) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.jcc .below target) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial with status := .running (if initial.carryFlag then target else program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
