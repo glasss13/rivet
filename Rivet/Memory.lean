@@ -56,12 +56,6 @@ private theorem valid_contents (regions : List MemoryRegion) (contents : MemoryR
     simp only [List.map_cons, MemoryRegion.validLayout, inductionHypothesis]
     simp [List.all_map, Function.comp_def]
 
-/-- Update contents only; instruction semantics check permission before storing. -/
-def Memory.storeByte (memory : Memory) (address : Nat) (value : Fin 256) : Memory :=
-  { regions := memory.regions.map (fun region => { region with contents := fun offset =>
-      if region.address + offset = address then value else region.contents offset })
-    valid := by rw [valid_contents]; exact memory.valid }
-
 /-- Store offset-indexed bytes without changing the layout or permissions. -/
 def Memory.storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256) : Memory :=
   { regions := memory.regions.map (fun region =>
@@ -72,36 +66,59 @@ def Memory.storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fi
           else region.contents offset })
     valid := by rw [valid_contents]; exact memory.valid }
 
-@[simp] theorem Memory.readable_storeByte (memory : Memory) (address : Nat) (value : Fin 256) :
-    (memory.storeByte address value).readable = memory.readable := by
+@[simp] theorem Memory.readable_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256) :
+    (memory.storeBytes address size bytes).readable = memory.readable := by
   funext other
-  simp [Memory.readable, Memory.storeByte, List.any_map, MemoryRegion.contains, Function.comp_def]
+  simp [Memory.readable, Memory.storeBytes, List.any_map, MemoryRegion.contains, Function.comp_def]
 
-@[simp] theorem Memory.writable_storeByte (memory : Memory) (address : Nat) (value : Fin 256) :
-    (memory.storeByte address value).writable = memory.writable := by
+@[simp] theorem Memory.writable_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256) :
+    (memory.storeBytes address size bytes).writable = memory.writable := by
   funext other
-  simp [Memory.writable, Memory.storeByte, List.any_map, MemoryRegion.contains, Function.comp_def]
+  simp [Memory.writable, Memory.storeBytes, List.any_map, MemoryRegion.contains, Function.comp_def]
 
-/-- A permitted byte store changes exactly the addressed byte. -/
-theorem Memory.read_storeByte (memory : Memory) (address : Nat) (value : Fin 256)
-    (allowed : memory.writable address = true) :
-    (memory.storeByte address value).read = fun other => if other = address then value else memory other := by
-  funext other
-  simp only [Memory.storeByte, Memory.read, List.find?_map, Function.comp_def, MemoryRegion.contains]
+/-- Inside a store, mapping suffices to recover the written byte. Outside it,
+no mapping or permission assumption is needed. -/
+theorem Memory.read_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
+    (other : Nat) (mapped : address ≤ other ∧ other < address + size →
+      ∃ region ∈ memory.regions, region.contains other = true) :
+    (memory.storeBytes address size bytes) other =
+      if address ≤ other ∧ other < address + size then bytes (other - address) else memory other := by
+  simp only [Memory.storeBytes, Memory.read, List.find?_map, Function.comp_def, MemoryRegion.contains]
   cases found : memory.regions.find?
       (fun region => region.address ≤ other && other < region.address + region.size) with
   | none =>
-    by_cases equal : other = address
-    · subst other
-      obtain ⟨region, member, permission⟩ := List.any_eq_true.mp allowed
-      have contains : region.contains address = true :=
-        (show region.contains address = true ∧ region.writable = true from by simpa using permission).1
-      exact False.elim ((List.find?_eq_none.mp found region member) contains)
-    · simp [equal]
+    have outside : ¬ (address ≤ other ∧ other < address + size) := by
+      intro inside
+      obtain ⟨region, member, contains⟩ := mapped inside
+      exact (List.find?_eq_none.mp found region member) contains
+    simp [outside]
   | some region =>
     have bounds : region.address ≤ other ∧ other < region.address + region.size := by
       simpa using List.find?_some found
-    have lower := bounds.1
-    simp [Nat.add_sub_of_le lower]
+    simp [Nat.add_sub_of_le bounds.1]
+
+/-- Bytes outside a store are unchanged, even when unmapped. -/
+theorem Memory.read_storeBytes_outside (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
+    (other : Nat) (outside : other < address ∨ address + size ≤ other) :
+    (memory.storeBytes address size bytes) other = memory other := by
+  have excluded : ¬ (address ≤ other ∧ other < address + size) := by omega
+  rw [memory.read_storeBytes address size bytes other (by intro inside; exact False.elim (excluded inside))]
+  exact ite_eq_right excluded
+
+/-- Little-endian bytes, independent of scalar or vector instruction widths.
+This raw read does not check permissions. -/
+def readBytes (memory : Nat → Fin 256) (address size : Nat) : BitVec (8 * size) :=
+  BitVec.ofNat (8 * size) ((List.range size).foldr
+    (fun offset value => (memory (address + offset)).val + 256 * value) 0)
+
+/-- A multi-byte instruction access must fit the word address space and have
+permission for every byte. -/
+def permits (permission : Nat → Bool) (address size : Nat) : Bool :=
+  address + size ≤ word && (List.range size).all (fun offset => permission (address + offset))
+
+theorem permits_iff (permission : Nat → Bool) (address size : Nat) :
+    permits permission address size = true ↔
+      address + size ≤ word ∧ ∀ offset < size, permission (address + offset) = true := by
+  simp [permits, List.all_eq_true, List.mem_range]
 
 end Rivet
