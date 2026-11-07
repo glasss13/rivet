@@ -10,7 +10,7 @@ mod setup;
 use anyhow::{Context, Result, ensure};
 use case::{Case, ExecutionInput, Snapshot};
 use clap::Parser;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -37,7 +37,23 @@ enum Response {
     Error { error: String },
 }
 
-fn evaluate(model: &Path, request: &ExecutionInput) -> Result<Response> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlagValues {
+    sign_flag: bool,
+    zero_flag: bool,
+    carry_flag: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelRequest<'a> {
+    #[serde(flatten)]
+    input: &'a ExecutionInput,
+    native_flags: Vec<FlagValues>,
+}
+
+fn evaluate(model: &Path, request: &ModelRequest<'_>) -> Result<Response> {
     let job = Exec::cmd(model)
         .stdin(serde_json::to_vec(request)?)
         .stdout(Redirection::Pipe)
@@ -61,11 +77,24 @@ fn evaluate(model: &Path, request: &ExecutionInput) -> Result<Response> {
 fn check(model: &Path, case: &Case) -> Result<Option<String>> {
     let (input, memory) = setup::prepare(case)?;
     let native = native::execute(&input, &memory)?;
-    match evaluate(model, &input)? {
+    let request = ModelRequest {
+        input: &input,
+        // Snapshot zero is the initial state; instruction zero uses snapshot one.
+        native_flags: native
+            .iter()
+            .skip(1)
+            .map(|snapshot| FlagValues {
+                sign_flag: snapshot.sign_flag,
+                zero_flag: snapshot.zero_flag,
+                carry_flag: snapshot.carry_flag,
+            })
+            .collect(),
+    };
+    match evaluate(model, &request)? {
         Response::Success { snapshots } => {
             Ok((snapshots != native).then(|| "execution traces differ".into()))
         }
-        Response::Error { error } => Ok(Some(format!("model rejected assembled case: {error}"))),
+        Response::Error { error } => Ok(Some(format!("model rejected request: {error}"))),
     }
 }
 

@@ -19,6 +19,29 @@ structure MachineState where
   status : ExecutionStatus
   readHistory : List Access
 
+/-- Candidate values for flags an instruction leaves undefined. Defined and preserved
+flags must not use these values. This is execution input, not architectural state. -/
+structure FlagValues where
+  signFlag : Bool
+  zeroFlag : Bool
+  carryFlag : Bool
+  deriving Repr
+
+/-- One set of candidate bits per execution step, including repeated loop iterations. -/
+abbrev FlagChoices := Nat → FlagValues
+
+def FlagChoices.drop (choices : FlagChoices) (count : Nat) : FlagChoices :=
+  fun index => choices (count + index)
+
+@[simp] private theorem FlagChoices.drop_zero (choices : FlagChoices) : choices.drop 0 = choices := by
+  funext index
+  simp [drop]
+
+@[simp] private theorem FlagChoices.drop_drop (choices : FlagChoices) (first second : Nat) :
+    (choices.drop first).drop second = choices.drop (first + second) := by
+  funext index
+  simp [drop, Nat.add_assoc]
+
 /-- Update one register; its width is enforced by the value's type. -/
 def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 64) : MachineState :=
   { state with registers := fun otherRegister =>
@@ -135,7 +158,7 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
   | .above => !state.carryFlag && !state.zeroFlag
   | .sign => state.signFlag
 
-def stepOp (operation : Op) (state : MachineState) : MachineState :=
+def stepOp (operation : Op) (state : MachineState) (_undefinedFlags : FlagValues) : MachineState :=
   match operation with
   | .binary operation destination source => state.binary operation destination source
   | .lea destination address => next (state.write destination (address.evaluate state.registers))
@@ -202,17 +225,17 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
         readHistory := state.readHistory ++ [⟨address,8⟩] }
     else { state with status := .fault }
 
-def step (program : Program) (state : MachineState) : MachineState :=
+def step (program : Program) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match state.status with
   | .running index => match program[index]? with
-    | some instruction => stepOp instruction.op state
+    | some instruction => stepOp instruction.op state undefinedFlags
     | none => { state with status := .fault }
   | _ => state
 
-def execute (program : Program) (steps : Nat) (state : MachineState) : MachineState :=
+def execute (program : Program) (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
   match steps with
   | 0 => state
-  | remainingSteps+1 => execute program remainingSteps (step program state)
+  | remainingSteps+1 => execute program remainingSteps (step program state (choices 0)) (choices.drop 1)
 
 /-- The little-endian address stored in the current stack return slot. -/
 def MachineState.returnAddress (state : MachineState) : Nat :=
@@ -225,10 +248,14 @@ def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
 def AtInstruction (state : MachineState) (index : Nat) : Prop :=
   state.status = .running index
 
-theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState) :
-    execute program (firstSteps+secondSteps) state = execute program secondSteps (execute program firstSteps state) := by
-  induction firstSteps generalizing state with
+theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState)
+    {choices : FlagChoices} :
+    execute program (firstSteps + secondSteps) state choices =
+      execute program secondSteps (execute program firstSteps state choices) (choices.drop firstSteps) := by
+  induction firstSteps generalizing state choices with
   | zero => simp [execute]
-  | succ firstSteps inductionHypothesis => simpa [Nat.succ_add, execute] using inductionHypothesis (step program state)
+  | succ firstSteps inductionHypothesis =>
+    simpa [Nat.succ_add, execute, Nat.add_comm] using
+      inductionHypothesis (step program state (choices 0)) (choices := choices.drop 1)
 
 end Rivet
