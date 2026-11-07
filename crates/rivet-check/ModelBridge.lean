@@ -73,6 +73,18 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     throw "invalid memory"
   let program := request.program.toList
   let some first := program.head? | throw "empty program"
+  unless request.memoryBase ≤ request.writableBase &&
+      request.writableBase ≤ request.memoryBase + request.memory.size do
+    throw "writable base outside memory range"
+  let contents := fun offset =>
+    let value := request.memory[offset]?.getD 0
+    (⟨value % 256, Nat.mod_lt _ (by decide)⟩ : Fin 256)
+  let memory ← Memory.ofRegions [
+    { address := request.memoryBase, size := request.writableBase - request.memoryBase,
+      contents, readable := true, writable := false },
+    { address := request.writableBase, size := request.memoryBase + request.memory.size - request.writableBase,
+      contents := fun offset => contents (request.writableBase - request.memoryBase + offset),
+      readable := true, writable := true }]
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
@@ -80,14 +92,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     signFlag := request.signFlag
     zeroFlag := request.zeroFlag
     carryFlag := request.carryFlag
-    writable := fun address => request.writableBase ≤ address &&
-      address < request.memoryBase + request.memory.size
-    readable := fun address => request.memoryBase ≤ address &&
-      address < request.memoryBase + request.memory.size
-    memory := fun address =>
-      let value := if request.memoryBase ≤ address then
-        request.memory[address - request.memoryBase]?.getD 0 else 0
-      ⟨value % 256, Nat.mod_lt _ (by decide)⟩
+    memory
     status := .running first.address
     readHistory := [] }
   let mut current := initial

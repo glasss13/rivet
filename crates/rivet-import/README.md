@@ -1,9 +1,10 @@
 # Binary importer
 
 `rivet-import` reads all defined function symbols from a linked x86-64 ELF executable,
-decodes their code with iced-x86, and writes a Lean module containing `entry : Nat` and
-`program : Rivet.Program`. Addresses, encoding lengths, and branch targets come
-from the binary. No assembly text is parsed along the way.
+decodes their code with iced-x86, and writes a Lean module containing `entry : Nat`,
+`program : Rivet.Program`, and `regions : List Rivet.MemoryRegion`. Addresses,
+instruction encodings, and initial segment data come from the binary. No assembly
+text is parsed along the way.
 
 ```sh
 cargo run --release -p rivet-import -- ./example \
@@ -29,6 +30,9 @@ The supported scope is deliberately small:
 
 - Fixed-address, little-endian ELF64 executables, without dynamic loading or
   relocation records. Object files and PIE executables must be linked first.
+- Non-overlapping `PT_LOAD` ranges with valid file bounds, file size no greater
+  than memory size, and no address overflow. Writable executable segments are
+  rejected because instruction fetch uses a fixed decoded program.
 - Defined function symbols with nonzero sizes. Exact aliases are deduplicated;
   other overlapping ranges and indirect function resolvers are rejected.
   Compiler-generated symbol tables suffice; debug information is unnecessary. Stripped files are not
@@ -60,14 +64,44 @@ with unsupported instructions also cause import to fail; link only the code you
 need (for example, using function sections and linker garbage collection).
 Errors report the instruction address, and translation errors leave the output file untouched.
 
-This imports **function code only**. It does not map ELF segments, initialize
-memory, or construct a machine state. Proofs still supply the function's input
-memory, stack, registers, and permissions. That is enough for functions such as
-ByteSum. RIP-relative references use the binary's addresses; proofs must supply
-any referenced data and its permissions in the initial memory. Table contents
-are not imported automatically. Loading globals and modeling process startup
-can come later. CALL/RET use ordinary stack memory and transfer control; RET does
-not stop the interpreter. Proofs specify completion through their postcondition.
+Each loadable segment becomes a `MemoryRegion` with `address`, `size`, `contents`,
+`readable`, and `writable`. `contents` maps byte offsets to `Fin 256` values.
+Imported contents use a `ByteArray` and return zero past its end, so BSS does not
+expand the generated source. Handwritten regions can use symbolic byte functions.
+
+Construct the complete memory layout before constructing the machine state:
+
+```lean
+def initial (registers : Rivet.Reg → BitVec 64)
+    (stack input output : Rivet.MemoryRegion) : Except String Rivet.MachineState := do
+  let memory ← Rivet.Memory.ofRegions (Example.regions ++ [stack, input, output])
+  return {
+    memory
+    registers
+    zeroFlag := false
+    status := .running Example.entry
+    readHistory := [] }
+```
+
+`Memory.ofRegions` rejects overlap and addresses beyond the 64-bit address space.
+A `Memory` also carries its layout validity proof, so direct record construction
+must establish the same invariant. For concrete layouts, the `valid` field is
+proved automatically; symbolic layouts can supply that proof explicitly.
+
+`MachineState.memory` is a `Memory`, not an unrestricted byte function. It remains
+callable as `state.memory address`; `state.readable` and `state.writable` derive
+permissions from its regions. Addresses outside every region are inaccessible
+and inspect as zero. Buffers that alias should share a region rather than declare
+overlapping regions. Stores change contents without changing layout or permissions.
+Low-level store helpers rely on instruction semantics to check write permissions.
+`initializeMemory` and the separate permission fields are removed.
+
+These are the ELF-declared byte ranges and read/write flags, not an exact Linux
+page map. Page rounding, shared boundary pages, dynamic loading, process startup,
+and OS permission adjustments are not modeled. Executable flags still determine
+which segments can supply decoded instructions; the state has no executable
+permission field. CALL/RET transfer control normally; completion is specified
+by the proof's postcondition.
 
 The importer and iced-x86 are trusted to translate the bytes correctly. Lean
 checks proofs about the generated program; it does not certify that translation

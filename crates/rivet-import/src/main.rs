@@ -45,6 +45,7 @@ fn main() -> Result<()> {
     let source = emit::module(
         &program,
         image.entry,
+        &image.regions,
         args.namespace.as_deref().unwrap_or(&args.function),
     )?;
     fs::write(&args.output, source).context("writing Lean module")?;
