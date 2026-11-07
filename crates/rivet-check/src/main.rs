@@ -2,6 +2,7 @@
 compile_error!("rivet-check currently requires x86-64 Linux with glibc");
 
 mod case;
+mod encode;
 mod native;
 mod register;
 mod setup;

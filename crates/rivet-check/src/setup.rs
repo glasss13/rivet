@@ -9,9 +9,8 @@ use nix::{
     sys::mman::{ProtFlags, mprotect},
     unistd::{SysconfVar, sysconf},
 };
-use object::{Object, ObjectSection, ObjectSymbol};
 use rivet_import::program::Operation;
-use std::{fs, process::Command, ptr::NonNull};
+use std::ptr::NonNull;
 
 // Own the native allocations for as long as execution needs their addresses.
 pub struct NativeMemory {
@@ -20,61 +19,11 @@ pub struct NativeMemory {
     data: MmapMut,
 }
 
-fn assemble(source: &str, instructions: usize) -> Result<(Mmap, Vec<u64>)> {
-    let directory = tempfile::tempdir()?;
-    let assembly = directory.path().join("case.s");
-    let object_path = directory.path().join("case.o");
-    fs::write(
-        &assembly,
-        format!(".intel_syntax noprefix\n.text\n{source}"),
-    )?;
-    let output = Command::new("as")
-        .arg("--64")
-        .arg(&assembly)
-        .arg("-o")
-        .arg(&object_path)
-        .output()
-        .context("starting GNU assembler")?;
-    ensure!(
-        output.status.success(),
-        "assembler: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let bytes = fs::read(object_path)?;
-    let object = object::File::parse(bytes.as_slice())?;
-    let text = object
-        .section_by_name(".text")
-        .context("missing .text section")?;
-    ensure!(
-        text.relocations().next().is_none(),
-        "unexpected code relocation"
-    );
-    let offsets: Vec<_> = (0..=instructions)
-        .map(|index| {
-            let name = if index == instructions {
-                "rivet_end".into()
-            } else {
-                format!("rivet_instruction_{index}")
-            };
-            object
-                .symbol_by_name(&name)
-                .map(|symbol| symbol.address())
-                .context("missing instruction boundary")
-        })
-        .collect::<Result<_>>()?;
-    let bytes = text.data()?;
-    ensure!(
-        offsets[0] == 0 && offsets[instructions] == bytes.len() as u64,
-        "invalid instruction boundaries"
-    );
-    let mut code = MmapMut::map_anon(bytes.len())?;
-    code.copy_from_slice(bytes);
-    Ok((code.make_exec()?, offsets))
-}
-
 pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
-    let source = case.assembly();
-    let (code, offsets) = assemble(&source, case.program.len())?;
+    let (bytes, offsets) = crate::encode::program(&case.program)?;
+    let mut code = MmapMut::map_anon(bytes.len())?;
+    code.copy_from_slice(&bytes);
+    let code = code.make_exec()?;
     let page = sysconf(SysconfVar::PAGE_SIZE)?.context("cannot determine page size")? as usize;
     ensure!(code.len() < page, "test code exceeds one page");
     let continuation = code.as_ptr() as u64 + code.len() as u64;

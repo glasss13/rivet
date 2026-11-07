@@ -66,84 +66,10 @@ pub fn memory_address(operation: &Operation) -> Option<&Address> {
         _ => None,
     }
 }
-fn assembly(operation: Operation) -> String {
-    match operation {
-        Operation::Binary {
-            operation,
-            destination,
-            source,
-        } => format!("{operation} {destination}, {source}"),
-        Operation::Movzx {
-            destination,
-            source,
-        } => format!("movzx {destination}, {source}"),
-        Operation::Movsxd {
-            destination,
-            source,
-        } => format!("movsxd {destination}, {source}"),
-        Operation::Lea {
-            destination,
-            source,
-        } => format!("lea {destination}, {source}"),
-        Operation::Mov {
-            destination,
-            source,
-        } => format!("mov {destination}, {source}"),
-        Operation::Jmp { target } => format!("jmp rivet_instruction_{target}"),
-        Operation::Jcc { condition, target } => format!("j{condition} rivet_instruction_{target}"),
-        Operation::Setcc {
-            condition,
-            destination,
-        } => format!("set{condition} {destination}"),
-        Operation::Cmovcc {
-            condition,
-            destination,
-            source,
-        } => format!("cmov{condition} {destination}, {source}"),
-        Operation::Inc { destination } => format!("inc {destination}"),
-        Operation::Dec { destination } => format!("dec {destination}"),
-        Operation::Ret => "ret".into(),
-        Operation::Not { destination } => format!("not {destination}"),
-        Operation::Imul {
-            destination,
-            source,
-            immediate,
-        } => match immediate {
-            Some(value) => format!("imul {destination}, {source}, {value}"),
-            None => format!("imul {destination}, {source}"),
-        },
-        Operation::Shift {
-            operation,
-            destination,
-            count,
-        } => format!("{operation} {destination}, {count}"),
-        Operation::LoadXmm {
-            operation,
-            destination,
-            source,
-        } => format!("{operation} {destination}, XMMWORD PTR {source}"),
-        Operation::StoreXmm {
-            operation,
-            destination,
-            source,
-        } => format!("{operation} XMMWORD PTR {destination}, {source}"),
-        Operation::Movd {
-            destination,
-            source,
-        } => format!("movd {destination}, {source}"),
-        Operation::Pshufd {
-            destination,
-            source,
-            order,
-        } => format!("pshufd {destination}, {source}, {order}"),
-        Operation::Push { source } => format!("push {source}"),
-        Operation::Pop { destination } => format!("pop {destination}"),
-    }
-}
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Case {
-    // Branch targets are instruction indices until assembly resolves the labels.
+    // Branch targets are instruction indices until iced resolves the labels.
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
     pub xmm_registers: [[u32; 4]; 16],
@@ -155,20 +81,6 @@ pub struct Case {
     pub read_only_data: bool,
     pub steps: usize,
 }
-impl Case {
-    pub fn assembly(&self) -> String {
-        let mut source = String::new();
-        for (index, operation) in self.program.iter().enumerate() {
-            source.push_str(&format!(
-                "rivet_instruction_{index}:\n    {}\n",
-                assembly(*operation)
-            ));
-        }
-        source.push_str("rivet_end:\n");
-        source
-    }
-}
-
 // The same program and initial state are used by both runners.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

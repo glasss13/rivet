@@ -1,11 +1,9 @@
 use crate::register::{Register8, Register16, Register32, Register64};
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use strum::{Display, VariantArray};
+use strum::VariantArray;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray)]
 #[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "UPPERCASE")]
 pub enum Width {
     Byte = 8,
     Word = 16,
@@ -39,25 +37,6 @@ pub struct Address {
     pub scale: Scale,
     pub displacement: i64,
 }
-impl fmt::Display for Address {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "[")?;
-        if let Some(base) = self.base {
-            write!(formatter, "{base}")?;
-        }
-        if let Some(index) = self.index {
-            let separator = if self.base.is_some() { "+" } else { "" };
-            write!(formatter, "{separator}{index}*{}", self.scale.value())?;
-        }
-        if self.base.is_none() && self.index.is_none() {
-            write!(formatter, "{}", self.displacement)?;
-        } else if self.displacement != 0 {
-            write!(formatter, "{:+}", self.displacement)?;
-        }
-        write!(formatter, "]")
-    }
-}
-
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Operand {
@@ -82,18 +61,6 @@ impl Operand {
                 register: Register32::VARIANTS[index],
             },
             Width::Qword => Self::Reg64 { register },
-        }
-    }
-}
-impl fmt::Display for Operand {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Reg8 { register } => write!(formatter, "{register}"),
-            Self::Reg16 { register } => write!(formatter, "{register}"),
-            Self::Reg32 { register } => write!(formatter, "{register}"),
-            Self::Reg64 { register } => write!(formatter, "{register}"),
-            Self::Memory { width, address } => write!(formatter, "{width} PTR {address}"),
-            Self::Immediate { value } => write!(formatter, "{value}"),
         }
     }
 }
