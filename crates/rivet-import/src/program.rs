@@ -3,9 +3,8 @@ use crate::{
     register::{Register32, Register64, Xmm},
 };
 use serde::{Deserialize, Serialize};
-use strum::{EnumCount, VariantArray};
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BinaryOp {
     Add,
@@ -18,21 +17,21 @@ pub enum BinaryOp {
     Xor,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ShiftOp {
     Shl,
     Shr,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum XmmMove {
     Movups,
     Movdqu,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Condition {
     Equal,
@@ -44,7 +43,7 @@ pub enum Condition {
     Sign,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, EnumCount)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     Binary {

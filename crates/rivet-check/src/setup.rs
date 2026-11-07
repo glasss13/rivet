@@ -1,15 +1,15 @@
 //! Prepare the common initial state before either runner executes.
 use crate::{
-    case::{Case, ExecutionInput, memory_address},
+    case::{Case, ExecutionInput, REGISTERS},
     register::Register64::Rsp,
 };
 use anyhow::{Context, Result, ensure};
+use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 use memmap2::{Mmap, MmapMut};
 use nix::{
     sys::mman::{ProtFlags, mprotect},
     unistd::{SysconfVar, sysconf},
 };
-use rivet_import::program::Operation;
 use std::ptr::NonNull;
 
 // Own the native allocations for as long as execution needs their addresses.
@@ -20,9 +20,14 @@ pub struct NativeMemory {
 }
 
 pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
-    let (bytes, offsets) = crate::encode::program(&case.program)?;
+    ensure!(
+        !case.code.is_empty() && !case.data.is_empty(),
+        "empty replay code or data"
+    );
+    let bytes = &case.code;
+    let offsets = case.offsets.clone();
     let mut code = MmapMut::map_anon(bytes.len())?;
-    code.copy_from_slice(&bytes);
+    code.copy_from_slice(bytes);
     let code = code.make_exec()?;
     let page = sysconf(SysconfVar::PAGE_SIZE)?.context("cannot determine page size")? as usize;
     ensure!(code.len() < page, "test code exceeds one page");
@@ -67,28 +72,42 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
     } else {
         base + 64
     };
-    for address in case.program.iter().filter_map(memory_address) {
-        if let Some(index) = address.index {
-            values[index as usize] = case.registers[index as usize] % 16;
+    let instructions: Vec<_> = Decoder::new(64, bytes, DecoderOptions::NONE)
+        .into_iter()
+        .collect();
+    let register_index = |register| {
+        REGISTERS
+            .iter()
+            .position(|&value| Register::from(value) == register)
+    };
+    for instruction in &instructions {
+        if instruction.mnemonic() == Mnemonic::Lea
+            || !instruction.op_kinds().any(|kind| kind == OpKind::Memory)
+        {
+            continue;
         }
-        if let Some(register) = address.base {
-            values[register as usize] = data_pointer + case.registers[register as usize] % 16;
-        } else if let Some(index) = address.index {
-            values[index as usize] = data_pointer / address.scale.value();
+        let index = register_index(instruction.memory_index());
+        if let Some(index) = index {
+            values[index] = case.registers[index] % 16;
+        }
+        if let Some(base) = register_index(instruction.memory_base()) {
+            values[base] = data_pointer + case.registers[base] % 16;
+        } else if let Some(index) = index {
+            values[index] = data_pointer / instruction.memory_index_scale() as u64;
         }
     }
-    if let [operation @ (Operation::Push { .. } | Operation::Pop { .. })] = case.program.as_slice()
+    if let [instruction] = instructions.as_slice()
+        && matches!(instruction.mnemonic(), Mnemonic::Push | Mnemonic::Pop)
     {
-        // Place the accessed slot in data or across the guard, including unaligned RSP.
         let slot = data_pointer + case.registers[Rsp as usize] % 16;
         values[Rsp as usize] = slot
-            + if matches!(operation, Operation::Push { .. }) {
+            + if instruction.mnemonic() == Mnemonic::Push {
                 8
             } else {
                 0
             };
     }
-    if case.program[0] == Operation::Ret && case.fault_memory {
+    if instructions[0].mnemonic() == Mnemonic::Ret && case.fault_memory {
         values[Rsp as usize] = guard;
     }
     let input = ExecutionInput {

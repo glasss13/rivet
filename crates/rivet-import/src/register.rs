@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
-use strum::{EnumString, VariantArray};
+use strum::EnumString;
 
 // Order matches the register-value arrays and Lean's registerOrder.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, VariantArray, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register64 {
@@ -24,7 +24,7 @@ pub enum Register64 {
     R15,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, VariantArray, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register32 {
@@ -46,7 +46,7 @@ pub enum Register32 {
     R15d,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, VariantArray, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register16 {
@@ -68,7 +68,7 @@ pub enum Register16 {
     R15w,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, VariantArray, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Register8 {
@@ -90,7 +90,7 @@ pub enum Register8 {
     R15l,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, VariantArray, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, EnumString, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Xmm {

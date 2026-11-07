@@ -240,7 +240,6 @@ dependencies = [
  "rivet-import",
  "serde",
  "serde_json",
- "strum",
  "subprocess",
 ]
 
