@@ -75,10 +75,10 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
   · split
     · rename_i instruction instructionAtIndex
       cases instruction.op with
-      | mov destination source =>
+      | mov destination source | movzx destination source | movsxd destination source =>
         simp only [stepOp]
         split
-        · cases source <;> simp_all [next, MachineState.recordRead]
+        · cases source <;> simp_all [next, MachineState.recordRead, MachineState.write]
         · exact recorded
       | _ =>
         simp_all [stepOp, next, MachineState.write] <;> split <;> simp_all

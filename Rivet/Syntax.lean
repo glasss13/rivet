@@ -131,7 +131,9 @@ def validMove (destination source : Operand) : Bool :=
 inductive Op where
   | xor (destination source : Reg32)
   | test (left right : Reg)
-  | movzx (destination : Reg32) (source : Address)
+  | lea (destination : Reg) (source : Address)
+  | movzx (destination : Reg32) (source : Operand)
+  | movsxd (destination : Reg) (source : Operand)
   | mov (destination source : Operand)
   | cmp (left right : Reg)
   | add (destination source : Reg)
@@ -146,6 +148,7 @@ inductive Op where
 def modifies : Op → Reg → Bool
   | .xor destination _, register | .movzx destination _, register => destination.parent == register
   | .mov destination _, register => destination.register == some register
+  | .lea destination _, register | .movsxd destination _, register
   | .add destination _, register | .inc destination, register | .dec destination, register => destination == register
   | .ret, register => register == .rsp
   | _, _ => false
