@@ -17,6 +17,7 @@ deriving instance FromJson for BinaryOp
 deriving instance FromJson for Operand
 deriving instance FromJson for Condition
 deriving instance FromJson for Op
+deriving instance FromJson for FlagValues
 
 structure Request where
   program : Array Op
@@ -28,6 +29,7 @@ structure Request where
   writableBase : Nat
   memory : Array Nat
   steps : Nat
+  nativeFlags : Array FlagValues
   deriving FromJson
 deriving instance ToJson for ExecutionStatus
 structure SnapshotOutput where
@@ -73,10 +75,14 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     readHistory := [] }
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]
-  for _ in [:request.steps] do
+  for index in [:request.steps] do
     if !current.status.isRunning then break
-    current := step program current
+    let some undefinedFlags := request.nativeFlags[index]?
+      | throw "missing native flag observation"
+    current := step program current undefinedFlags
     observations := observations.push (snapshot request.memoryBase request.memory.size current)
+  unless observations.size == request.nativeFlags.size + 1 do
+    throw "unused native flag observations"
   return observations
 
 def respond (line : String) : Json :=
