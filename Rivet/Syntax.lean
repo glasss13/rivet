@@ -167,9 +167,11 @@ inductive Op where
   | jcc (condition : Condition) (target : Nat)
   | setcc (condition : Condition) (destination : Operand)
   | cmovcc (condition : Condition) (destination source : Operand)
+  | push (source : Reg)
+  | pop (destination : Reg)
   | ret
   deriving DecidableEq, Repr
-/-- Whether an instruction can write a register, including RET advancing RSP. -/
+/-- Whether an instruction can write a register, including implicit RSP updates. -/
 def modifies : Op → Reg → Bool
   | .movzx destination _, register => destination.parent == register
   | .binary operation destination _, register => operation.writes && destination.register == some register
@@ -177,7 +179,8 @@ def modifies : Op → Reg → Bool
   | .cmovcc _ destination _, register => destination.register == some register
   | .lea destination _, register | .movsxd destination _, register
   | .inc destination, register | .dec destination, register => destination == register
-  | .ret, register => register == .rsp
+  | .pop destination, register => register == .rsp || destination == register
+  | .push _, register | .ret, register => register == .rsp
   | _, _ => false
 
 structure Instruction where

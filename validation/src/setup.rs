@@ -127,6 +127,17 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
             values[index as usize] = data_pointer / address.scale.value();
         }
     }
+    if let [operation @ (Operation::Push { .. } | Operation::Pop { .. })] = case.program.as_slice()
+    {
+        // Place the accessed slot in data or across the guard, including unaligned RSP.
+        let slot = data_pointer + case.registers[Rsp as usize] % 16;
+        values[Rsp as usize] = slot
+            + if matches!(operation, Operation::Push { .. }) {
+                8
+            } else {
+                0
+            };
+    }
     if case.program[0] == Operation::Ret && case.fault_memory {
         values[Rsp as usize] = guard;
     }

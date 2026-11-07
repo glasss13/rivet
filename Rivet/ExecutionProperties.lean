@@ -27,19 +27,20 @@ namespace Rivet
     (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
-@[simp] private theorem writeOperand_readHistory (state : MachineState) (operand : Operand)
-    (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
-  cases operand <;> simp [MachineState.writeOperand, MachineState.write]
-  rename_i width address
+@[simp] private theorem writeMemory_readHistory (state : MachineState) (address : Nat) (width : Width)
+    (value : BitVec 64) : (state.writeMemory address width value).readHistory = state.readHistory := by
   unfold MachineState.writeMemory
-  generalize (address.evaluate state.registers).toNat = start
   generalize List.range width.bytes = offsets
   induction offsets generalizing state with
   | nil => rfl
   | cons offset offsets inductionHypothesis =>
     simpa [List.foldl, MachineState.storeByte] using inductionHypothesis
-      (state.storeByte (start + offset)
+      (state.storeByte (address + offset)
         ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩)
+
+@[simp] private theorem writeOperand_readHistory (state : MachineState) (operand : Operand)
+    (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
+  cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
 theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (unchanged : modifies operation register = false) :
     (stepOp operation state).registers register = state.registers register := by
