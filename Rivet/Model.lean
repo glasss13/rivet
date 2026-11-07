@@ -5,7 +5,6 @@ namespace Rivet
 
 inductive ExecutionStatus where
   | running (address : Nat)
-  | returned (address : Nat)
   | fault
   deriving DecidableEq, Repr
 structure MachineState where
@@ -283,11 +282,17 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
         (readMemory state.memory address .qword)
       next nextAddress { result with readHistory := state.readHistory ++ [⟨address,8⟩] }
     else { state with status := .fault }
+  | .call target =>
+    let pointer := state.registers .rsp - 8
+    if permits state.writable pointer.toNat 8 then
+      { (state.writeMemory pointer.toNat .qword (BitVec.ofNat 64 nextAddress)).write .rsp pointer with
+        status := .running target }
+    else { state with status := .fault }
   | .ret =>
     let address := (state.registers .rsp).toNat
     if address + 8 ≤ word && (List.range 8).all (fun offset => state.readable (address+offset)) then
       { state.write .rsp (state.registers .rsp + 8) with
-        status := .returned (read64 state.memory address)
+        status := .running (read64 state.memory address)
         readHistory := state.readHistory ++ [⟨address,8⟩] }
     else { state with status := .fault }
 

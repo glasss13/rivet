@@ -91,6 +91,9 @@ pub enum Operation {
         destination: Register64,
     },
     Ret,
+    Call {
+        target: u64,
+    },
     Not {
         destination: Operand,
     },

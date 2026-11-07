@@ -138,6 +138,7 @@ fn operation(value: &Operation) -> String {
         Inc { destination } => format!(".inc {}", name(destination)),
         Dec { destination } => format!(".dec {}", name(destination)),
         Ret => ".ret".into(),
+        Call { target } => format!(".call {target:#x}"),
         Not { destination } => format!(".not {}", operand(destination)),
         Imul {
             destination,

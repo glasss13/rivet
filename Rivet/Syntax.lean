@@ -203,6 +203,7 @@ inductive Op where
   | cmovcc (condition : Condition) (destination source : Operand)
   | push (source : Reg)
   | pop (destination : Reg)
+  | call (target : Nat)
   | ret
   deriving DecidableEq, Repr
 /-- Whether an instruction can write a register, including implicit RSP updates. -/
@@ -215,7 +216,7 @@ def modifies : Op → Reg → Bool
   | .lea destination _, register | .movsxd destination _, register
   | .inc destination, register | .dec destination, register => destination == register
   | .pop destination, register => register == .rsp || destination == register
-  | .push _, register | .ret, register => register == .rsp
+  | .push _, register | .call _, register | .ret, register => register == .rsp
   | _, _ => false
 
 structure Instruction where

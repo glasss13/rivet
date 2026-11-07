@@ -46,6 +46,7 @@ pub struct Case {
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionInput {
     pub program: Vec<Instruction>,
+    pub stop_address: u64,
     pub registers: [u64; 16],
     pub xmm_registers: [[u32; 4]; 16],
     pub sign_flag: bool,
@@ -61,7 +62,6 @@ pub struct ExecutionInput {
 #[serde(rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Status {
     Running { address: u64 },
-    Returned { address: u64 },
     Fault,
     Outside { address: u64 },
     Signal { number: i32, address: u64 },
@@ -394,6 +394,21 @@ pub fn generate(generator: &mut fastrand::Rng) -> Result<Case> {
     let whole_program = generator.bool();
     let mut assembler = CodeAssembler::new(64)?;
     if whole_program && generator.bool() {
+        let mut functions: Vec<_> = (0..generator.usize(2..=MAX_BODY_INSTRUCTIONS))
+            .map(|_| assembler.create_label())
+            .collect();
+        for index in 0..functions.len() {
+            assembler.set_label(&mut functions[index])?;
+            if index + 1 < functions.len() {
+                assembler.call(functions[index + 1])?;
+                if generator.bool() {
+                    assembler.call(functions[generator.usize(index + 1..functions.len())])?;
+                }
+            }
+            assembler.add(rax, generator.i32(..))?;
+            assembler.ret()?;
+        }
+    } else if whole_program && generator.bool() {
         let registers: Vec<_> = (0..generator.usize(1..=MAX_BODY_INSTRUCTIONS / 2))
             .map(|_| sample(generator, &REGISTERS))
             .collect();

@@ -25,6 +25,7 @@ deriving instance FromJson for FlagValues
 
 structure Request where
   program : Array Instruction
+  stopAddress : Nat
   registers : Array Nat
   xmmRegisters : Array (Array Nat)
   signFlag : Bool
@@ -92,7 +93,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]
   for index in [:request.steps] do
-    if !current.status.isRunning then break
+    if !current.status.isRunning || current.status == .running request.stopAddress then break
     let some undefinedFlags := request.nativeFlags[index]?
       | throw "missing native flag observation"
     current := step program current undefinedFlags
