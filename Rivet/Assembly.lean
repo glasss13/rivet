@@ -15,6 +15,7 @@ deriving instance ToExpr for Reg16
 deriving instance ToExpr for Width
 deriving instance ToExpr for Scale
 deriving instance ToExpr for Address
+deriving instance ToExpr for ShiftOp
 deriving instance ToExpr for BinaryOp
 deriving instance ToExpr for Operand
 deriving instance ToExpr for Condition

@@ -235,6 +235,15 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
       unless validBinary operation destination source do throw "invalid scalar operands or immediate"
       return .binary operation destination source
     | _ => throw "scalar instruction requires two operands"
+  else if mnemonic == "shl" || mnemonic == "shr" then
+    match (splitChars ',' (joinTokens parts.tail).toList).map String.ofList with
+    | [destination, count] =>
+      let destination ← parseOperand destination
+      let count ← parseInteger (clean count)
+      unless 0 ≤ count && validShift destination count.toNat do
+        throw "shift requires a 32/64-bit register and an immediate count from 0 to 255"
+      return .shift (if mnemonic == "shl" then .shl else .shr) destination count.toNat
+    | _ => throw "shift requires a register and an immediate count"
   else if mnemonic == "imul" then
     let operands := (splitChars ',' (joinTokens parts.tail).toList).map String.ofList
     let (destination, source, immediate) ← match operands with
