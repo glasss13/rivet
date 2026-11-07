@@ -13,12 +13,14 @@ deriving instance FromJson for Reg16
 deriving instance FromJson for Width
 deriving instance FromJson for Scale
 deriving instance FromJson for Address
+deriving instance FromJson for BinaryOp
 deriving instance FromJson for Operand
 deriving instance FromJson for Op
 
 structure Request where
   program : Array Op
   registers : Array Nat
+  signFlag : Bool
   zeroFlag : Bool
   carryFlag : Bool
   memoryBase : Nat
@@ -29,6 +31,7 @@ structure Request where
 deriving instance ToJson for ExecutionStatus
 structure SnapshotOutput where
   registers : Array Nat
+  signFlag : Bool
   zeroFlag : Bool
   carryFlag : Bool
   status : ExecutionStatus
@@ -39,6 +42,7 @@ def registerOrder : Array Reg := #[.rax, .rbx, .rcx, .rdx, .rsi, .rdi, .rbp, .rs
   .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
 def snapshot (memoryBase memorySize : Nat) (state : MachineState) : SnapshotOutput := {
   registers := registerOrder.map (fun register => (state.registers register).toNat)
+  signFlag := state.signFlag
   zeroFlag := state.zeroFlag
   carryFlag := state.carryFlag
   status := state.status
@@ -53,6 +57,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let program := request.program.toList.map fun operation => ⟨operation, 0⟩
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
+    signFlag := request.signFlag
     zeroFlag := request.zeroFlag
     carryFlag := request.carryFlag
     writable := fun address => request.writableBase ≤ address &&

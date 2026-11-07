@@ -133,6 +133,7 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
     let input = ExecutionInput {
         program: case.program.clone(),
         registers: values,
+        sign_flag: case.sign_flag,
         zero_flag: case.zero_flag,
         carry_flag: case.carry_flag,
         memory_base: base,

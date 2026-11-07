@@ -30,6 +30,13 @@ namespace Rivet
 theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) (unchanged : modifies operation register = false) :
     (stepOp operation state).registers register = state.registers register := by
   cases operation with
+  | binary operation destination source =>
+    simp only [stepOp, MachineState.binary]
+    split
+    · split
+      · cases destination <;> simp_all [modifies, Operand.register, next, MachineState.writeOperand, MachineState.write, Ne.symm]
+      · rfl
+    · rfl
   | mov destination source =>
     simp only [stepOp]
     split
@@ -75,6 +82,11 @@ theorem step_reads_monotone (program : Program) (state : MachineState) (access :
   · split
     · rename_i instruction instructionAtIndex
       cases instruction.op with
+      | binary operation destination source =>
+        simp only [stepOp, MachineState.binary]
+        split
+        · cases destination <;> cases source <;> simp_all [next, MachineState.recordRead]
+        · exact recorded
       | mov destination source | movzx destination source | movsxd destination source =>
         simp only [stepOp]
         split

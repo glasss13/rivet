@@ -199,27 +199,37 @@ private theorem one (code : InstructionAt program index instruction)
 -- `code` is checked automatically for concrete programs, or supplied explicitly.
 theorem clear (program : Program) (index : Nat) (destination : Reg32) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.xor destination destination) := by decide +kernel) :
+    (code : InstructionAt program index (.binary .xor (.reg32 destination) (.reg32 destination)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial.write destination.parent 0 with
-      status := .running (index+1), zeroFlag := true, carryFlag := false }) := by
+      status := .running (index+1), zeroFlag := true, carryFlag := false, signFlag := false }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
+  dsimp [stepOp, MachineState.binary, validBinary, validMove, Operand.width, Width.bits,
+    Width.bytes, BinaryOp.writes, BinaryOp.result, BinaryOp.carry, MachineState.canRead,
+    MachineState.canWrite, MachineState.readOperand, MachineState.writeOperand,
+    MachineState.recordRead, next]
+  simp_all [ExecutionStatus.advance, MachineState.write]
+  all_goals rfl
 
 theorem test_zero (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.test register register) := by decide +kernel) :
+    (code : InstructionAt program index (.binary .test (.reg64 register) (.reg64 register)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with
-      status := .running (index+1), zeroFlag := initial.registers register == 0, carryFlag := false }) := by
+      status := .running (index+1), zeroFlag := initial.registers register == 0, carryFlag := false, signFlag := (initial.registers register).msb }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp_all [ExecutionStatus.advance, stepOp, next]
+  dsimp [stepOp, MachineState.binary, validBinary, validMove, Operand.width, Width.bits,
+    Width.bytes, BinaryOp.writes, BinaryOp.result, BinaryOp.carry, MachineState.canRead,
+    MachineState.canWrite, MachineState.readOperand, MachineState.writeOperand,
+    MachineState.recordRead, next]
+  simp_all [ExecutionStatus.advance]
+  all_goals rfl
 
 theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
     (location : initial.status = .running index) (allowed : initial.readable (initial.registers base).toNat = true)
@@ -241,23 +251,28 @@ theorem read_byte (program : Program) (index : Nat) (destination : Reg32) (base 
 
 theorem add (program : Program) (index : Nat) (destination source : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.add destination source) := by decide +kernel) :
+    (code : InstructionAt program index (.binary .add (.reg64 destination) (.reg64 source)) := by decide +kernel) :
     let result := initial.registers destination + initial.registers source
     Ensures program (· = initial) (· = { initial.write destination result with
-      status := .running (index+1), zeroFlag := result == 0, carryFlag := result < initial.registers destination }) := by
+      status := .running (index+1), zeroFlag := result == 0, carryFlag := result < initial.registers destination, signFlag := result.msb }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
+  dsimp [stepOp, MachineState.binary, validBinary, validMove, Operand.width, Width.bits,
+    Width.bytes, BinaryOp.writes, BinaryOp.result, BinaryOp.carry, MachineState.canRead,
+    MachineState.canWrite, MachineState.readOperand, MachineState.writeOperand,
+    MachineState.recordRead, next]
+  simp_all [ExecutionStatus.advance, MachineState.write]
+  all_goals rfl
 
 theorem inc (program : Program) (index : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
     (code : InstructionAt program index (.inc register) := by decide +kernel) :
     let result := initial.registers register + 1
     Ensures program (· = initial) (· = { initial.write register result with
-      status := .running (index+1), zeroFlag := result == 0 }) := by
+      status := .running (index+1), zeroFlag := result == 0, signFlag := result.msb }) := by
   constructor
   intro actual equal
   subst actual
@@ -270,7 +285,7 @@ theorem dec (program : Program) (index : Nat) (register : Reg) (initial : Machin
     (code : InstructionAt program index (.dec register) := by decide +kernel) :
     let result := initial.registers register - 1
     Ensures program (· = initial) (· = { initial.write register result with
-      status := .running (index+1), zeroFlag := result == 0 }) := by
+      status := .running (index+1), zeroFlag := result == 0, signFlag := result.msb }) := by
   constructor
   intro actual equal
   subst actual
@@ -330,17 +345,26 @@ theorem move (program : Program) (index : Nat) (destination source : Operand) (i
 
 theorem compare (program : Program) (index : Nat) (left right : Reg) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.cmp left right) := by decide +kernel) :
+    (code : InstructionAt program index (.binary .cmp (.reg64 left) (.reg64 right)) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with
       status := .running (index+1)
       zeroFlag := initial.registers left == initial.registers right,
-      carryFlag := initial.registers left < initial.registers right }) := by
+      carryFlag := initial.registers left < initial.registers right,
+      signFlag := (initial.registers left - initial.registers right).msb }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp [stepOp, next, ExecutionStatus.advance, location]
+  dsimp [stepOp, MachineState.binary, validBinary, validMove, Operand.width, Width.bits,
+    Width.bytes, BinaryOp.writes, BinaryOp.result, BinaryOp.carry, MachineState.canRead,
+    MachineState.canWrite, MachineState.readOperand, MachineState.writeOperand,
+    MachineState.recordRead, next]
+  simp_all [ExecutionStatus.advance]
+  change (initial.registers left - initial.registers right == 0#64) =
+    (initial.registers left == initial.registers right)
+  apply Bool.eq_iff_iff.mpr
+  simp [BitVec.sub_eq_iff_eq_add]
 
 theorem write_byte (program : Program) (index : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
     (location : initial.status = .running index) (allowed : initial.writable (initial.registers base).toNat = true)
