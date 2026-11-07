@@ -26,6 +26,25 @@ pub enum BinaryOp {
     Xor,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
+#[serde(rename_all = "camelCase")]
+pub enum Condition {
+    #[strum(serialize = "e")]
+    Equal,
+    #[strum(serialize = "ne")]
+    NotEqual,
+    #[strum(serialize = "b")]
+    Below,
+    #[strum(serialize = "ae")]
+    AboveOrEqual,
+    #[strum(serialize = "be")]
+    BelowOrEqual,
+    #[strum(serialize = "a")]
+    Above,
+    #[strum(serialize = "s")]
+    Sign,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, EnumCount)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
@@ -50,20 +69,27 @@ pub enum Operation {
         destination: Operand,
         source: Operand,
     },
-    Jb {
+    Jmp {
         target: usize,
+    },
+    Jcc {
+        condition: Condition,
+        target: usize,
+    },
+    Setcc {
+        condition: Condition,
+        destination: Operand,
+    },
+    Cmovcc {
+        condition: Condition,
+        destination: Operand,
+        source: Operand,
     },
     Inc {
         destination: Register64,
     },
     Dec {
         destination: Register64,
-    },
-    Jz {
-        target: usize,
-    },
-    Jnz {
-        target: usize,
     },
     Ret,
 }
@@ -83,6 +109,14 @@ impl Operation {
                 ..
             }
             | Self::Mov {
+                source: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Setcc {
+                destination: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Cmovcc {
                 source: Operand::Memory { address, .. },
                 ..
             }
@@ -120,11 +154,19 @@ impl Operation {
                 destination,
                 source,
             } => format!("mov {destination}, {source}"),
-            Self::Jb { target } => format!("jb rivet_instruction_{target}"),
+            Self::Jmp { target } => format!("jmp rivet_instruction_{target}"),
+            Self::Jcc { condition, target } => format!("j{condition} rivet_instruction_{target}"),
+            Self::Setcc {
+                condition,
+                destination,
+            } => format!("set{condition} {destination}"),
+            Self::Cmovcc {
+                condition,
+                destination,
+                source,
+            } => format!("cmov{condition} {destination}, {source}"),
             Self::Inc { destination } => format!("inc {destination}"),
             Self::Dec { destination } => format!("dec {destination}"),
-            Self::Jz { target } => format!("jz rivet_instruction_{target}"),
-            Self::Jnz { target } => format!("jnz rivet_instruction_{target}"),
             Self::Ret => "ret".into(),
         }
     }
@@ -309,7 +351,7 @@ fn random_operands(
     }
 }
 
-fn extension_source(generator: &mut fastrand::Rng, width: Width, whole_program: bool) -> Operand {
+fn register_or_memory(generator: &mut fastrand::Rng, width: Width, whole_program: bool) -> Operand {
     if generator.bool() {
         Operand::Memory {
             width,
@@ -353,24 +395,45 @@ fn random_instruction(
                 } else {
                     sample(generator, Register32::VARIANTS)
                 },
-                source: extension_source(generator, width, whole_program),
+                source: register_or_memory(generator, width, whole_program),
             }
         }
         3 => Operation::Movsxd {
             destination: if whole_program { Rdx } else { register },
-            source: extension_source(generator, Width::Dword, whole_program),
+            source: register_or_memory(generator, Width::Dword, whole_program),
         },
         4 => random_operands(generator, whole_program, None),
-        5 => Operation::Jb { target },
-        6 => Operation::Inc {
+        5 => Operation::Jmp { target },
+        6 => Operation::Jcc {
+            condition: sample(generator, Condition::VARIANTS),
+            target,
+        },
+        7 => Operation::Setcc {
+            condition: sample(generator, Condition::VARIANTS),
+            destination: if generator.bool() {
+                Operand::register(Width::Byte, if whole_program { Rcx } else { register })
+            } else {
+                Operand::Memory {
+                    width: Width::Byte,
+                    address: random_address(generator, whole_program),
+                }
+            },
+        },
+        8 => {
+            let width = sample(generator, &[Width::Word, Width::Dword, Width::Qword]);
+            Operation::Cmovcc {
+                condition: sample(generator, Condition::VARIANTS),
+                destination: Operand::register(width, if whole_program { Rcx } else { register }),
+                source: register_or_memory(generator, width, whole_program),
+            }
+        }
+        9 => Operation::Inc {
             destination: register,
         },
-        7 => Operation::Dec {
+        10 => Operation::Dec {
             destination: if whole_program { Rsi } else { register },
         },
-        8 => Operation::Jz { target },
-        9 => Operation::Jnz { target },
-        10 => Operation::Ret,
+        11 => Operation::Ret,
         _ => unreachable!(),
     }
 }
@@ -393,7 +456,7 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
         program.push(Operation::Ret);
     } else if matches!(
         program.first(),
-        Some(Operation::Jz { .. } | Operation::Jnz { .. } | Operation::Jb { .. })
+        Some(Operation::Jmp { .. } | Operation::Jcc { .. })
     ) {
         program.extend([Operation::Inc { destination: Rdi }, Operation::Ret]);
     }

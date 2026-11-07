@@ -145,6 +145,16 @@ def validBinary (operation : BinaryOp) (destination source : Operand) : Bool :=
     | _, _ => true) &&
     (match operation, source with | .test, .memory _ _ => false | _, _ => true)
 
+/-- Conditions supported by the modeled zero, carry, and sign flags. -/
+inductive Condition where
+  | equal | notEqual | below | aboveOrEqual | belowOrEqual | above | sign
+  deriving DecidableEq, Repr
+
+def validConditionalMove (destination source : Operand) : Bool :=
+  match destination with
+  | .reg16 _ | .reg32 _ | .reg64 _ => source.width == destination.width
+  | _ => false
+
 inductive Op where
   | binary (operation : BinaryOp) (destination source : Operand)
   | lea (destination : Reg) (source : Address)
@@ -153,16 +163,18 @@ inductive Op where
   | mov (destination source : Operand)
   | inc (destination : Reg)
   | dec (destination : Reg)
-  | jb (target : Nat)
-  | jz (target : Nat)
-  | jnz (target : Nat)
+  | jmp (target : Nat)
+  | jcc (condition : Condition) (target : Nat)
+  | setcc (condition : Condition) (destination : Operand)
+  | cmovcc (condition : Condition) (destination source : Operand)
   | ret
   deriving DecidableEq, Repr
 /-- Whether an instruction can write a register, including RET advancing RSP. -/
 def modifies : Op → Reg → Bool
   | .movzx destination _, register => destination.parent == register
   | .binary operation destination _, register => operation.writes && destination.register == some register
-  | .mov destination _, register => destination.register == some register
+  | .mov destination _, register | .setcc _ destination, register
+  | .cmovcc _ destination _, register => destination.register == some register
   | .lea destination _, register | .movsxd destination _, register
   | .inc destination, register | .dec destination, register => destination == register
   | .ret, register => register == .rsp

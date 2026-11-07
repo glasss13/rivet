@@ -15,6 +15,7 @@ deriving instance FromJson for Scale
 deriving instance FromJson for Address
 deriving instance FromJson for BinaryOp
 deriving instance FromJson for Operand
+deriving instance FromJson for Condition
 deriving instance FromJson for Op
 
 structure Request where

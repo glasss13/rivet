@@ -123,6 +123,16 @@ def MachineState.binary (state : MachineState) (operation : BinaryOp) (destinati
       readHistory := ((state.recordRead destination).recordRead source).readHistory }
   else { state with status := .fault }
 
+def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
+  match condition with
+  | .equal => state.zeroFlag
+  | .notEqual => !state.zeroFlag
+  | .below => state.carryFlag
+  | .aboveOrEqual => !state.carryFlag
+  | .belowOrEqual => state.carryFlag || state.zeroFlag
+  | .above => !state.carryFlag && !state.zeroFlag
+  | .sign => state.signFlag
+
 def stepOp (operation : Op) (state : MachineState) : MachineState :=
   match operation with
   | .binary operation destination source => state.binary operation destination source
@@ -149,9 +159,20 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
   | .dec destination =>
     let result := state.registers destination - 1
     next { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
-  | .jb target => { state with status := if state.carryFlag then .running target else state.status.advance }
-  | .jz target => { state with status := if state.zeroFlag then .running target else state.status.advance }
-  | .jnz target => { state with status := if state.zeroFlag then state.status.advance else .running target }
+  | .jmp target => { state with status := .running target }
+  | .jcc condition target =>
+    { state with status := if condition.holds state then .running target else state.status.advance }
+  | .setcc condition destination =>
+    if destination.width == some .byte && state.canWrite destination then
+      next (state.writeOperand destination (if condition.holds state then 1 else 0))
+    else { state with status := .fault }
+  | .cmovcc condition destination source =>
+    -- Memory sources are read even when the condition is false. Writing the old
+    -- destination through its operand also clears the upper half of r32.
+    if validConditionalMove destination source && state.canRead source then
+      let value := if condition.holds state then state.readOperand source else state.readOperand destination
+      next { state.writeOperand destination value with readHistory := (state.recordRead source).readHistory }
+    else { state with status := .fault }
   | .ret =>
     let address := (state.registers .rsp).toNat
     if address + 8 ≤ word && (List.range 8).all (fun offset => state.readable (address+offset)) then

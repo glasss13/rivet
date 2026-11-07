@@ -295,27 +295,27 @@ theorem dec (program : Program) (index : Nat) (register : Reg) (initial : Machin
 
 theorem branch_zero (program : Program) (index target : Nat) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.jz target) := by decide +kernel) :
+    (code : InstructionAt program index (.jcc .equal target) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then target else index+1) }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp_all [ExecutionStatus.advance, stepOp]
+  simp_all [ExecutionStatus.advance, stepOp, Condition.holds]
   split <;> rfl
 
 theorem branch_nonzero (program : Program) (index target : Nat) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.jnz target) := by decide +kernel) :
+    (code : InstructionAt program index (.jcc .notEqual target) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then index+1 else target) }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp_all [ExecutionStatus.advance, stepOp]
-  split <;> rfl
+  simp_all [ExecutionStatus.advance, stepOp, Condition.holds]
+  cases initial.zeroFlag <;> rfl
 
 theorem return_ (program : Program) (index : Nat) (initial : MachineState)
     (location : initial.status = .running index) (slot : initial.ValidReturnSlot)
@@ -388,14 +388,14 @@ theorem write_byte (program : Program) (index : Nat) (base : Reg) (source : Reg8
 
 theorem branch_below (program : Program) (index target : Nat) (initial : MachineState)
     (location : initial.status = .running index := by rfl)
-    (code : InstructionAt program index (.jb target) := by decide +kernel) :
+    (code : InstructionAt program index (.jcc .below target) := by decide +kernel) :
     Ensures program (· = initial) (· = { initial with status := .running (if initial.carryFlag then target else index+1) }) := by
   constructor
   intro actual equal
   subst actual
   refine ⟨execute program 1 initial, ⟨1, rfl⟩, ?_⟩
   rw [one code location]
-  simp [stepOp, ExecutionStatus.advance, location]
+  simp [stepOp, ExecutionStatus.advance, Condition.holds, location]
   split <;> rfl
 
 end Rivet
