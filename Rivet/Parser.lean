@@ -81,14 +81,14 @@ def parseRegister8 : String → Except String Reg8
   | "dil" => .ok .dil
   | "bpl" => .ok .bpl
   | "spl" => .ok .spl
-  | "r8b" => .ok .r8b
-  | "r9b" => .ok .r9b
-  | "r10b" => .ok .r10b
-  | "r11b" => .ok .r11b
-  | "r12b" => .ok .r12b
-  | "r13b" => .ok .r13b
-  | "r14b" => .ok .r14b
-  | "r15b" => .ok .r15b
+  | "r8b" => .ok .r8l
+  | "r9b" => .ok .r9l
+  | "r10b" => .ok .r10l
+  | "r11b" => .ok .r11l
+  | "r12b" => .ok .r12l
+  | "r13b" => .ok .r13l
+  | "r14b" => .ok .r14l
+  | "r15b" => .ok .r15l
   | name => .error ("unsupported register: " ++ name)
 
 def parseRegister16 : String → Except String Reg16

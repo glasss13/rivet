@@ -32,7 +32,7 @@ inductive Reg32 where
 
 /-- Low-byte aliases; legacy high-byte registers are not supported. -/
 inductive Reg8 where
-  | al | bl | cl | dl | sil | dil | bpl | spl | r8b | r9b | r10b | r11b | r12b | r13b | r14b | r15b
+  | al | bl | cl | dl | sil | dil | bpl | spl | r8l | r9l | r10l | r11l | r12l | r13l | r14l | r15l
   deriving DecidableEq, Repr
 @[simp] def Reg8.parent : Reg8 → Reg
   | .al => .rax
@@ -43,14 +43,14 @@ inductive Reg8 where
   | .dil => .rdi
   | .bpl => .rbp
   | .spl => .rsp
-  | .r8b => .r8
-  | .r9b => .r9
-  | .r10b => .r10
-  | .r11b => .r11
-  | .r12b => .r12
-  | .r13b => .r13
-  | .r14b => .r14
-  | .r15b => .r15
+  | .r8l => .r8
+  | .r9l => .r9
+  | .r10l => .r10
+  | .r11l => .r11
+  | .r12l => .r12
+  | .r13l => .r13
+  | .r14l => .r14
+  | .r15l => .r15
 inductive Reg16 where
   | ax | bx | cx | dx | si | di | bp | sp | r8w | r9w | r10w | r11w | r12w | r13w | r14w | r15w
   deriving DecidableEq, Repr
