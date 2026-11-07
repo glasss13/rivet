@@ -17,18 +17,20 @@ def tokens (source : String) : List String :=
     else if character == '\t' then [' '] else [character])
   (splitChars ' ' characters).filterMap (fun characters => if characters.isEmpty then none else some (String.ofList characters))
 def identifier (source : String) : Bool :=
-  !source.toList.isEmpty && source.toList.all (fun character => character.isAlpha || character.isDigit || character == '_') &&
+  !source.toList.isEmpty && source.toList.all (fun character =>
+    character.isAlpha || character.isDigit || character == '_' || character == '.') &&
     !(source.toList.head!).isDigit
--- GNU as treats these Intel expression operators and type names specially,
--- regardless of case or whether a label with that spelling exists.
+-- GNU as reserves the current-location symbol and these Intel expression
+-- operators and type names, regardless of case or existing label declarations.
 def assemblyIdentifier (source : String) : Bool :=
   identifier source && !([
-    "and", "eq", "ge", "gt", "le", "lt", "mod", "ne", "not", "offset", "or",
+    ".", "and", "eq", "ge", "gt", "le", "lt", "mod", "ne", "not", "offset", "or",
     "shl", "short", "shr", "xor", "byte", "word", "dword", "fword", "qword",
     "mmword", "tbyte", "oword", "xmmword", "ymmword", "zmmword", "near", "far",
     "ptr"] : List String).contains (String.ofList (source.toList.map Char.toLower))
 abbrev Labels := List (String × Nat)
-def target (labels : Labels) (labelName : String) : Except String Nat :=
+def target (labels : Labels) (labelName : String) : Except String Nat := do
+  unless assemblyIdentifier labelName do throw "invalid or reserved label reference"
   match labels.lookup labelName with
   | some instructionIndex => .ok instructionIndex
   | none => .error ("unresolved label: " ++ labelName)
@@ -289,13 +291,6 @@ def scanLine (scan : Scan) (lineNumber : Nat) (rawLine : String) : Except String
   let lineSource := clean rawLine
   if lineSource.toList.isEmpty then return scan
   if lineSource.toList.contains ';' then throw "semicolon is forbidden"
-  if lineSource.toList.head? == some '.' then
-    match tokens lineSource with
-    | [".globl", name] =>
-      if scan.functionName.isSome || !assemblyIdentifier name || scan.count != 0 || !scan.labels.isEmpty then
-        throw "expected one initial .globl declaration"
-      return { scan with functionName := some name }
-    | _ => throw "unsupported directive"
   if lineSource.toList.getLast? == some ':' then
     let name := String.ofList (lineSource.toList.reverse.drop 1).reverse
     if !assemblyIdentifier name || (scan.labels.lookup name).isSome then
@@ -303,6 +298,13 @@ def scanLine (scan : Scan) (lineNumber : Nat) (rawLine : String) : Except String
     if !scan.entrySeen then
       if scan.functionName != some name then throw "first label must name the function"
     return { scan with labels := scan.labels ++ [(name, scan.count)], entrySeen := true }
+  if lineSource.toList.head? == some '.' then
+    match tokens lineSource with
+    | [".globl", name] =>
+      if scan.functionName.isSome || !assemblyIdentifier name || scan.count != 0 || !scan.labels.isEmpty then
+        throw "expected one initial .globl declaration"
+      return { scan with functionName := some name }
+    | _ => throw "unsupported directive"
   if !scan.entrySeen then throw "instruction before function entry"
   return { scan with lines := scan.lines ++ [(lineNumber,lineSource)], count := scan.count+1 }
 
