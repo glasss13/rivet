@@ -76,6 +76,6 @@ Structured MOV operations use `Operand` for their source and destination, for ex
 
 Proofs concern the shared model. Assembler and processor correspondence remain assumptions; machine code is not verified. ZF, CF, and SF are modeled. Arithmetic and logic compute flags at the operand width; INC and DEC preserve CF. Overflow, parity, and auxiliary carry flags are not yet modeled. Memory has separate `readable` and `writable` permissions; multi-byte accesses check the entire range before changing state, and MOV stores do not require read permission. Effective-address arithmetic wraps at 64 bits; accesses spanning the address-space boundary fault. Executions have no concurrency or asynchronous interference.
 
-A developer-only [differential validation harness](validation/README.md) compares the interpreter with native x86-64 execution. Its Rust and Linux tooling requirements are separate from library use.
+A developer-only [differential validation harness](crates/rivet-check/README.md) compares the interpreter with native x86-64 execution. Its Rust and Linux tooling requirements are separate from library use.
 
 Rust tools share a Cargo workspace under `crates/`, with one root lockfile and build directory. Run `cargo run -p rivet-import -- ...` for the importer, `cargo run -p rivet-check -- ...` for validation, or `cargo clippy --workspace -- -D warnings` to check both packages.

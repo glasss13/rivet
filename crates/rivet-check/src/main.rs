@@ -98,13 +98,13 @@ fn check(model: &Path, case: &Case) -> Result<Option<String>> {
 }
 
 fn run(args: Arguments) -> Result<u8> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../validation");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let model = root.join(".lake/build/bin/model");
     println!("{:?}", model);
     ensure!(
         Command::new("lake")
             .args(["build", "model"])
-            .current_dir(&root)
+            .current_dir(root)
             .status()?
             .success(),
         "Lean model build failed"
