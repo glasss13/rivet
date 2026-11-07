@@ -162,6 +162,7 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
 
 def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
+  | .nop => next nextAddress state
   | .movd destination source =>
     let value := ((state.registers source.parent).setWidth 32).setWidth 128
     next nextAddress { state with xmmRegisters := fun register =>

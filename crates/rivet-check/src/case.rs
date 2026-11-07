@@ -210,7 +210,7 @@ fn random_instruction(
             }
         };
     }
-    match generator.usize(..if whole_program { 18 } else { 20 }) {
+    match generator.usize(..if whole_program { 19 } else { 21 }) {
         0 => match generator.usize(..4) {
             0 => binary!(REGISTERS8, byte_ptr, i8, i32),
             1 => binary!(REGISTERS16, word_ptr, i16, i32),
@@ -376,8 +376,15 @@ fn random_instruction(
             sample(generator, &XMM),
             generator.u8(..) as u32,
         )?,
-        18 => assembler.push(REGISTERS[destination])?,
-        19 => assembler.pop(REGISTERS[destination])?,
+        18 => {
+            if generator.bool() {
+                assembler.nop()?;
+            } else {
+                assembler.nop_1(dword_ptr(address))?;
+            }
+        }
+        19 => assembler.push(REGISTERS[destination])?,
+        20 => assembler.pop(REGISTERS[destination])?,
         _ => unreachable!(),
     }
     Ok(())

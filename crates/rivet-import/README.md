@@ -34,6 +34,9 @@ The supported scope is deliberately small:
 - Scalar MOV, ADD/SUB/SBB/CMP/TEST/AND/OR/XOR; 64-bit LEA, INC/DEC and register
   PUSH/POP; MOVZX into 32-bit registers; MOVSXD into 64-bit registers; plain RET;
   and direct JMP/JE/JNE/JB/JAE/JBE/JA/JS within the selected function.
+- Single-byte and multi-byte NOPs, including segment/address-size prefixes used
+  for padding. NOP advances by its encoded length without accessing memory or
+  changing registers or flags.
 - NOT on scalar registers or memory; two/three-operand IMUL at 16/32/64 bits;
   SHL/SHR on 32/64-bit registers with immediate counts (including the implicit
   count-one encoding). CL counts and memory shifts are rejected.
@@ -43,8 +46,9 @@ The supported scope is deliberately small:
   immediate selector. Other SIMD forms, including AVX, are rejected.
 - Register aliases, 64-bit base/index/displacement addressing, and RIP-relative
   operands resolved to absolute addresses. High-byte registers, address-size
-  overrides, segment overrides, LOCK/REP prefixes, and calls are rejected.
-  Mandatory SSE prefixes are decoded as part of their instruction, not as REP operations.
+  overrides and segment overrides (except on NOP), LOCK/REP prefixes, and calls
+  are rejected. Mandatory SSE prefixes are decoded as part of their instruction,
+  not as REP operations.
 
 Every byte in the symbol's range must decode into a supported instruction;
 embedded data and unsupported padding instructions are rejected. Direct branches
