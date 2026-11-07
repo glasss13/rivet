@@ -209,9 +209,20 @@ def parseMove (operands : String) : Except String Op := do
   | _ => throw "MOV requires two operands"
 
 def parseOp (labels : Labels) (source : String) : Except String Op := do
-  match tokens source with
-  | ["xor", destination, ",", operand] => return .xor (← parseRegister32 destination) (← parseRegister32 operand)
-  | ["test", left, ",", right] => return .test (← parseRegister left) (← parseRegister right)
+  let parts := tokens source
+  let mnemonic := parts.headD ""
+  let operation : Option BinaryOp := match mnemonic with
+    | "add" => some .add | "sub" => some .sub | "cmp" => some .cmp | "test" => some .test
+    | "and" => some .and | "or" => some .or | "xor" => some .xor | _ => none
+  if let some operation := operation then
+    match (splitChars ',' (joinTokens parts.tail).toList).map String.ofList with
+    | [destination, source] =>
+      let destination ← parseOperand destination
+      let source ← parseOperand source
+      unless validBinary operation destination source do throw "invalid scalar operands or immediate"
+      return .binary operation destination source
+    | _ => throw "scalar instruction requires two operands"
+  else match parts with
   | "lea" :: destination :: "," :: address =>
     return .lea (← parseRegister destination) (← parseAddress (joinTokens address))
   | "movzx" :: destination :: "," :: source =>
@@ -229,8 +240,6 @@ def parseOp (labels : Labels) (source : String) : Except String Op := do
     match ← parseMove (joinTokens operands) with
     | .mov (.reg64 destination) (.immediate value) => return .mov (.reg64 destination) (.immediate value)
     | _ => throw "MOVABS requires a 64-bit register and immediate"
-  | ["cmp", left, ",", right] => return .cmp (← parseRegister left) (← parseRegister right)
-  | ["add", destination, ",", operand] => return .add (← parseRegister destination) (← parseRegister operand)
   | ["inc", destination] => return .inc (← parseRegister destination)
   | ["dec", destination] => return .dec (← parseRegister destination)
   | ["jb", labelName] => return .jb (← target labels labelName)

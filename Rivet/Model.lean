@@ -10,6 +10,7 @@ inductive ExecutionStatus where
   deriving DecidableEq, Repr
 structure MachineState where
   registers : Reg → BitVec 64
+  signFlag : Bool := false
   zeroFlag : Bool
   carryFlag : Bool := false
   memory : Nat → Fin 256
@@ -92,14 +93,39 @@ def MachineState.recordRead (state : MachineState) : Operand → MachineState
       [⟨(address.evaluate state.registers).toNat, width.bytes⟩] }
   | _ => state
 
+def BinaryOp.result (operation : BinaryOp) (left right : BitVec width) : BitVec width :=
+  match operation with
+  | .add => left + right
+  | .sub | .cmp => left - right
+  | .and | .test => left &&& right
+  | .or => left ||| right
+  | .xor => left ^^^ right
+
+def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec width) : Bool :=
+  match operation with
+  | .add => result < left
+  | .sub | .cmp => left < right
+  | _ => false
+
+/-- Read both operands from the initial state; commit flags, memory, and history only on success. -/
+def MachineState.binary (state : MachineState) (operation : BinaryOp) (destination source : Operand) : MachineState :=
+  if validBinary operation destination source && state.canRead destination && state.canRead source &&
+      (!operation.writes || state.canWrite destination) then
+    let width := destination.width.getD .qword
+    let left := (state.readOperand destination).setWidth width.bits
+    let right := (state.readOperand source).setWidth width.bits
+    let result := operation.result left right
+    let updated := if operation.writes then state.writeOperand destination (result.setWidth 64) else state
+    next { updated with
+      zeroFlag := result == 0
+      signFlag := result.msb
+      carryFlag := operation.carry left right result,
+      readHistory := ((state.recordRead destination).recordRead source).readHistory }
+  else { state with status := .fault }
+
 def stepOp (operation : Op) (state : MachineState) : MachineState :=
   match operation with
-  | .xor destination sourceRegister =>
-    let result := (state.registers destination.parent).setWidth 32 ^^^
-      (state.registers sourceRegister.parent).setWidth 32
-    next { state.write destination.parent (result.setWidth 64) with zeroFlag := result == 0, carryFlag := false }
-  | .test leftRegister rightRegister =>
-    next { state with zeroFlag := (state.registers leftRegister &&& state.registers rightRegister) == 0, carryFlag := false }
+  | .binary operation destination source => state.binary operation destination source
   | .lea destination address => next (state.write destination (address.evaluate state.registers))
   | .movzx destination source =>
     if (source.width == some .byte || source.width == some .word) && state.canRead source then
@@ -117,21 +143,12 @@ def stepOp (operation : Op) (state : MachineState) : MachineState :=
       let result := state.writeOperand destination (state.readOperand source)
       next { result with readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
-  | .cmp leftRegister rightRegister =>
-    next { state with
-      zeroFlag := state.registers leftRegister == state.registers rightRegister
-      carryFlag := state.registers leftRegister < state.registers rightRegister }
-  | .add destination sourceRegister =>
-    let result := state.registers destination + state.registers sourceRegister
-    next { state.write destination result with
-      zeroFlag := result == 0
-      carryFlag := result < state.registers destination }
   | .inc destination =>
     let result := state.registers destination + 1
-    next { state.write destination result with zeroFlag := result == 0 }
+    next { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
   | .dec destination =>
     let result := state.registers destination - 1
-    next { state.write destination result with zeroFlag := result == 0 }
+    next { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
   | .jb target => { state with status := if state.carryFlag then .running target else state.status.advance }
   | .jz target => { state with status := if state.zeroFlag then .running target else state.status.advance }
   | .jnz target => { state with status := if state.zeroFlag then state.status.advance else .running target }

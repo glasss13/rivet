@@ -6,23 +6,33 @@ use crate::{
 };
 use Register32::*;
 use Register64::*;
-use strum::{EnumCount, VariantArray};
+use strum::{Display, EnumCount, VariantArray};
 
 // Excludes the appended return instruction.
 const MAX_BODY_INSTRUCTIONS: usize = 8;
 const MAX_DATA_BYTES: usize = 32;
 const MAX_PROGRAM_STEPS: usize = 64;
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, VariantArray, Display)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Cmp,
+    Test,
+    And,
+    Or,
+    Xor,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, EnumCount)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
-    Xor {
-        destination: Register32,
-        source: Register32,
-    },
-    Test {
-        left: Register64,
-        right: Register64,
+    Binary {
+        operation: BinaryOp,
+        destination: Operand,
+        source: Operand,
     },
     Lea {
         destination: Register64,
@@ -40,16 +50,8 @@ pub enum Operation {
         destination: Operand,
         source: Operand,
     },
-    Cmp {
-        left: Register64,
-        right: Register64,
-    },
     Jb {
         target: usize,
-    },
-    Add {
-        destination: Register64,
-        source: Register64,
     },
     Inc {
         destination: Register64,
@@ -68,7 +70,15 @@ pub enum Operation {
 impl Operation {
     pub fn memory_address(&self) -> Option<&Address> {
         match self {
-            Self::Mov {
+            Self::Binary {
+                destination: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Binary {
+                source: Operand::Memory { address, .. },
+                ..
+            }
+            | Self::Mov {
                 destination: Operand::Memory { address, .. },
                 ..
             }
@@ -89,11 +99,11 @@ impl Operation {
     }
     fn assembly(self) -> String {
         match self {
-            Self::Xor {
+            Self::Binary {
+                operation,
                 destination,
                 source,
-            } => format!("xor {destination}, {source}"),
-            Self::Test { left, right } => format!("test {left}, {right}"),
+            } => format!("{operation} {destination}, {source}"),
             Self::Movzx {
                 destination,
                 source,
@@ -110,12 +120,7 @@ impl Operation {
                 destination,
                 source,
             } => format!("mov {destination}, {source}"),
-            Self::Cmp { left, right } => format!("cmp {left}, {right}"),
             Self::Jb { target } => format!("jb rivet_instruction_{target}"),
-            Self::Add {
-                destination,
-                source,
-            } => format!("add {destination}, {source}"),
             Self::Inc { destination } => format!("inc {destination}"),
             Self::Dec { destination } => format!("dec {destination}"),
             Self::Jz { target } => format!("jz rivet_instruction_{target}"),
@@ -129,6 +134,7 @@ impl Operation {
 pub struct Case {
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
+    pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
     pub data: Vec<u8>,
@@ -156,6 +162,7 @@ impl Case {
 pub struct ExecutionInput {
     pub program: Vec<Operation>,
     pub registers: [u64; 16],
+    pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
     pub memory_base: u64,
@@ -177,6 +184,7 @@ pub enum Status {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub registers: [u64; 16],
+    pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
     pub status: Status,
@@ -184,11 +192,17 @@ pub struct Snapshot {
 }
 
 fn random_word(generator: &mut fastrand::Rng) -> u64 {
-    const EDGES: [u64; 12] = [
+    const EDGES: [u64; 18] = [
         0,
         1,
+        127,
+        128,
         255,
         256,
+        (1 << 15) - 1,
+        1 << 15,
+        u16::MAX as u64,
+        1 << 16,
         (1 << 31) - 1,
         1 << 31,
         u32::MAX as u64,
@@ -206,20 +220,6 @@ fn random_word(generator: &mut fastrand::Rng) -> u64 {
 }
 fn sample<Operand: Copy>(generator: &mut fastrand::Rng, operands: &[Operand]) -> Operand {
     operands[generator.usize(..operands.len())]
-}
-
-fn binary_instruction<Operand: Copy>(
-    generator: &mut fastrand::Rng,
-    operands: &[Operand],
-    instruction: fn(Operand, Operand) -> Operation,
-) -> Operation {
-    let destination = sample(generator, operands);
-    let source = if generator.bool() {
-        destination
-    } else {
-        sample(generator, operands)
-    };
-    instruction(destination, source)
 }
 
 fn random_address(generator: &mut fastrand::Rng, whole_program: bool) -> Address {
@@ -246,7 +246,11 @@ fn random_address(generator: &mut fastrand::Rng, whole_program: bool) -> Address
     }
 }
 
-fn random_move(generator: &mut fastrand::Rng, whole_program: bool) -> Operation {
+fn random_operands(
+    generator: &mut fastrand::Rng,
+    whole_program: bool,
+    operation: Option<BinaryOp>,
+) -> Operation {
     let width = sample(generator, Width::VARIANTS);
     let destination = if whole_program {
         Rcx
@@ -267,13 +271,10 @@ fn random_move(generator: &mut fastrand::Rng, whole_program: bool) -> Operation 
         address: random_address(generator, whole_program),
     };
     let form = generator.usize(..5);
-    let bits = if form == 4 && width == Width::Qword {
-        32
-    } else {
-        width.bits()
-    };
+    let sign_extended = width == Width::Qword && (form == 4 || operation.is_some());
+    let bits = if sign_extended { 32 } else { width.bits() };
     let unsigned = (random_word(generator) as i128) & ((1i128 << bits) - 1);
-    let value = if (form == 4 && width == Width::Qword) || generator.bool() {
+    let value = if sign_extended || generator.bool() {
         if unsigned >= 1i128 << (bits - 1) {
             unsigned - (1i128 << bits)
         } else {
@@ -283,7 +284,7 @@ fn random_move(generator: &mut fastrand::Rng, whole_program: bool) -> Operation 
         unsigned
     };
     let immediate = Operand::Immediate { value };
-    let (destination, source) = match form {
+    let (mut destination, mut source) = match form {
         0 => (register, source),
         1 => (register, immediate),
         2 => (register, memory),
@@ -291,9 +292,20 @@ fn random_move(generator: &mut fastrand::Rng, whole_program: bool) -> Operation 
         4 => (memory, immediate),
         _ => unreachable!(),
     };
-    Operation::Mov {
-        destination,
-        source,
+    if let Some(operation) = operation {
+        if matches!(operation, BinaryOp::Test) && matches!(source, Operand::Memory { .. }) {
+            std::mem::swap(&mut destination, &mut source);
+        }
+        Operation::Binary {
+            operation,
+            destination,
+            source,
+        }
+    } else {
+        Operation::Mov {
+            destination,
+            source,
+        }
     }
 }
 
@@ -313,100 +325,52 @@ fn extension_source(generator: &mut fastrand::Rng, width: Width, whole_program: 
     }
 }
 
-fn random_instruction(generator: &mut fastrand::Rng) -> Operation {
-    if generator.bool() {
-        return random_move(generator, false);
-    }
+// Whole programs preserve the return stack and reserve RSI for countdowns.
+fn random_instruction(
+    generator: &mut fastrand::Rng,
+    whole_program: bool,
+    target: usize,
+) -> Operation {
+    let register = if whole_program {
+        Rdi
+    } else {
+        sample(generator, Register64::VARIANTS)
+    };
     match generator.usize(..Operation::COUNT) {
-        0 => binary_instruction(generator, Register32::VARIANTS, |destination, source| {
-            Operation::Xor {
-                destination,
-                source,
-            }
-        }),
-        1 => binary_instruction(generator, Register64::VARIANTS, |left, right| {
-            Operation::Test { left, right }
-        }),
-        2 => {
-            let width = sample(generator, &[Width::Byte, Width::Word]);
-            Operation::Movzx {
-                destination: sample(generator, Register32::VARIANTS),
-                source: extension_source(generator, width, false),
-            }
+        0 => {
+            let operation = sample(generator, BinaryOp::VARIANTS);
+            random_operands(generator, whole_program, Some(operation))
         }
-        3 => binary_instruction(generator, Register64::VARIANTS, |destination, source| {
-            Operation::Add {
-                destination,
-                source,
-            }
-        }),
-        4 => Operation::Inc {
-            destination: sample(generator, Register64::VARIANTS),
-        },
-        5 => Operation::Dec {
-            destination: sample(generator, Register64::VARIANTS),
-        },
-        6 => Operation::Jz { target: 2 },
-        7 => Operation::Jnz { target: 2 },
-        8 => random_move(generator, false),
-        9 => binary_instruction(generator, Register64::VARIANTS, |left, right| {
-            Operation::Cmp { left, right }
-        }),
-        10 => Operation::Jb { target: 2 },
-        11 => Operation::Ret,
-        12 => Operation::Lea {
-            destination: sample(generator, Register64::VARIANTS),
-            source: random_address(generator, false),
-        },
-        13 => Operation::Movsxd {
-            destination: sample(generator, Register64::VARIANTS),
-            source: extension_source(generator, Width::Dword, false),
-        },
-        _ => unreachable!(),
-    }
-}
-
-// Keep RSP as a return stack and use RDI as the data pointer in program cases.
-fn random_program_instruction(generator: &mut fastrand::Rng, target: usize) -> Operation {
-    match generator.usize(..Operation::COUNT) {
-        0 => Operation::Xor {
-            destination: Eax,
-            source: Eax,
-        },
-        1 => Operation::Test {
-            left: Rsi,
-            right: Rsi,
+        1 => Operation::Lea {
+            destination: if whole_program { Rcx } else { register },
+            source: random_address(generator, whole_program),
         },
         2 => {
             let width = sample(generator, &[Width::Byte, Width::Word]);
             Operation::Movzx {
-                destination: Edx,
-                source: extension_source(generator, width, true),
+                destination: if whole_program {
+                    Edx
+                } else {
+                    sample(generator, Register32::VARIANTS)
+                },
+                source: extension_source(generator, width, whole_program),
             }
         }
-        3 => Operation::Add {
-            destination: Rax,
-            source: Rdx,
+        3 => Operation::Movsxd {
+            destination: if whole_program { Rdx } else { register },
+            source: extension_source(generator, Width::Dword, whole_program),
         },
-        4 => Operation::Inc { destination: Rdi },
-        5 => Operation::Dec { destination: Rsi },
-        6 => Operation::Jz { target },
-        7 => Operation::Jnz { target },
-        8 => random_move(generator, true),
-        9 => Operation::Cmp {
-            left: Rax,
-            right: Rdx,
+        4 => random_operands(generator, whole_program, None),
+        5 => Operation::Jb { target },
+        6 => Operation::Inc {
+            destination: register,
         },
-        10 => Operation::Jb { target },
-        11 => Operation::Ret,
-        12 => Operation::Lea {
-            destination: Rcx,
-            source: random_address(generator, true),
+        7 => Operation::Dec {
+            destination: if whole_program { Rsi } else { register },
         },
-        13 => Operation::Movsxd {
-            destination: Rdx,
-            source: extension_source(generator, Width::Dword, true),
-        },
+        8 => Operation::Jz { target },
+        9 => Operation::Jnz { target },
+        10 => Operation::Ret,
         _ => unreachable!(),
     }
 }
@@ -418,11 +382,11 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
         (0..count)
             .map(|_| {
                 let target = generator.usize(0..=count);
-                random_program_instruction(generator, target)
+                random_instruction(generator, true, target)
             })
             .collect()
     } else {
-        vec![random_instruction(generator)]
+        vec![random_instruction(generator, false, 2)]
     };
     if whole_program {
         // Branches may also target this appended return instruction.
@@ -442,6 +406,7 @@ pub fn generate(generator: &mut fastrand::Rng) -> Case {
         steps: if whole_program { MAX_PROGRAM_STEPS } else { 1 },
         program,
         registers,
+        sign_flag: generator.bool(),
         zero_flag: generator.bool(),
         carry_flag: generator.bool(),
         data: (0..generator.usize(1..=MAX_DATA_BYTES))

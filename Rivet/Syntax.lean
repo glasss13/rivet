@@ -128,15 +128,29 @@ def validMove (destination source : Operand) : Bool :=
     | _, .immediate value => -(2^(width.bits-1)) ≤ value && value < 2^width.bits
     | _, _ => source.width == some width
 
+/-- Scalar operations sharing the same width and operand rules. -/
+inductive BinaryOp where
+  | add | sub | cmp | test | and | or | xor
+  deriving DecidableEq, Repr
+
+def BinaryOp.writes : BinaryOp → Bool
+  | .cmp | .test => false
+  | _ => true
+
+/-- 64-bit arithmetic immediates are sign-extended from 32 bits. TEST has no register/memory form. -/
+def validBinary (operation : BinaryOp) (destination source : Operand) : Bool :=
+  validMove destination source &&
+    (match destination.width, source with
+    | some .qword, .immediate value => -(2^31) ≤ value && value < 2^31
+    | _, _ => true) &&
+    (match operation, source with | .test, .memory _ _ => false | _, _ => true)
+
 inductive Op where
-  | xor (destination source : Reg32)
-  | test (left right : Reg)
+  | binary (operation : BinaryOp) (destination source : Operand)
   | lea (destination : Reg) (source : Address)
   | movzx (destination : Reg32) (source : Operand)
   | movsxd (destination : Reg) (source : Operand)
   | mov (destination source : Operand)
-  | cmp (left right : Reg)
-  | add (destination source : Reg)
   | inc (destination : Reg)
   | dec (destination : Reg)
   | jb (target : Nat)
@@ -146,10 +160,11 @@ inductive Op where
   deriving DecidableEq, Repr
 /-- Whether an instruction can write a register, including RET advancing RSP. -/
 def modifies : Op → Reg → Bool
-  | .xor destination _, register | .movzx destination _, register => destination.parent == register
+  | .movzx destination _, register => destination.parent == register
+  | .binary operation destination _, register => operation.writes && destination.register == some register
   | .mov destination _, register => destination.register == some register
   | .lea destination _, register | .movsxd destination _, register
-  | .add destination _, register | .inc destination, register | .dec destination, register => destination == register
+  | .inc destination, register | .dec destination, register => destination == register
   | .ret, register => register == .rsp
   | _, _ => false
 
