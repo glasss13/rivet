@@ -6,7 +6,7 @@ namespace Rivet
 inductive ExecutionStatus where
   | running (address : Nat)
   | fault
-  deriving DecidableEq, Repr
+  deriving DecidableEq
 structure MachineState where
   registers : Reg → BitVec 64
   xmmRegisters : Xmm → BitVec 128 := fun _ => 0
@@ -17,17 +17,11 @@ structure MachineState where
   status : ExecutionStatus
   readHistory : List Access
 
-/-- Permissions are determined by the memory regions, not independent state fields. -/
-@[simp] abbrev MachineState.readable (state : MachineState) : Nat → Bool := state.memory.readable
-@[simp] abbrev MachineState.writable (state : MachineState) : Nat → Bool := state.memory.writable
-
 /-- Candidate values for flags an instruction leaves undefined. Defined and preserved
 flags must not use these values. This is execution input, not architectural state. -/
 structure FlagValues where
   signFlag : Bool
   zeroFlag : Bool
-  carryFlag : Bool
-  deriving Repr
 
 /-- One set of candidate bits per execution step, including repeated loop iterations. -/
 abbrev FlagChoices := Nat → FlagValues
@@ -90,11 +84,11 @@ def MachineState.writeOperand (state : MachineState) (operand : Operand) (value 
   | .immediate _ => state
 
 def MachineState.canRead (state : MachineState) : Operand → Bool
-  | .memory width address => permits state.readable (address.evaluate state.registers).toNat width.bytes
+  | .memory width address => permits state.memory.readable (address.evaluate state.registers).toNat width.bytes
   | _ => true
 
 def MachineState.canWrite (state : MachineState) : Operand → Bool
-  | .memory width address => permits state.writable (address.evaluate state.registers).toNat width.bytes
+  | .memory width address => permits state.memory.writable (address.evaluate state.registers).toNat width.bytes
   | .immediate _ => false
   | _ => true
 
@@ -163,7 +157,7 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     else { state with status := .fault }
   | .loadXmm _ destination source =>
     let address := (source.evaluate state.registers).toNat
-    if permits state.readable address 16 then
+    if permits state.memory.readable address 16 then
       let value := readBytes state.memory address 16
       next nextAddress { state with
         xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register
@@ -171,7 +165,7 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     else { state with status := .fault }
   | .storeXmm _ destination source =>
     let address := (destination.evaluate state.registers).toNat
-    if permits state.writable address 16 then
+    if permits state.memory.writable address 16 then
       let value := state.xmmRegisters source
       next nextAddress { state with memory := state.memory.storeBytes address 16 (fun offset =>
         ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩) }
@@ -253,13 +247,13 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     else { state with status := .fault }
   | .push source =>
     let pointer := state.registers .rsp - 8
-    if permits state.writable pointer.toNat 8 then
+    if permits state.memory.writable pointer.toNat 8 then
       -- PUSH RSP stores the original pointer, before decrementing it.
       next nextAddress ((state.writeMemory pointer.toNat .qword (state.registers source)).write .rsp pointer)
     else { state with status := .fault }
   | .pop destination =>
     let address := (state.registers .rsp).toNat
-    if permits state.readable address 8 then
+    if permits state.memory.readable address 8 then
       -- Write the destination last: POP RSP replaces the incremented pointer.
       let result := (state.write .rsp (state.registers .rsp + 8)).write destination
         (readBytes state.memory address 8)
@@ -267,13 +261,13 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     else { state with status := .fault }
   | .call target =>
     let pointer := state.registers .rsp - 8
-    if permits state.writable pointer.toNat 8 then
+    if permits state.memory.writable pointer.toNat 8 then
       { (state.writeMemory pointer.toNat .qword (BitVec.ofNat 64 nextAddress)).write .rsp pointer with
         status := .running target }
     else { state with status := .fault }
   | .ret =>
     let address := (state.registers .rsp).toNat
-    if address + 8 ≤ word && (List.range 8).all (fun offset => state.readable (address+offset)) then
+    if address + 8 ≤ word && (List.range 8).all (fun offset => state.memory.readable (address+offset)) then
       { state.write .rsp (state.registers .rsp + 8) with
         status := .running ((readBytes state.memory address 8).toNat)
         readHistory := state.readHistory ++ [⟨address,8⟩] }
@@ -297,7 +291,7 @@ def MachineState.returnAddress (state : MachineState) : Nat :=
 
 def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
   (state.registers .rsp).toNat + 8 ≤ word ∧
-    (List.range 8).all (fun offset => state.readable ((state.registers .rsp).toNat + offset)) = true
+    (List.range 8).all (fun offset => state.memory.readable ((state.registers .rsp).toNat + offset)) = true
 
 def AtInstruction (state : MachineState) (address : Nat) : Prop :=
   state.status = .running address
