@@ -58,71 +58,13 @@ private meta def findPc (state : Expr) : MetaM (Nat × Expr) := do
     if let some pc ← (evalNat (← whnfD address)).run then return (pc, .fvar decl.fvarId)
   throwError "rivet_step: no hypothesis `{state}.status = .running <numeral>`"
 
-private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
-
-/-- The instruction at an address: its operation, the fall-through address, and
-(for a generated suffix chain) proofs of `InstructionAt` and of the fall-through address. -/
-private structure Fetched where
-  operation : Expr
-  next : Nat
-  code? : Option Expr
-  nextProof? : Option Expr
-
-/-- Look up the instruction at `pc`.
-
-Generated programs are chains of suffixes with a step per instruction,
-`program.from_<pc> : program.FetchesFrom suffix pc`, where `suffix` starts with
-the instruction at `pc`. Then lookup and its proofs take constant time
-in the program size. Otherwise the program list is evaluated. -/
-private meta def fetch (program : Expr) (pc : Nat) : MetaM Fetched := withTransparency .all do
-  let address := mkNatLit pc
-  if let some name := program.constName? then
-    let stepName := name ++ Name.mkSimple s!"from_{hex pc}"
-    if (← getEnv).contains stepName then
-      let same := mkApp2 (mkConst stepName) address (mkApp (mkConst ``Nat.le_refl) address)
-      let some (_, _, fetched) := (← instantiateMVars (← inferType same)).eq?
-        | throwError "rivet_step: unexpected type for {stepName}"
-      let suffix := fetched.appFn!.appArg!
-      let list ← whnf suffix
-      unless list.isAppOfArity ``List.cons 3 do throwError "rivet_step: {stepName} has an empty suffix"
-      let instruction ← whnf (list.getArg! 1)
-      unless instruction.isAppOfArity ``Instruction.mk 3 do
-        throwError "rivet_step: cannot decode the instruction at {pc}"
-      let some length ← (evalNat (← whnf (instruction.getArg! 1))).run
-        | throwError "rivet_step: cannot compute the address after {pc}"
-      let operation ← whnf instruction.appArg!
-      let next := (pc + length) % 2^64
-      -- `(program.fetch pc).map op = (suffix.fetch pc).map op = some operation`; the
-      -- second step evaluates only the head of `suffix` in the kernel.
-      let mapOp ← mkAppM ``Option.map #[mkConst ``Instruction.op]
-      let some_ ← mkAppM ``Option.some #[operation]
-      let headCode ← mkExpectedTypeHint (← mkEqRefl some_) (← mkEq (mkApp mapOp fetched) some_)
-      let code ← mkEqTrans (← mkCongrArg mapOp same) headCode
-      -- `program.nextAddress pc = next`: rewrite the fetch inside `Program.nextAddress`'s
-      -- definition with the chain step, then evaluate the head of `suffix`.
-      let programNext ← mkAppM ``Program.nextAddress #[program, address]
-      let some unfolded ← unfoldDefinition? programNext
-        | throwError "rivet_step: cannot unfold Program.nextAddress"
-      let programFetch ← mkAppM ``Program.fetch #[program, address]
-      let motive ← kabstract unfolded programFetch
-      unless motive.hasLooseBVars do throwError "rivet_step: unexpected Program.nextAddress"
-      let nextSame ← mkCongrArg (.lam `fetched (← inferType programFetch) motive .default) same
-      let headNext ← mkExpectedTypeHint (← mkEqRefl (mkNatLit next))
-        (← mkEq (motive.instantiate1 fetched) (mkNatLit next))
-      let nextProof ← mkExpectedTypeHint (← mkEqTrans nextSame headNext)
-        (← mkEq programNext (mkNatLit next))
-      return { operation, next, code? := some code, nextProof? := some nextProof }
-  let found ← whnf (← mkAppM ``Program.fetch #[program, address])
-  unless found.isAppOfArity ``Option.some 2 do
-    throwError "rivet_step: no instruction at address {pc}"
-  let instruction ← whnf found.appArg!
-  unless instruction.isAppOfArity ``Instruction.mk 3 do
-    throwError "rivet_step: cannot decode the instruction at {pc}"
-  let operation ← whnf instruction.appArg!
-  let next ← whnf (← mkAppM ``Program.nextAddress #[program, address])
-  let some next ← (evalNat next).run
-    | throwError "rivet_step: cannot compute the address after {pc}"
-  return { operation, next, code? := none, nextProof? := none }
+/-- The instruction at `pc` (as `Instruction.mk address length operation`) and a proof
+that `Program.fetch` returns it, from the shared lookup `Fetch.prove`: constant time
+in the program size for generated programs. -/
+private meta def fetch (program : Expr) (pc : Nat) : MetaM (Expr × Expr) := do
+  let some found ← Fetch.prove program pc
+    | throwError "rivet_step: no instruction at address {pc}"
+  return found
 
 /-- The instruction contract for an operation, and the operands it takes
 between `program address` and `initial`. -/
@@ -281,9 +223,9 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   the contract's parameter name (`case writable`, `case slot`, …).
   `rivet_step (disch := tac)` replaces the fallback discharger (`simp [*]`);
   `rfl`, `decide` and `assumption` are always tried first.
-* **Lookup.** For programs generated as suffix chains (as by `rivet-import`),
-  instructions are found and their facts proved in constant time; otherwise the
-  list is evaluated.
+* **Lookup** uses `Fetch.prove`, as `rivet_fetch` does: constant time in the
+  program size for programs generated as suffix chains (as by `rivet-import`);
+  otherwise the list is searched.
 * **Conditional jumps** produce goals tagged `taken` and `fallthrough`, each with
   its path condition as a hypothesis.
 * `rivet_step tracking [status, registers, memory]` records only those fields
@@ -298,9 +240,8 @@ open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
   let (program, old) ← goalParts (← getMainGoal)
   let (pc, location) ← findPc old
-  let fetched ← fetch program pc
-  let operation := fetched.operation
-  let next := fetched.next
+  let (instruction, instructionProof) ← fetch program pc
+  let operation := instruction.getArg! 2
   -- Inaccessible (generated) states are temporary; states you named are kept.
   let temporary := (← old.fvarId!.getUserName).hasMacroScopes
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
@@ -320,10 +261,10 @@ open Step in
       match ← side.getTag with
       | `location => side.assign location
       | `code =>
-        match fetched.code? with
-        | some code => side.assign code
-        | none => unless ← discharge (some (← `(tactic| decide +kernel))) side do
-            unsolved := unsolved.push side
+        -- Matching the proof against `InstructionAt program pc ?length op` fills in the length.
+        unless ← isDefEq (← side.getType) (← inferType instructionProof) do
+          throwError "rivet_step: unexpected instruction at {pc}"
+        side.assign instructionProof
       | _ => unless ← discharge discharger side do unsolved := unsolved.push side
     setGoals [main]
     Term.exprToSyntax proof
@@ -354,15 +295,13 @@ open Step in
     evalTactic (← `(tactic| have $(mkIdent fact) := congrArg $(mkIdent (`Rivet.MachineState ++ field)) $equation))
     internal := internal.push fact
   evalTactic (← `(tactic| clear $equation))
-  let programStx ← Term.exprToSyntax program
-  let nextFact ← match fetched.nextProof? with
-    | some proof => Term.exprToSyntax proof
-    | none => `(show Program.nextAddress $programStx $(quote pc) = $(quote next) by decide +kernel)
   let locations : Array (TSyntax `term) := internal.map (⟨mkIdent ·⟩)
-  evalTactic (← `(tactic| try simp only [$nextFact:term, MachineState.writeOperand,
+  evalTactic (← `(tactic| try simp only [MachineState.writeOperand,
       MachineState.readOperand, MachineState.recordRead, MachineState.write,
       MachineState.writeMemory_eq_storeBytes, Operand.width, Width.bits, Width.bytes,
       BitVec.setWidth_eq, List.append_assoc, List.cons_append, List.nil_append,
+      -- The successor `(pc + length) % word` reduces to a numeral.
+      word, Nat.reducePow, Nat.reduceAdd, Nat.reduceMod,
       -- Addresses as point reads of registers (`r .rbx - 8#64`), never the whole register file.
       Address.evaluate, Scale.value, Option.map_some, Option.map_none, Option.getD_some,
       Option.getD_none, Step.zero_mul, BitVec.mul_one, Step.add_zero, Step.zero_add, BitVec.add_zero,
