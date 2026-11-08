@@ -297,9 +297,6 @@ def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
   (state.registers .rsp).toNat + 8 ≤ word ∧
     (List.range 8).all (fun offset => state.memory.readable ((state.registers .rsp).toNat + offset)) = true
 
-def AtInstruction (state : MachineState) (address : Nat) : Prop :=
-  state.status = .running address
-
 theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState)
     {choices : FlagChoices} :
     execute program (firstSteps + secondSteps) state choices =
