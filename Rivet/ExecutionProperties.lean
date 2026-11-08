@@ -17,7 +17,7 @@ namespace Rivet
     (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
-theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : Nat} (unchanged : modifies operation register = false) :
+private theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : Nat} (unchanged : modifies operation register = false) :
     (stepOp operation nextAddress state undefinedFlags).registers register = state.registers register := by
   cases operation with
   | binary operation destination source =>
@@ -43,7 +43,7 @@ theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {u
     simp_all [modifies, stepOp, next, MachineState.write, Ne.symm] <;>
       split <;> simp_all [Ne.symm]
 
-theorem step_preserves (program : Program) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues}
+private theorem step_preserves (program : Program) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues}
     (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
     (step program state undefinedFlags).registers register = state.registers register := by
   unfold step
@@ -71,7 +71,7 @@ theorem execute_stopped (program : Program) (steps : Nat) (state : MachineState)
   | zero => rfl
   | succ steps inductionHypothesis => simpa [execute, stepUnchanged] using inductionHypothesis (choices := choices.drop 1)
 
-theorem step_reads_monotone (program : Program) (state : MachineState) (access : Access) {undefinedFlags : FlagValues}
+private theorem step_reads_monotone (program : Program) (state : MachineState) (access : Access) {undefinedFlags : FlagValues}
     (recorded : access ∈ state.readHistory) : access ∈ (step program state undefinedFlags).readHistory := by
   unfold step
   split
