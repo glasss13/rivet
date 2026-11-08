@@ -32,36 +32,6 @@ private theorem one (code : InstructionAt program address instruction)
 
 -- Every instruction has the same contract shape as a multi-instruction block.
 -- `code` is checked automatically for concrete programs, or supplied explicitly.
-theorem clear (program : Program) (address : Nat) (destination : Reg32) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.binary .xor (.reg32 destination) (.reg32 destination)) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial.write destination.parent 0 with
-      status := .running (program.nextAddress address), zeroFlag := true, carryFlag := false, signFlag := false }) := by
-  apply Ensures.of_step
-  intro actual equal undefinedFlags
-  subst actual
-  rw [one code location undefinedFlags]
-  dsimp [stepOp, MachineState.binary, validBinary, validMove, Operand.width, BinaryOp.writes, BinaryOp.result, BinaryOp.carry, MachineState.canRead,
-    MachineState.canWrite, MachineState.readOperand, MachineState.writeOperand,
-    MachineState.recordRead, next]
-  simp_all [ExecutionStatus.advance, MachineState.write]
-  all_goals rfl
-
-theorem test_zero (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.binary .test (.reg64 register) (.reg64 register)) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with
-      status := .running (program.nextAddress address), zeroFlag := initial.registers register == 0, carryFlag := false, signFlag := (initial.registers register).msb }) := by
-  apply Ensures.of_step
-  intro actual equal undefinedFlags
-  subst actual
-  rw [one code location undefinedFlags]
-  dsimp [stepOp, MachineState.binary, validBinary, validMove, Operand.width, BinaryOp.writes, BinaryOp.result, BinaryOp.carry, MachineState.canRead,
-    MachineState.canWrite, MachineState.readOperand, MachineState.writeOperand,
-    MachineState.recordRead, next]
-  simp_all [ExecutionStatus.advance]
-  all_goals rfl
-
 theorem read_byte (program : Program) (address : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
     (location : initial.status = .running address) (allowed : initial.memory.readable (initial.registers base).toNat = true)
     (code : InstructionAt program address (.movzx destination (.memory .byte { base := some base })) := by decide +kernel) :
@@ -85,9 +55,41 @@ theorem read_byte (program : Program) (address : Nat) (destination : Reg32) (bas
     rfl
   rw [byte]
 
-/-- Successful ADD for every supported scalar width and operand form.
-Concrete operand forms discharge unrelated validity and access obligations by
-normalization; only encoding bounds and actual memory permissions remain. -/
+-- Interpreter plumbing is shared privately; public rules expose opcode semantics.
+private theorem binary (operation : BinaryOp) (program : Program) (address : Nat)
+    (destination source : Operand) (initial : MachineState) (width : Width)
+    (location : initial.status = .running address)
+    (code : InstructionAt program address (.binary operation destination source))
+    (hasWidth : destination.width = some width)
+    (valid : validBinary operation destination source = true)
+    (leftReadable : initial.canRead destination = true)
+    (rightReadable : initial.canRead source = true)
+    (writable : (!operation.writes || initial.canWrite destination) = true) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := operation.result left right initial.carryFlag
+    let updated := if operation.writes then initial.writeOperand destination (result.setWidth 64) else initial
+    Ensures program (· = initial) (· = { updated with
+      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      carryFlag := operation.carry left right result initial.carryFlag, signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp only [stepOp, MachineState.binary, valid, leftReadable, rightReadable, writable,
+    Bool.true_and, ite_true]
+  rw [hasWidth]
+  simp only [Option.getD_some]
+  cases operation <;>
+    simp [BinaryOp.writes, next, ExecutionStatus.advance, MachineState.writeOperand_status, location]
+
+private theorem sub_beq_zero (left right : BitVec width) :
+    (left - right == 0) = (left == right) := by
+  apply Bool.eq_iff_iff.mpr
+  simp [BitVec.sub_eq_iff_eq_add]
+
+/-- Successful ADD for every supported scalar width and operand form. -/
 theorem add (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
     (location : initial.status = .running address := by first | assumption | rfl)
@@ -110,16 +112,203 @@ theorem add (program : Program) (address : Nat) (destination source : Operand)
       status := .running (program.nextAddress address), zeroFlag := result == 0,
       carryFlag := result < left, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
-  apply Ensures.of_step
-  intro actual equal undefinedFlags
-  subst actual
-  rw [one code location undefinedFlags]
-  simp only [stepOp, MachineState.binary, valid, leftReadable, rightReadable, writable,
-    BinaryOp.writes, BinaryOp.result, BinaryOp.carry, next, ExecutionStatus.advance,
-    Bool.true_and, Bool.not_true, Bool.false_or, ite_true]
-  rw [hasWidth]
-  simp only [Option.getD_some, MachineState.writeOperand_status, location]
-  rfl
+  exact binary .add program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable writable
+
+/-- Successful SUB for every supported scalar width and operand form. -/
+theorem sub (program : Program) (address : Nat) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.binary .sub destination source) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validBinary .sub destination source = true := by
+      dsimp +instances [validBinary, validMove, Operand.width]
+      all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+      all_goals omega)
+    (leftReadable : initial.canRead destination = true := by simp)
+    (rightReadable : initial.canRead source = true := by simp)
+    (writable : initial.canWrite destination = true := by simp) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := left - right
+    Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
+      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      carryFlag := left < right, signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  exact binary .sub program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable writable
+
+/-- Successful SBB for every supported scalar width and operand form. -/
+theorem sbb (program : Program) (address : Nat) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.binary .sbb destination source) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validBinary .sbb destination source = true := by
+      dsimp +instances [validBinary, validMove, Operand.width]
+      all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+      all_goals omega)
+    (leftReadable : initial.canRead destination = true := by simp)
+    (rightReadable : initial.canRead source = true := by simp)
+    (writable : initial.canWrite destination = true := by simp) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := left - right - (if initial.carryFlag then 1 else 0)
+    Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
+      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      carryFlag := left < right || (initial.carryFlag && left == right), signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  exact binary .sbb program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable writable
+
+/-- Successful CMP for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
+theorem compare (program : Program) (address : Nat) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.binary .cmp destination source) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validBinary .cmp destination source = true := by
+      dsimp +instances [validBinary, validMove, Operand.width]
+      all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+      all_goals omega)
+    (leftReadable : initial.canRead destination = true := by simp)
+    (rightReadable : initial.canRead source = true := by simp) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := left - right
+    Ensures program (· = initial) (· = { initial with
+      status := .running (program.nextAddress address), zeroFlag := left == right,
+      carryFlag := left < right, signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  simpa only [BinaryOp.writes, Bool.false_eq_true, ite_false, BinaryOp.result, BinaryOp.carry, sub_beq_zero] using
+    binary .cmp program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable (by rfl)
+
+/-- Successful TEST for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
+theorem test (program : Program) (address : Nat) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.binary .test destination source) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validBinary .test destination source = true := by
+      dsimp +instances [validBinary, validMove, Operand.width]
+      all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+      all_goals omega)
+    (leftReadable : initial.canRead destination = true := by simp)
+    (rightReadable : initial.canRead source = true := by simp) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := left &&& right
+    Ensures program (· = initial) (· = { initial with
+      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      carryFlag := false, signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  exact binary .test program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable (by rfl)
+
+/-- Successful AND for every supported scalar width and operand form. -/
+theorem bitwise_and (program : Program) (address : Nat) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.binary .and destination source) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validBinary .and destination source = true := by
+      dsimp +instances [validBinary, validMove, Operand.width]
+      all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+      all_goals omega)
+    (leftReadable : initial.canRead destination = true := by simp)
+    (rightReadable : initial.canRead source = true := by simp)
+    (writable : initial.canWrite destination = true := by simp) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := left &&& right
+    Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
+      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      carryFlag := false, signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  exact binary .and program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable writable
+
+/-- Successful OR for every supported scalar width and operand form. -/
+theorem bitwise_or (program : Program) (address : Nat) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.binary .or destination source) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validBinary .or destination source = true := by
+      dsimp +instances [validBinary, validMove, Operand.width]
+      all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+      all_goals omega)
+    (leftReadable : initial.canRead destination = true := by simp)
+    (rightReadable : initial.canRead source = true := by simp)
+    (writable : initial.canWrite destination = true := by simp) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := left ||| right
+    Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
+      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      carryFlag := false, signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  exact binary .or program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable writable
+
+/-- Successful XOR for every supported scalar width and operand form. -/
+theorem bitwise_xor (program : Program) (address : Nat) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.binary .xor destination source) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validBinary .xor destination source = true := by
+      dsimp +instances [validBinary, validMove, Operand.width]
+      all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+      all_goals omega)
+    (leftReadable : initial.canRead destination = true := by simp)
+    (rightReadable : initial.canRead source = true := by simp)
+    (writable : initial.canWrite destination = true := by simp) :
+    let left := (initial.readOperand destination).setWidth width.bits
+    let right := (initial.readOperand source).setWidth width.bits
+    let result := left ^^^ right
+    Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
+      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      carryFlag := false, signFlag := result.msb
+      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+  exact binary .xor program address destination source initial width location code hasWidth valid
+      leftReadable rightReadable writable
+
+theorem clear (program : Program) (address : Nat) (destination : Reg32) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.binary .xor (.reg32 destination) (.reg32 destination)) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial.write destination.parent 0 with
+      status := .running (program.nextAddress address), zeroFlag := true, carryFlag := false, signFlag := false }) := by
+  simpa using bitwise_xor program address (.reg32 destination) (.reg32 destination) initial location code
+
+theorem test_zero (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by rfl)
+    (code : InstructionAt program address (.binary .test (.reg64 register) (.reg64 register)) := by decide +kernel) :
+    Ensures program (· = initial) (· = { initial with
+      status := .running (program.nextAddress address), zeroFlag := initial.registers register == 0, carryFlag := false, signFlag := (initial.registers register).msb }) := by
+  simpa using Rivet.test program address (.reg64 register) (.reg64 register) initial location code
 
 theorem inc (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
@@ -205,27 +394,6 @@ theorem move (program : Program) (address : Nat) (destination source : Operand) 
   subst actual
   rw [one code location undefinedFlags]
   simp [stepOp, next, ExecutionStatus.advance, location, valid, readable, writable]
-
-theorem compare (program : Program) (address : Nat) (left right : Reg) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.binary .cmp (.reg64 left) (.reg64 right)) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with
-      status := .running (program.nextAddress address)
-      zeroFlag := initial.registers left == initial.registers right,
-      carryFlag := initial.registers left < initial.registers right,
-      signFlag := (initial.registers left - initial.registers right).msb }) := by
-  apply Ensures.of_step
-  intro actual equal undefinedFlags
-  subst actual
-  rw [one code location undefinedFlags]
-  dsimp [stepOp, MachineState.binary, validBinary, validMove, Operand.width, BinaryOp.writes, BinaryOp.result, BinaryOp.carry, MachineState.canRead,
-    MachineState.canWrite, MachineState.readOperand, MachineState.writeOperand,
-    MachineState.recordRead, next]
-  simp_all [ExecutionStatus.advance]
-  change (initial.registers left - initial.registers right == 0#64) =
-    (initial.registers left == initial.registers right)
-  apply Bool.eq_iff_iff.mpr
-  simp [BitVec.sub_eq_iff_eq_add]
 
 theorem write_byte (program : Program) (address : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
     (location : initial.status = .running address) (allowed : initial.memory.writable (initial.registers base).toNat = true)
