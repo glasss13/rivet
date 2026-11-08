@@ -137,10 +137,6 @@ inductive BinaryOp where
   | add | sub | sbb | cmp | test | and | or | xor
   deriving DecidableEq
 
-def BinaryOp.writes : BinaryOp → Bool
-  | .cmp | .test => false
-  | _ => true
-
 /-- 64-bit arithmetic immediates are sign-extended from 32 bits. TEST has no register/memory form. -/
 def validBinary (operation : BinaryOp) (destination source : Operand) : Bool :=
   validMove destination source &&
@@ -208,8 +204,8 @@ def modifies (operation : Op) (register : Reg) : Bool :=
     | _ => none
   match operation, register with
   | .movzx destination _, register => destination.parent == register
-  | .binary operation destination _, register => operation.writes && destinationRegister destination == some register
-  | .shift _ destination _, register | .imul destination _ _, register
+  | .binary .cmp _ _, _ | .binary .test _ _, _ => false
+  | .binary _ destination _, register | .shift _ destination _, register | .imul destination _ _, register
   | .not destination, register | .mov destination _, register | .setcc _ destination, register
   | .cmovcc _ destination _, register => destinationRegister destination == some register
   | .lea destination _, register | .movsxd destination _, register

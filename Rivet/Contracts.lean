@@ -1,6 +1,6 @@
 module
 public import Rivet.Model
-import Rivet.ExecutionProperties
+import all Rivet.Model
 @[expose] public section
 namespace Rivet
 
@@ -65,9 +65,8 @@ theorem Ensures.intro
     Ensures program precondition postcondition :=
   ⟨fun initial assumption => (body initial assumption).allChoices initial rfl⟩
 
-/-- Establish a contract by one instruction, for every permitted undefined flag value.
-Instruction rules use this when the model has no more specific rule yet. -/
-theorem Ensures.of_step
+/-- Internal bridge from one interpreter step to an instruction contract. -/
+private theorem Ensures.of_step
     (transition : ∀ initial, precondition initial → ∀ undefinedFlags,
       postcondition (step program initial undefinedFlags)) :
     Ensures program precondition postcondition := by
@@ -120,6 +119,15 @@ theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : Mac
       obtain ⟨final, ⟨later, reached⟩, result⟩ := inductionHypothesis _ (by omega) _ holds (choices.drop earlier) rfl
       exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
+/-- A stopped state remains unchanged under any further bounded execution. -/
+theorem execute_stopped (program : Program) (steps : Nat) (state : MachineState) {choices : FlagChoices} (stopped : state.status.isRunning = false) :
+    execute program steps state choices = state := by
+  have stepUnchanged (undefinedFlags : FlagValues) : step program state undefinedFlags = state := by
+    cases status : state.status <;> simp_all [step, ExecutionStatus.isRunning]
+  induction steps generalizing choices with
+  | zero => rfl
+  | succ steps inductionHypothesis => simpa [execute, stepUnchanged] using inductionHypothesis (choices := choices.drop 1)
+
 theorem Reaches.stopped (reached : Reaches program initial final)
     (stopped : initial.status.isRunning = false) : final = initial := by
   obtain ⟨choices, steps, rfl⟩ := reached
@@ -150,7 +158,8 @@ private theorem op_preserves (operation : Op) (state : MachineState) (register :
     simp only [stepOp, MachineState.binary]
     split
     · split
-      · cases destination <;> simp_all [modifies, next, MachineState.writeOperand, MachineState.write, Ne.symm]
+      · cases operation <;> cases destination <;>
+          simp_all [BinaryOp.writes, modifies, next, MachineState.writeOperand, MachineState.write, Ne.symm]
       · rfl
     · rfl
   | shift operation destination count =>
