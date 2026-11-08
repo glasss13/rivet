@@ -72,20 +72,6 @@ def Reg16.parent : Reg16 → Reg
   | .r14w => .r14
   | .r15w => .r15
 
--- Parent registers of symbolic aliases stay abstract; concrete aliases reduce.
-attribute [simp] Reg8.parent.eq_1 Reg8.parent.eq_2 Reg8.parent.eq_3 Reg8.parent.eq_4
-  Reg8.parent.eq_5 Reg8.parent.eq_6 Reg8.parent.eq_7 Reg8.parent.eq_8
-  Reg8.parent.eq_9 Reg8.parent.eq_10 Reg8.parent.eq_11 Reg8.parent.eq_12
-  Reg8.parent.eq_13 Reg8.parent.eq_14 Reg8.parent.eq_15 Reg8.parent.eq_16
-  Reg16.parent.eq_1 Reg16.parent.eq_2 Reg16.parent.eq_3 Reg16.parent.eq_4
-  Reg16.parent.eq_5 Reg16.parent.eq_6 Reg16.parent.eq_7 Reg16.parent.eq_8
-  Reg16.parent.eq_9 Reg16.parent.eq_10 Reg16.parent.eq_11 Reg16.parent.eq_12
-  Reg16.parent.eq_13 Reg16.parent.eq_14 Reg16.parent.eq_15 Reg16.parent.eq_16
-  Reg32.parent.eq_1 Reg32.parent.eq_2 Reg32.parent.eq_3 Reg32.parent.eq_4
-  Reg32.parent.eq_5 Reg32.parent.eq_6 Reg32.parent.eq_7 Reg32.parent.eq_8
-  Reg32.parent.eq_9 Reg32.parent.eq_10 Reg32.parent.eq_11 Reg32.parent.eq_12
-  Reg32.parent.eq_13 Reg32.parent.eq_14 Reg32.parent.eq_15 Reg32.parent.eq_16
-
 /-- The sixteen legacy 128-bit XMM registers available in 64-bit mode. -/
 inductive Xmm where
   | xmm0 | xmm1 | xmm2 | xmm3 | xmm4 | xmm5 | xmm6 | xmm7
