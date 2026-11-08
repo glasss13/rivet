@@ -70,9 +70,9 @@ private structure Fetched where
 
 /-- Look up the instruction at `pc`.
 
-Generated programs are chains of suffixes with a step `program.from_<pc>` per
-instruction: `∀ a, pc ≤ a → program.fetch a = suffix.fetch a`, where `suffix`
-starts with the instruction at `pc`. Then lookup and its proofs take constant time
+Generated programs are chains of suffixes with a step per instruction,
+`program.from_<pc> : program.FetchesFrom suffix pc`, where `suffix` starts with
+the instruction at `pc`. Then lookup and its proofs take constant time
 in the program size. Otherwise the program list is evaluated. -/
 private meta def fetch (program : Expr) (pc : Nat) : MetaM Fetched := withTransparency .all do
   let address := mkNatLit pc
@@ -98,10 +98,20 @@ private meta def fetch (program : Expr) (pc : Nat) : MetaM Fetched := withTransp
       let some_ ← mkAppM ``Option.some #[operation]
       let headCode ← mkExpectedTypeHint (← mkEqRefl some_) (← mkEq (mkApp mapOp fetched) some_)
       let code ← mkEqTrans (← mkCongrArg mapOp same) headCode
-      let nextSame ← mkAppM ``Program.nextAddress_congr #[same]
-      let some (_, _, suffixNext) := (← inferType nextSame).eq? | throwError "rivet_step: bad chain"
-      let headNext ← mkExpectedTypeHint (← mkEqRefl (mkNatLit next)) (← mkEq suffixNext (mkNatLit next))
-      return { operation, next, code? := some code, nextProof? := some (← mkEqTrans nextSame headNext) }
+      -- `program.nextAddress pc = next`: rewrite the fetch inside `Program.nextAddress`'s
+      -- definition with the chain step, then evaluate the head of `suffix`.
+      let programNext ← mkAppM ``Program.nextAddress #[program, address]
+      let some unfolded ← unfoldDefinition? programNext
+        | throwError "rivet_step: cannot unfold Program.nextAddress"
+      let programFetch ← mkAppM ``Program.fetch #[program, address]
+      let motive ← kabstract unfolded programFetch
+      unless motive.hasLooseBVars do throwError "rivet_step: unexpected Program.nextAddress"
+      let nextSame ← mkCongrArg (.lam `fetched (← inferType programFetch) motive .default) same
+      let headNext ← mkExpectedTypeHint (← mkEqRefl (mkNatLit next))
+        (← mkEq (motive.instantiate1 fetched) (mkNatLit next))
+      let nextProof ← mkExpectedTypeHint (← mkEqTrans nextSame headNext)
+        (← mkEq programNext (mkNatLit next))
+      return { operation, next, code? := some code, nextProof? := some nextProof }
   let found ← whnf (← mkAppM ``Program.fetch #[program, address])
   unless found.isAppOfArity ``Option.some 2 do
     throwError "rivet_step: no instruction at address {pc}"

@@ -59,9 +59,8 @@ pub fn module(
 ///
 /// `program.suffix_<a>` is the program from the instruction at address `a` on;
 /// suffixes are listed last to first because each one refers to the next.
-/// `program.from_<a>` states that fetching from `program` at or above `a` is
-/// fetching from `program.suffix_<a>`. Each such step follows from the previous
-/// one by skipping a single lower-addressed instruction, and Lean checks it.
+/// `program.from_<a> : program.FetchesFrom program.suffix_<a> a` follows from
+/// the previous instruction's fact by `FetchesFrom.skip`, and Lean checks it.
 /// Instructions must have strictly increasing addresses.
 fn program(source: &mut String, instructions: &[Instruction]) -> std::fmt::Result {
     let Some(first) = instructions.first() else {
@@ -69,7 +68,7 @@ fn program(source: &mut String, instructions: &[Instruction]) -> std::fmt::Resul
     };
     writeln!(
         source,
-        "\n-- `program.suffix_<a>`: the program from the instruction at address `a` on."
+        "\n-- The program from each instruction on, last to first."
     )?;
     for (index, instruction) in instructions.iter().enumerate().rev() {
         let rest = match instructions.get(index + 1) {
@@ -78,7 +77,7 @@ fn program(source: &mut String, instructions: &[Instruction]) -> std::fmt::Resul
         };
         writeln!(
             source,
-            "def program.suffix_{:x} : Rivet.Program :=\n  {{ address := {:#x}, length := {}, op := {} }} :: {rest}",
+            "def program.suffix_{:x} : Rivet.Program := {{ address := {:#x}, length := {}, op := {} }} :: {rest}",
             instruction.address,
             instruction.address,
             instruction.length,
@@ -87,29 +86,26 @@ fn program(source: &mut String, instructions: &[Instruction]) -> std::fmt::Resul
     }
     writeln!(
         source,
-        "\ndef program : Rivet.Program := program.suffix_{:x}",
+        "def program : Rivet.Program := program.suffix_{:x}",
         first.address
     )?;
     writeln!(
         source,
-        "\n-- `program.from_<a>`: at or above address `a`, `program` fetches as `program.suffix_<a>`."
+        "\n-- At and above each address, `program` fetches as that address's suffix."
     )?;
     for (index, instruction) in instructions.iter().enumerate() {
         let address = instruction.address;
-        write!(
+        let proof = match index
+            .checked_sub(1)
+            .map(|previous| instructions[previous].address)
+        {
+            None => "fun _ _ => rfl".to_string(),
+            Some(previous) => format!("program.from_{previous:x}.skip (by decide)"),
+        };
+        writeln!(
             source,
-            "theorem program.from_{address:x} : ∀ address, {address:#x} ≤ address →\n    \
-             program.fetch address = program.suffix_{address:x}.fetch address :=\n  "
+            "theorem program.from_{address:x} : program.FetchesFrom program.suffix_{address:x} {address:#x} := {proof}"
         )?;
-        match index.checked_sub(1).map(|previous| &instructions[previous]) {
-            None => writeln!(source, "fun _ _ => rfl")?,
-            Some(previous) => writeln!(
-                source,
-                "fun address bound => (program.from_{:x} address (Nat.le_trans (by decide) bound)).trans\n    \
-                 (Rivet.Program.fetch_cons_of_lt (Nat.lt_of_lt_of_le (by decide : {:#x} < {address:#x}) bound))",
-                previous.address, previous.address
-            )?,
-        }
     }
     Ok(())
 }

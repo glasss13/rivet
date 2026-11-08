@@ -7,10 +7,11 @@ instruction encodings, and initial segment data come from the binary. No assembl
 text is parsed along the way.
 
 `program` is emitted as a chain of suffixes (`program.suffix_<address>`, listed
-last to first because each refers to the next) with one Lean-checked step per
-instruction (`program.from_<address>`). These let proofs, including `rivet_step`,
-fetch any instruction in time independent of the program size. Instructions are
-emitted in strictly increasing address order, which the steps rely on.
+last to first because each refers to the next) with one Lean-checked fact per
+instruction (`program.from_<address> : program.FetchesFrom ...`). These let
+proofs, including `rivet_step`, fetch any instruction in time independent of the
+program size. Instructions are emitted in strictly increasing address order,
+which the facts rely on.
 
 ```sh
 cargo run --release -p rivet-import -- ./example \
