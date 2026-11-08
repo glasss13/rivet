@@ -320,27 +320,43 @@ theorem dec (program : Program) (address : Nat) (register : Reg) (initial : Mach
   rw [one code location undefinedFlags]
   simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
 
-theorem branch_zero (program : Program) (address target : Nat) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.jcc .equal target) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then target else program.nextAddress address) }) := by
+/-- NOP preserves the entire state except for advancing the program counter. -/
+theorem nop (program : Program) (address : Nat) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address .nop := by first | assumption | decide +kernel) :
+    Ensures program (· = initial) (· = { initial with
+      status := .running (program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp_all [ExecutionStatus.advance, stepOp, Condition.holds]
-  split <;> rfl
+  simp [stepOp, next, ExecutionStatus.advance, location]
 
-theorem branch_nonzero (program : Program) (address target : Nat) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.jcc .notEqual target) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with status := .running (if initial.zeroFlag then program.nextAddress address else target) }) := by
+/-- JMP preserves the entire state except for setting the program counter. -/
+theorem jump (program : Program) (address target : Nat) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.jmp target) := by first | assumption | decide +kernel) :
+    Ensures program (· = initial) (· = { initial with status := .running target }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp_all [ExecutionStatus.advance, stepOp, Condition.holds]
-  cases initial.zeroFlag <;> rfl
+  rfl
+
+/-- Jcc tests the initial flags, branching or falling through without changing
+registers, flags, memory, or read history. Covers every modeled condition. -/
+theorem branch (program : Program) (address : Nat) (condition : Condition) (target : Nat)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.jcc condition target) := by first | assumption | decide +kernel) :
+    Ensures program (· = initial) (· = { initial with
+      status := .running (if condition.holds initial then target else program.nextAddress address) }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp only [stepOp, ExecutionStatus.advance, location]
+  split <;> rfl
 
 theorem call (program : Program) (address target : Nat) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
@@ -400,16 +416,5 @@ theorem write_byte (program : Program) (address : Nat) (base : Reg) (source : Re
     Address.evaluate, Scale.value,
     permits, next, ExecutionStatus.advance, allowed, bound]
   simp [MachineState.writeMemory, location]
-
-theorem branch_below (program : Program) (address target : Nat) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.jcc .below target) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with status := .running (if initial.carryFlag then target else program.nextAddress address) }) := by
-  apply Ensures.of_step
-  intro actual equal undefinedFlags
-  subst actual
-  rw [one code location undefinedFlags]
-  simp [stepOp, ExecutionStatus.advance, Condition.holds, location]
-  split <;> rfl
 
 end Rivet
