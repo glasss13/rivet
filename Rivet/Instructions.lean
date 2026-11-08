@@ -19,6 +19,10 @@ attribute [simp] Operand.width.eq_1 Operand.width.eq_2 Operand.width.eq_3
   MachineState.canWrite.eq_1 MachineState.canWrite.eq_2 MachineState.canWrite.eq_3
   MachineState.recordRead.eq_1 MachineState.recordRead.eq_2
 
+@[simp] private theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
+    (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
+  cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
+
 @[simp] theorem MachineState.write_readHistory (state : MachineState) (register : Reg)
     (value : BitVec 64) : (state.write register value).readHistory = state.readHistory := rfl
 
@@ -323,6 +327,59 @@ theorem bitwise_xor (program : Program) (address : Nat) (destination source : Op
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .xor program address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
+
+/-- NOT complements a supported register or memory destination without changing
+flags; memory destinations require read/write permission and record the read. -/
+theorem bitwise_not (program : Program) (address : Nat) (destination : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.not destination) := by first | assumption | decide +kernel)
+    (readable : initial.canRead destination = true := by first | assumption | simp)
+    (writable : initial.canWrite destination = true := by first | assumption | simp) :
+    Ensures program (· = initial) (· = { initial.writeOperand destination (~~~(initial.readOperand destination)) with
+      status := .running (program.nextAddress address)
+      readHistory := (initial.recordRead destination).readHistory }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp [stepOp, readable, writable, next, ExecutionStatus.advance, location]
+
+/-- SETcc writes a byte containing zero or one according to the initial flags.
+It requires only write access to its destination and performs no memory read. -/
+theorem setcc (program : Program) (address : Nat) (condition : Condition) (destination : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.setcc condition destination) := by first | assumption | decide +kernel)
+    (valid : destination.width = some .byte := by first | assumption | rfl)
+    (writable : initial.canWrite destination = true := by first | assumption | simp) :
+    Ensures program (· = initial) (· = { initial.writeOperand destination (if condition.holds initial then 1 else 0) with
+      status := .running (program.nextAddress address) }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp [stepOp, valid, writable, next, ExecutionStatus.advance, location]
+
+/-- CMOVcc reads its source even when not taken. Writing the selected value
+through the destination preserves narrow-register semantics, including clearing
+the upper half of a 32-bit destination on both paths. Flags are preserved. -/
+theorem cmovcc (program : Program) (address : Nat) (condition : Condition) (destination source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.cmovcc condition destination source) := by first | assumption | decide +kernel)
+    (valid : validConditionalMove destination source = true := by
+      first | assumption | simp [validConditionalMove])
+    (readable : initial.canRead source = true := by first | assumption | simp) :
+    let value := if condition.holds initial then initial.readOperand source else initial.readOperand destination
+    Ensures program (· = initial) (· = { initial.writeOperand destination value with
+      status := .running (program.nextAddress address)
+      readHistory := (initial.recordRead source).readHistory }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp [stepOp, valid, readable, next, ExecutionStatus.advance, location]
 
 theorem inc (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
