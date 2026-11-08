@@ -36,6 +36,113 @@ private theorem one (code : InstructionAt program address instruction)
 
 -- Every instruction has the same contract shape as a multi-instruction block.
 -- `code` is checked automatically for concrete programs, or supplied explicitly.
+-- Private equalities connect the model's numeric encoding to lane/byte views.
+private theorem append_nat (a : BitVec m) (b : BitVec n) :
+    (a ++ b).toNat = a.toNat * 2^n + b.toNat := by
+  rw [BitVec.toNat_append, ← Nat.shiftLeft_add_eq_or_of_lt b.isLt, Nat.shiftLeft_eq]
+
+private theorem byte_extract (value : BitVec width) (offset : Nat) :
+    (value.extractLsb' (8 * offset) 8).toFin =
+      (⟨value.toNat / 256^offset % 256, Nat.mod_lt _ (by decide)⟩ : Fin 256) := by
+  apply Fin.ext
+  change (value.extractLsb' (8 * offset) 8).toNat = _
+  simp [BitVec.extractLsb', Nat.shiftRight_eq_div_pow, Nat.pow_mul]
+
+private theorem shuffle_value (original : BitVec 128) (order : Nat) :
+    BitVec.ofNat 128 ((List.range 4).foldr (fun lane result =>
+      let selected := order / 4^lane % 4
+      (original.toNat / 2^(32 * selected)) % 2^32 + 2^32 * result) 0) =
+    (original.extractLsb' (32 * (order / 4^3 % 4)) 32 ++
+     original.extractLsb' (32 * (order / 4^2 % 4)) 32 ++
+     original.extractLsb' (32 * (order / 4^1 % 4)) 32 ++
+     original.extractLsb' (32 * (order / 4^0 % 4)) 32) := by
+  apply BitVec.eq_of_toNat_eq
+  simp only [append_nat, BitVec.extractLsb', BitVec.toNat_ofNat, Nat.shiftRight_eq_div_pow]
+  simp only [List.range_succ, List.range_zero, List.foldr_append, List.foldr_cons, List.foldr_nil]
+  have bound (lane : Nat) : (original.toNat / 2^(32 * (order / 4^lane % 4))) % 2^32 < 2^32 := Nat.mod_lt _ (by decide)
+  have b0 := bound 0
+  have b1 := bound 1
+  have b2 := bound 2
+  have b3 := bound 3
+  omega
+
+/-- MOVD copies the initial low dword of a GPR into XMM and zeroes the upper
+96 bits. Other XMM registers, GPRs, flags, memory, and history are preserved. -/
+theorem movd (program : Program) (address : Nat) (destination : Xmm) (source : Reg32)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.movd destination source) := by first | assumption | decide +kernel) :
+    let value := ((initial.registers source.parent).setWidth 32).setWidth 128
+    Ensures program (· = initial) (· = { initial with
+      xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
+      status := .running (program.nextAddress address) }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp [stepOp, next, ExecutionStatus.advance, location]
+
+/-- PSHUFD selects four initial dword lanes with the immediate's four two-bit
+selectors. Lane 0 is least significant; source/destination aliasing is allowed. -/
+theorem pshufd (program : Program) (address : Nat) (destination source : Xmm) (order : Nat)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.pshufd destination source order) := by first | assumption | decide +kernel)
+    (encoded : order < 256 := by first | assumption | omega) :
+    let lane (index : Nat) : BitVec 32 :=
+      (initial.xmmRegisters source).extractLsb' (32 * (order / 4^index % 4)) 32
+    let value : BitVec 128 := lane 3 ++ lane 2 ++ lane 1 ++ lane 0
+    Ensures program (· = initial) (· = { initial with
+      xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
+      status := .running (program.nextAddress address) }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp only [stepOp, encoded, ite_true]
+  rw [shuffle_value]
+  simp [next, ExecutionStatus.advance, location]
+
+/-- An unaligned 128-bit load for either modeled XMM move kind. It records the
+16-byte access and changes only the destination XMM register and fallthrough PC. -/
+theorem load_xmm (program : Program) (address : Nat) (operation : XmmMove)
+    (destination : Xmm) (source : Address) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.loadXmm operation destination source) := by first | assumption | decide +kernel)
+    (readable : permits initial.memory.readable (source.evaluate initial.registers).toNat 16 = true := by
+      first | assumption | rfl) :
+    let pointer := (source.evaluate initial.registers).toNat
+    let value := readBytes initial.memory pointer 16
+    Ensures program (· = initial) (· = { initial with
+      xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
+      status := .running (program.nextAddress address)
+      readHistory := initial.readHistory ++ [⟨pointer,16⟩] }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp [stepOp, readable, next, ExecutionStatus.advance, location]
+
+/-- An unaligned little-endian 128-bit store for either modeled XMM move kind.
+Only write permission is required; registers, flags, and read history are preserved. -/
+theorem store_xmm (program : Program) (address : Nat) (operation : XmmMove)
+    (destination : Address) (source : Xmm) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.storeXmm operation destination source) := by first | assumption | decide +kernel)
+    (writable : permits initial.memory.writable (destination.evaluate initial.registers).toNat 16 = true := by
+      first | assumption | rfl) :
+    let pointer := (destination.evaluate initial.registers).toNat
+    Ensures program (· = initial) (· = { initial with
+      memory := initial.memory.storeBytes pointer 16
+        (fun offset => ((initial.xmmRegisters source).extractLsb' (8 * offset) 8).toFin)
+      status := .running (program.nextAddress address) }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp only [stepOp, writable, ite_true, next, ExecutionStatus.advance, location]
+  simp only [byte_extract]
+
 /-- LEA computes an effective address from the initial registers. It neither
 reads memory nor changes flags or read history. -/
 theorem lea (program : Program) (address : Nat) (destination : Reg) (source : Address)
