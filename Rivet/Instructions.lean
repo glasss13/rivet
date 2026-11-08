@@ -1,6 +1,7 @@
 module
 public import Rivet.Contracts
-public import Rivet.ExecutionProperties
+import all Rivet.Model
+import all Rivet.Contracts
 @[expose] public section
 namespace Rivet
 
@@ -70,8 +71,8 @@ private theorem shuffle_value (original : BitVec 128) (order : Nat) :
 96 bits. Other XMM registers, GPRs, flags, memory, and history are preserved. -/
 theorem movd (program : Program) (address : Nat) (destination : Xmm) (source : Reg32)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.movd destination source) := by first | assumption | decide +kernel) :
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.movd destination source) := by first | rfl | assumption | decide +kernel) :
     let value := ((initial.registers source.parent).setWidth 32).setWidth 128
     Ensures program (· = initial) (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
@@ -80,14 +81,14 @@ theorem movd (program : Program) (address : Nat) (destination : Xmm) (source : R
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, next, ExecutionStatus.advance, location]
+  simp [stepOp, next, location]
 
 /-- PSHUFD selects four initial dword lanes with the immediate's four two-bit
 selectors. Lane 0 is least significant; source/destination aliasing is allowed. -/
 theorem pshufd (program : Program) (address : Nat) (destination source : Xmm) (order : Nat)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.pshufd destination source order) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.pshufd destination source order) := by first | rfl | assumption | decide +kernel)
     (encoded : order < 256 := by first | assumption | omega) :
     let lane (index : Nat) : BitVec 32 :=
       (initial.xmmRegisters source).extractLsb' (32 * (order / 4^index % 4)) 32
@@ -101,14 +102,14 @@ theorem pshufd (program : Program) (address : Nat) (destination source : Xmm) (o
   rw [one code location undefinedFlags]
   simp only [stepOp, encoded, ite_true]
   rw [shuffle_value]
-  simp [next, ExecutionStatus.advance, location]
+  simp [next, location]
 
 /-- An unaligned 128-bit load for either modeled XMM move kind. It records the
 16-byte access and changes only the destination XMM register and fallthrough PC. -/
 theorem load_xmm (program : Program) (address : Nat) (operation : XmmMove)
     (destination : Xmm) (source : Address) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.loadXmm operation destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.loadXmm operation destination source) := by first | rfl | assumption | decide +kernel)
     (readable : permits initial.memory.readable (source.evaluate initial.registers).toNat 16 = true := by
       first | assumption | rfl) :
     let pointer := (source.evaluate initial.registers).toNat
@@ -121,14 +122,14 @@ theorem load_xmm (program : Program) (address : Nat) (operation : XmmMove)
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, readable, next, ExecutionStatus.advance, location]
+  simp [stepOp, readable, next, location]
 
 /-- An unaligned little-endian 128-bit store for either modeled XMM move kind.
 Only write permission is required; registers, flags, and read history are preserved. -/
 theorem store_xmm (program : Program) (address : Nat) (operation : XmmMove)
     (destination : Address) (source : Xmm) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.storeXmm operation destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.storeXmm operation destination source) := by first | rfl | assumption | decide +kernel)
     (writable : permits initial.memory.writable (destination.evaluate initial.registers).toNat 16 = true := by
       first | assumption | rfl) :
     let pointer := (destination.evaluate initial.registers).toNat
@@ -140,29 +141,29 @@ theorem store_xmm (program : Program) (address : Nat) (operation : XmmMove)
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp only [stepOp, writable, ite_true, next, ExecutionStatus.advance, location]
+  simp only [stepOp, writable, ite_true, next, location]
   simp only [byte_extract]
 
 /-- LEA computes an effective address from the initial registers. It neither
 reads memory nor changes flags or read history. -/
 theorem lea (program : Program) (address : Nat) (destination : Reg) (source : Address)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.lea destination source) := by first | assumption | decide +kernel) :
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.lea destination source) := by first | rfl | assumption | decide +kernel) :
     Ensures program (· = initial) (· = { initial.write destination (source.evaluate initial.registers) with
       status := .running (program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, next, ExecutionStatus.advance, MachineState.write, location]
+  simp [stepOp, next, MachineState.write, location]
 
 /-- MOVZX zero-extends any modeled byte or word source into a 32-bit destination,
 clearing its parent register's upper half and recording only actual memory reads. -/
 theorem movzx (program : Program) (address : Nat) (destination : Reg32) (source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.movzx destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.movzx destination source) := by first | rfl | assumption | decide +kernel)
     (valid : source.width = some .byte ∨ source.width = some .word := by
       first | assumption | exact Or.inl rfl | exact Or.inr rfl)
     (readable : initial.canRead source = true := by first | assumption | simp) :
@@ -175,15 +176,15 @@ theorem movzx (program : Program) (address : Nat) (destination : Reg32) (source 
   rw [one code location undefinedFlags]
   have encoded : (source.width == some .byte || source.width == some .word) = true := by
     simpa only [Bool.or_eq_true, beq_iff_eq] using valid
-  simp [stepOp, encoded, readable, next, ExecutionStatus.advance, MachineState.write, location]
+  simp [stepOp, encoded, readable, next, MachineState.write, location]
 
 /-- MOVSXD sign-extends any modeled dword source to 64 bits. Flags are preserved;
 memory sources require read permission and append their access to read history. -/
 theorem movsxd (program : Program) (address : Nat) (destination : Reg) (source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.movsxd destination source) := by first | assumption | decide +kernel)
-    (valid : source.width = some .dword := by first | assumption | rfl)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.movsxd destination source) := by first | rfl | assumption | decide +kernel)
+    (valid : source.width = some .dword := by first | rfl | assumption)
     (readable : initial.canRead source = true := by first | assumption | simp) :
     Ensures program (· = initial) (· = { initial.write destination ((initial.readOperand source).setWidth 32 |>.signExtend 64) with
       status := .running (program.nextAddress address)
@@ -192,7 +193,7 @@ theorem movsxd (program : Program) (address : Nat) (destination : Reg) (source :
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, valid, readable, next, ExecutionStatus.advance, MachineState.write, location]
+  simp [stepOp, valid, readable, next, MachineState.write, location]
 
 -- Interpreter plumbing is shared privately; public rules expose opcode semantics.
 private theorem binary (operation : BinaryOp) (program : Program) (address : Nat)
@@ -221,7 +222,7 @@ private theorem binary (operation : BinaryOp) (program : Program) (address : Nat
   rw [hasWidth]
   simp only [Option.getD_some]
   cases operation <;>
-    simp [BinaryOp.writes, next, ExecutionStatus.advance, MachineState.writeOperand_status, location]
+    simp [BinaryOp.writes, next, MachineState.writeOperand_status, location]
 
 private theorem sub_beq_zero (left right : BitVec width) :
     (left - right == 0) = (left == right) := by
@@ -231,8 +232,8 @@ private theorem sub_beq_zero (left right : BitVec width) :
 /-- Successful ADD for every supported scalar width and operand form. -/
 theorem add (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .add destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .add destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -257,8 +258,8 @@ theorem add (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful SUB for every supported scalar width and operand form. -/
 theorem sub (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .sub destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .sub destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -283,8 +284,8 @@ theorem sub (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful SBB for every supported scalar width and operand form. -/
 theorem sbb (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .sbb destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .sbb destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -309,8 +310,8 @@ theorem sbb (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful CMP for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
 theorem compare (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .cmp destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .cmp destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -335,8 +336,8 @@ theorem compare (program : Program) (address : Nat) (destination source : Operan
 /-- Successful TEST for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
 theorem test (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .test destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .test destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -360,8 +361,8 @@ theorem test (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful AND for every supported scalar width and operand form. -/
 theorem bitwise_and (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .and destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .and destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -386,8 +387,8 @@ theorem bitwise_and (program : Program) (address : Nat) (destination source : Op
 /-- Successful OR for every supported scalar width and operand form. -/
 theorem bitwise_or (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .or destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .or destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -412,8 +413,8 @@ theorem bitwise_or (program : Program) (address : Nat) (destination source : Ope
 /-- Successful XOR for every supported scalar width and operand form. -/
 theorem bitwise_xor (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.binary .xor destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.binary .xor destination source) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -440,8 +441,8 @@ The result and carry flag are specified; SF/ZF remain unconstrained for every
 undefined-flag choice supply. Source reads always use the initial state. -/
 theorem imul (program : Program) (address : Nat) (destination source : Operand)
     (immediate : Option Int) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.imul destination source immediate) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.imul destination source immediate) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -470,7 +471,7 @@ theorem imul (program : Program) (address : Nat) (destination source : Operand)
   rw [one code location undefinedFlags]
   simp only [stepOp, valid, readable, Bool.true_and, ite_true]
   rw [hasWidth]
-  simp only [Option.getD_some, next, ExecutionStatus.advance, MachineState.writeOperand_status, location]
+  simp only [Option.getD_some, next, MachineState.writeOperand_status, location]
   cases immediate <;> rfl
 
 /-- Successful SHL/SHR for supported immediate-count register forms. The
@@ -478,8 +479,8 @@ encoded count is masked to the operand width. Zero masked counts preserve flags,
 but still write the destination (and clear the upper half of an r32 parent). -/
 theorem shift (program : Program) (address : Nat) (operation : ShiftOp)
     (destination : Operand) (count : Nat) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.shift operation destination count) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.shift operation destination count) := by first | rfl | assumption | decide +kernel)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -512,14 +513,14 @@ theorem shift (program : Program) (address : Nat) (operation : ShiftOp)
   rw [hasWidth]
   simp only [Option.getD_some]
   cases operation <;> split <;>
-    simp only [zero] <;> simp_all [next, ExecutionStatus.advance]
+    simp only [zero] <;> simp_all [next]
 
 /-- NOT complements a supported register or memory destination without changing
 flags; memory destinations require read/write permission and record the read. -/
 theorem bitwise_not (program : Program) (address : Nat) (destination : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.not destination) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.not destination) := by first | rfl | assumption | decide +kernel)
     (readable : initial.canRead destination = true := by first | assumption | simp)
     (writable : initial.canWrite destination = true := by first | assumption | simp) :
     Ensures program (· = initial) (· = { initial.writeOperand destination (~~~(initial.readOperand destination)) with
@@ -529,15 +530,15 @@ theorem bitwise_not (program : Program) (address : Nat) (destination : Operand)
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, readable, writable, next, ExecutionStatus.advance, location]
+  simp [stepOp, readable, writable, next, location]
 
 /-- SETcc writes a byte containing zero or one according to the initial flags.
 It requires only write access to its destination and performs no memory read. -/
 theorem setcc (program : Program) (address : Nat) (condition : Condition) (destination : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.setcc condition destination) := by first | assumption | decide +kernel)
-    (valid : destination.width = some .byte := by first | assumption | rfl)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.setcc condition destination) := by first | rfl | assumption | decide +kernel)
+    (valid : destination.width = some .byte := by first | rfl | assumption)
     (writable : initial.canWrite destination = true := by first | assumption | simp) :
     Ensures program (· = initial) (· = { initial.writeOperand destination (if condition.holds initial then 1 else 0) with
       status := .running (program.nextAddress address) }) := by
@@ -545,15 +546,15 @@ theorem setcc (program : Program) (address : Nat) (condition : Condition) (desti
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, valid, writable, next, ExecutionStatus.advance, location]
+  simp [stepOp, valid, writable, next, location]
 
 /-- CMOVcc reads its source even when not taken. Writing the selected value
 through the destination preserves narrow-register semantics, including clearing
 the upper half of a 32-bit destination on both paths. Flags are preserved. -/
 theorem cmovcc (program : Program) (address : Nat) (condition : Condition) (destination source : Operand)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.cmovcc condition destination source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.cmovcc condition destination source) := by first | rfl | assumption | decide +kernel)
     (valid : validConditionalMove destination source = true := by
       first | assumption | simp [validConditionalMove])
     (readable : initial.canRead source = true := by first | assumption | simp) :
@@ -565,7 +566,7 @@ theorem cmovcc (program : Program) (address : Nat) (condition : Condition) (dest
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, valid, readable, next, ExecutionStatus.advance, location]
+  simp [stepOp, valid, readable, next, location]
 
 theorem inc (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
@@ -577,7 +578,7 @@ theorem inc (program : Program) (address : Nat) (register : Reg) (initial : Mach
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
+  simp_all [MachineState.write, stepOp, next] <;> try rfl
 
 theorem dec (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
@@ -589,24 +590,24 @@ theorem dec (program : Program) (address : Nat) (register : Reg) (initial : Mach
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next] <;> try rfl
+  simp_all [MachineState.write, stepOp, next] <;> try rfl
 
 /-- NOP preserves the entire state except for advancing the program counter. -/
 theorem nop (program : Program) (address : Nat) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address .nop := by first | assumption | decide +kernel) :
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address .nop := by first | rfl | assumption | decide +kernel) :
     Ensures program (· = initial) (· = { initial with
       status := .running (program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, next, ExecutionStatus.advance, location]
+  simp [stepOp, next, location]
 
 /-- JMP preserves the entire state except for setting the program counter. -/
 theorem jump (program : Program) (address target : Nat) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.jmp target) := by first | assumption | decide +kernel) :
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.jmp target) := by first | rfl | assumption | decide +kernel) :
     Ensures program (· = initial) (· = { initial with status := .running target }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -618,22 +619,22 @@ theorem jump (program : Program) (address target : Nat) (initial : MachineState)
 registers, flags, memory, or read history. Covers every modeled condition. -/
 theorem branch (program : Program) (address : Nat) (condition : Condition) (target : Nat)
     (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.jcc condition target) := by first | assumption | decide +kernel) :
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.jcc condition target) := by first | rfl | assumption | decide +kernel) :
     Ensures program (· = initial) (· = { initial with
       status := .running (if condition.holds initial then target else program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp only [stepOp, ExecutionStatus.advance, location]
+  simp only [stepOp, next, location]
   split <;> rfl
 
 /-- PUSH stores the source's initial 64-bit value before updating RSP. Only
 write permission for the eight-byte slot at the decremented pointer is required. -/
 theorem push (program : Program) (address : Nat) (source : Reg) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.push source) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.push source) := by first | rfl | assumption | decide +kernel)
     (writable : permits initial.memory.writable (initial.registers .rsp - 8).toNat 8 = true := by
       first | assumption | rfl) :
     Ensures program (· = initial) (· = {
@@ -644,14 +645,14 @@ theorem push (program : Program) (address : Nat) (source : Reg) (initial : Machi
   subst actual
   rw [one code location undefinedFlags]
   simp only [stepOp, writable, ite_true]
-  simp [next, MachineState.write, MachineState.writeMemory, ExecutionStatus.advance, location]
+  simp [next, MachineState.write, MachineState.writeMemory, location]
 
 /-- POP reads the old stack slot, increments RSP, then writes the destination.
 For POP RSP the loaded value replaces the incremented pointer. Flags and memory
 are preserved, and the eight-byte read is recorded at the original pointer. -/
 theorem pop (program : Program) (address : Nat) (destination : Reg) (initial : MachineState)
-    (location : initial.status = .running address := by first | assumption | rfl)
-    (code : InstructionAt program address (.pop destination) := by first | assumption | decide +kernel)
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address (.pop destination) := by first | rfl | assumption | decide +kernel)
     (readable : permits initial.memory.readable (initial.registers .rsp).toNat 8 = true := by
       first | assumption | rfl) :
     Ensures program (· = initial) (· = {
@@ -663,7 +664,7 @@ theorem pop (program : Program) (address : Nat) (destination : Reg) (initial : M
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, readable, next, MachineState.write, ExecutionStatus.advance, location]
+  simp [stepOp, readable, next, MachineState.write, location]
 
 theorem call (program : Program) (address target : Nat) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
@@ -702,6 +703,6 @@ theorem move (program : Program) (address : Nat) (destination source : Operand) 
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp [stepOp, next, ExecutionStatus.advance, location, valid, readable, writable]
+  simp [stepOp, next, location, valid, readable, writable]
 
 end Rivet

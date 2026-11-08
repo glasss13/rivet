@@ -47,12 +47,10 @@ def ExecutionStatus.isRunning : ExecutionStatus → Bool
   | .running _ => true
   | _ => false
 
-def ExecutionStatus.advance (nextAddress : Nat) : ExecutionStatus → ExecutionStatus
-  | .running _ => .running nextAddress
-  | stopped => stopped
-
-def next (nextAddress : Nat) (state : MachineState) : MachineState :=
-  { state with status := state.status.advance nextAddress }
+private def next (nextAddress : Nat) (state : MachineState) : MachineState :=
+  { state with status := match state.status with
+      | .running _ => .running nextAddress
+      | stopped => stopped }
 def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
   (address.base.map registers).getD 0 +
     (address.index.map registers).getD 0 * BitVec.ofNat 64 address.scale.value +
@@ -97,7 +95,11 @@ def MachineState.recordRead (state : MachineState) : Operand → MachineState
       [⟨(address.evaluate state.registers).toNat, width.bytes⟩] }
   | _ => state
 
-def BinaryOp.result (operation : BinaryOp) (left right : BitVec width) (carryIn : Bool) : BitVec width :=
+private def BinaryOp.writes : BinaryOp → Bool
+  | .cmp | .test => false
+  | _ => true
+
+private def BinaryOp.result (operation : BinaryOp) (left right : BitVec width) (carryIn : Bool) : BitVec width :=
   match operation with
   | .add => left + right
   | .sub | .cmp => left - right
@@ -106,7 +108,7 @@ def BinaryOp.result (operation : BinaryOp) (left right : BitVec width) (carryIn 
   | .or => left ||| right
   | .xor => left ^^^ right
 
-def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec width) (carryIn : Bool) : Bool :=
+private def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec width) (carryIn : Bool) : Bool :=
   match operation with
   | .add => result < left
   | .sub | .cmp => left < right
@@ -114,7 +116,7 @@ def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec width) (ca
   | _ => false
 
 /-- Read both operands from the initial state; commit flags, memory, and history only on success. -/
-def MachineState.binary (state : MachineState) (operation : BinaryOp) (destination source : Operand) (nextAddress : Nat) : MachineState :=
+private def MachineState.binary (state : MachineState) (operation : BinaryOp) (destination source : Operand) (nextAddress : Nat) : MachineState :=
   if validBinary operation destination source && state.canRead destination && state.canRead source &&
       (!operation.writes || state.canWrite destination) then
     let width := destination.width.getD .qword
@@ -139,7 +141,7 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
   | .above => !state.carryFlag && !state.zeroFlag
   | .sign => state.signFlag
 
-def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
+private def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
   | .nop => next nextAddress state
   | .movd destination source =>
@@ -233,7 +235,7 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
     next nextAddress { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
   | .jmp target => { state with status := .running target }
   | .jcc condition target =>
-    { state with status := if condition.holds state then .running target else state.status.advance nextAddress }
+    if condition.holds state then { state with status := .running target } else next nextAddress state
   | .setcc condition destination =>
     if destination.width == some .byte && state.canWrite destination then
       next nextAddress (state.writeOperand destination (if condition.holds state then 1 else 0))
@@ -273,7 +275,9 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
         readHistory := state.readHistory ++ [⟨address,8⟩] }
     else { state with status := .fault }
 
-def step (program : Program) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
+/-- Execute one fetched instruction. Instruction contracts provide its proof interface;
+the interpreter implementation is hidden from normal imports. -/
+@[no_expose] def step (program : Program) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match state.status with
   | .running address => match program.fetch address with
     | some instruction => stepOp instruction.op ((address + instruction.length) % word) state undefinedFlags
