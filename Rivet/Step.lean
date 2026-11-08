@@ -162,15 +162,19 @@ private meta def temporaryStates : MetaM (Array FVarId) := do
 pass that follows the whole chain back to named states. With `clear`, then clear the
 unnamed states and their facts. A new fact (`rivet_fact_*`) that still mentions one,
 through an untracked field, is dropped; a state anything else still mentions is kept.
-`only?` restricts the rewrite to the given hypotheses. -/
-private meta def compact (clear : Bool) (only? : Option (Array Name) := none) :
-    TacticM Unit := withMainContext do
+`only?` restricts the rewrite to the given hypotheses, which are never used as
+rewrite rules themselves (a path condition `s.carryFlag = true` has a fact's shape).
+`extra` adds the facts of further states as rewrite rules, without clearing them. -/
+private meta def compact (clear : Bool) (only? : Option (Array Name) := none)
+    (extra : Array FVarId := #[]) : TacticM Unit := withMainContext do
   let states ← temporaryStates
-  if states.isEmpty then return
+  if states.isEmpty && extra.isEmpty then return
+  let isTarget (decl : LocalDecl) : Bool := (only?.map (·.contains decl.userName)).getD false
   let mut facts : Array LocalDecl := #[]
-  for state in states do facts := facts ++ (← factsAbout state)
+  for state in states ++ extra do
+    facts := facts ++ (← factsAbout state).filter (!isTarget ·)
   let factIds := facts.map (·.fvarId)
-  let mentions (type : Expr) : Bool := states.any (type.containsFVar ·)
+  let mentions (type : Expr) : Bool := (states ++ extra).any (type.containsFVar ·)
   let mut targets : Array Ident := #[]
   for decl in ← getLCtx do
     if decl.isImplementationDetail || decl.userName.hasMacroScopes then continue
@@ -243,10 +247,12 @@ open Step in
     unless fields.contains field do throwError "rivet_step: unknown field `{field}`"
   -- 1. The contract, with side conditions as goals; discharge what we can.
   let mut unsolved : Array MVarId := #[]
-  let contract : Term ← do
+  let mainGoal ← getMainGoal
+  -- Goals left open by earlier steps (unproved side conditions) stay open, after ours.
+  let pending := (← getGoals).filter (· != mainGoal)
+  let contract : Expr ← do
     let (name, operands) ← contractFor operation
     let (proof, sides) ← instantiate name (#[program, mkNatLit pc] ++ operands ++ #[old])
-    let main ← getMainGoal
     for side in sides do
       -- Location and instruction evidence are known; no context search is needed.
       match ← side.getTag with
@@ -257,20 +263,27 @@ open Step in
           throwError "rivet_step: unexpected instruction at {pc}"
         side.assign instructionProof
       | _ => unless ← discharge discharger side do unsolved := unsolved.push side
-    setGoals [main]
-    Term.exprToSyntax proof
-  -- 2. Continue from a fresh successor. Internal names are fixed and replaced at the end.
-  let successor := mkIdent `rivet_next
+    instantiateMVars proof
+  -- 2. Continue from a fresh successor: build `Ensures.bind contract (fun next equation => ?_)`
+  --    directly, so no term is re-elaborated. Internal names are replaced at the end.
+  let next ← mainGoal.withContext do
+    let contractType ← whnfR (← inferType contract)
+    unless contractType.isAppOfArity ``Ensures 3 do
+      throwError "rivet_step: unexpected contract type {contractType}"
+    let intermediate := contractType.getArg! 2
+    let postcondition := (← whnfR (← mainGoal.getType)).getArg! 2
+    let stateType := mkConst ``MachineState
+    withLocalDeclD `rivet_next stateType fun successor => do
+      withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
+        let precondition ← withLocalDeclD `state stateType fun state => do
+          mkLambdaFVars #[state] (← mkEq state successor)
+        let target := mkApp3 (mkConst ``Ensures) program precondition postcondition
+        let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
+        let continuation ← mkLambdaFVars #[successor, equation] goal
+        mainGoal.assign (← mkAppM ``Ensures.bind #[contract, continuation])
+        return goal.mvarId!
+  setGoals [next]
   let equation := mkIdent `rivet_step_equation
-  evalTactic (← `(tactic| refine Rivet.Ensures.bind $contract fun $successor $equation => ?_))
-  let mut main? : Option MVarId := none
-  for goal in ← getGoals do
-    if main?.isNone && (← goal.withContext do
-        return ((← getLCtx).findFromUserName? equation.getId).isSome) then
-      main? := some goal
-    else unsolved := unsolved.push goal
-  let some main := main? | throwError "rivet_step: continuation goal not found"
-  setGoals [main]
   -- Unpack existential results (IMUL's unconstrained flags) down to the equation.
   repeat
     let isExists ← withMainContext do
@@ -322,7 +335,10 @@ open Step in
     setGoals [branch]
     -- Path conditions are stated in terms of named states right away; other facts
     -- refer to the previous state until a state is named.
-    if isBranch then compact (clear := false) (only? := some #[`rivet_fact_path])
+    if isBranch then
+      let oldNamed := !(← old.fvarId!.getUserName).hasMacroScopes
+      compact (clear := false) (only? := some #[`rivet_fact_path])
+        (extra := if oldNamed then #[old.fvarId!] else #[])
     if named?.isSome then compact (clear := true)
     let mut goal ← getMainGoal
     let lctx ← goal.withContext getLCtx
@@ -333,7 +349,7 @@ open Step in
         goal ← goal.rename decl.fvarId (← mkFreshUserName `h)
     if isBranch then goal.setTag (if index == 0 then `taken else `fallthrough)
     finished := finished.push goal
-  setGoals (finished.toList ++ unsolved.toList)
+  setGoals (finished.toList ++ unsolved.toList ++ pending)
 
 end Rivet
 end
