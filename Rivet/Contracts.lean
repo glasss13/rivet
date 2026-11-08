@@ -95,6 +95,14 @@ theorem Ensures.seq (first : Ensures program precondition intermediate)
   obtain ⟨final, ⟨later, reached⟩, result⟩ := second.allChoices _ holds (choices.drop earlier)
   exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
+/-- Continue from each state the first contract can reach, as a named state.
+For an exact-state contract (`· = e`), the continuation receives a fresh state
+`t` with `t = e` rather than the expression `e` itself. -/
+theorem Ensures.bind (first : Ensures program precondition intermediate)
+    (continuation : ∀ state, intermediate state → Ensures program (· = state) postcondition) :
+    Ensures program precondition postcondition :=
+  first.seq (Ensures.intro continuation)
+
 theorem Ensures.consequence (contract : Ensures program precondition postcondition)
     (strengthenPrecondition : ∀ state, strongerPrecondition state → precondition state)
     (weakenPostcondition : ∀ state, postcondition state → weakerPostcondition state) :
