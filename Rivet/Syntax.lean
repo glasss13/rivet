@@ -229,6 +229,20 @@ def Program.fetch (program : Program) (address : Nat) : Option Instruction :=
 /-- The byte address following an instruction, with 64-bit address arithmetic. -/
 def Program.nextAddress (program : Program) (address : Nat) : Nat :=
   ((program.fetch address).map fun instruction => (address + instruction.length) % word).getD address
+
+/-- At and above `address`, `program` fetches as `suffix` does. Generated programs
+state this once per instruction, so any instruction is found in constant time. -/
+def Program.FetchesFrom (program suffix : Program) (address : Nat) : Prop :=
+  ∀ other, address ≤ other → program.fetch other = suffix.fetch other
+
+/-- Above a suffix's first instruction, the rest of the suffix takes over. -/
+theorem Program.FetchesFrom.skip {program rest : Program} {instruction : Instruction} {next : Nat}
+    (previous : program.FetchesFrom (instruction :: rest) instruction.address)
+    (increasing : instruction.address < next) : program.FetchesFrom rest next := by
+  intro other bound
+  have differs : (instruction.address == other) = false := by simp; omega
+  rw [previous other (by omega)]
+  simp [Program.fetch, differs]
 structure Access where
   address : Nat
   size : Nat

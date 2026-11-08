@@ -15,6 +15,14 @@ theorem MachineState.writeMemory_eq_storeBytes (state : MachineState) (address :
       { state with memory := state.memory.storeBytes address width.bytes (littleEndianBytes value) } :=
   rfl
 
+namespace Step
+-- Address normalization: `Option.getD` leaves a numeral zero (`OfNat` form) for an
+-- absent base or index. Rewriting only these keeps other numerals untouched.
+theorem add_zero (x : BitVec n) : x + 0 = x := BitVec.add_zero x
+theorem zero_add (x : BitVec n) : 0 + x = x := BitVec.zero_add x
+theorem zero_mul (x : BitVec n) : 0 * x = 0 := by simp
+end Step
+
 end Rivet
 end
 
@@ -36,29 +44,85 @@ private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
 
-/-- The numeral `pc` from a hypothesis `state.status = .running pc`. -/
-private meta def findPc (state : Expr) : MetaM Nat := do
+/-- The address `pc` and the hypothesis `state.status = .running pc`, where `pc`
+is a numeral or a definition that unfolds to one. -/
+private meta def findPc (state : Expr) : MetaM (Nat × Expr) := do
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
     let some (_, lhs, rhs) := (← instantiateMVars decl.type).eq? | continue
     unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
     unless rhs.isAppOfArity ``ExecutionStatus.running 1 do continue
-    if let some pc ← (evalNat rhs.appArg!).run then return pc
+    -- A numeral, or a definition such as an imported `entry` that unfolds to one.
+    let address := rhs.appArg!
+    if let some pc ← (evalNat address).run then return (pc, .fvar decl.fvarId)
+    if let some pc ← (evalNat (← whnfD address)).run then return (pc, .fvar decl.fvarId)
   throwError "rivet_step: no hypothesis `{state}.status = .running <numeral>`"
 
-/-- The decoded operation at `pc`, and the fall-through address. -/
-private meta def fetch (program : Expr) (pc : Nat) : MetaM (Expr × Nat) := withTransparency .all do
-  let found ← whnf (← mkAppM ``Program.fetch #[program, mkNatLit pc])
+private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
+
+/-- The instruction at an address: its operation, the fall-through address, and
+(for a generated suffix chain) proofs of `InstructionAt` and of the fall-through address. -/
+private structure Fetched where
+  operation : Expr
+  next : Nat
+  code? : Option Expr
+  nextProof? : Option Expr
+
+/-- Look up the instruction at `pc`.
+
+Generated programs are chains of suffixes with a step per instruction,
+`program.from_<pc> : program.FetchesFrom suffix pc`, where `suffix` starts with
+the instruction at `pc`. Then lookup and its proofs take constant time
+in the program size. Otherwise the program list is evaluated. -/
+private meta def fetch (program : Expr) (pc : Nat) : MetaM Fetched := withTransparency .all do
+  let address := mkNatLit pc
+  if let some name := program.constName? then
+    let stepName := name ++ Name.mkSimple s!"from_{hex pc}"
+    if (← getEnv).contains stepName then
+      let same := mkApp2 (mkConst stepName) address (mkApp (mkConst ``Nat.le_refl) address)
+      let some (_, _, fetched) := (← instantiateMVars (← inferType same)).eq?
+        | throwError "rivet_step: unexpected type for {stepName}"
+      let suffix := fetched.appFn!.appArg!
+      let list ← whnf suffix
+      unless list.isAppOfArity ``List.cons 3 do throwError "rivet_step: {stepName} has an empty suffix"
+      let instruction ← whnf (list.getArg! 1)
+      unless instruction.isAppOfArity ``Instruction.mk 3 do
+        throwError "rivet_step: cannot decode the instruction at {pc}"
+      let some length ← (evalNat (← whnf (instruction.getArg! 1))).run
+        | throwError "rivet_step: cannot compute the address after {pc}"
+      let operation ← whnf instruction.appArg!
+      let next := (pc + length) % 2^64
+      -- `(program.fetch pc).map op = (suffix.fetch pc).map op = some operation`; the
+      -- second step evaluates only the head of `suffix` in the kernel.
+      let mapOp ← mkAppM ``Option.map #[mkConst ``Instruction.op]
+      let some_ ← mkAppM ``Option.some #[operation]
+      let headCode ← mkExpectedTypeHint (← mkEqRefl some_) (← mkEq (mkApp mapOp fetched) some_)
+      let code ← mkEqTrans (← mkCongrArg mapOp same) headCode
+      -- `program.nextAddress pc = next`: rewrite the fetch inside `Program.nextAddress`'s
+      -- definition with the chain step, then evaluate the head of `suffix`.
+      let programNext ← mkAppM ``Program.nextAddress #[program, address]
+      let some unfolded ← unfoldDefinition? programNext
+        | throwError "rivet_step: cannot unfold Program.nextAddress"
+      let programFetch ← mkAppM ``Program.fetch #[program, address]
+      let motive ← kabstract unfolded programFetch
+      unless motive.hasLooseBVars do throwError "rivet_step: unexpected Program.nextAddress"
+      let nextSame ← mkCongrArg (.lam `fetched (← inferType programFetch) motive .default) same
+      let headNext ← mkExpectedTypeHint (← mkEqRefl (mkNatLit next))
+        (← mkEq (motive.instantiate1 fetched) (mkNatLit next))
+      let nextProof ← mkExpectedTypeHint (← mkEqTrans nextSame headNext)
+        (← mkEq programNext (mkNatLit next))
+      return { operation, next, code? := some code, nextProof? := some nextProof }
+  let found ← whnf (← mkAppM ``Program.fetch #[program, address])
   unless found.isAppOfArity ``Option.some 2 do
     throwError "rivet_step: no instruction at address {pc}"
   let instruction ← whnf found.appArg!
   unless instruction.isAppOfArity ``Instruction.mk 3 do
     throwError "rivet_step: cannot decode the instruction at {pc}"
   let operation ← whnf instruction.appArg!
-  let next ← whnf (← mkAppM ``Program.nextAddress #[program, mkNatLit pc])
+  let next ← whnf (← mkAppM ``Program.nextAddress #[program, address])
   let some next ← (evalNat next).run
     | throwError "rivet_step: cannot compute the address after {pc}"
-  return (operation, next)
+  return { operation, next, code? := none, nextProof? := none }
 
 /-- The instruction contract for an operation, and the operands it takes
 between `program address` and `initial`. -/
@@ -119,7 +183,7 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     type := body.instantiate1 argument
   return (proof, sides)
 
-/-- Try to prove one side condition. Cheap checks (`assumption`, `rfl`, `decide`)
+/-- Try to prove one side condition. Cheap checks (`rfl`, `decide`, `assumption`)
 always run first; then the caller's discharger if given, otherwise `simp [*]`,
 which rewrites only the side condition with the current facts. -/
 private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM Bool := do
@@ -129,8 +193,9 @@ private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM B
     let fallback ← match tactic? with
       | some tactic => pure (⟨tactic⟩ : TSyntax `tactic)
       | none => `(tactic| (simp [*, MachineState.canRead, MachineState.canWrite,
-          Address.evaluate, Scale.value]; done))
-    evalTactic (← `(tactic| first | assumption | rfl | decide +kernel | ($fallback; done)))
+          Address.evaluate, Scale.value, BitVec.ofInt_neg, BitVec.ofInt_natCast,
+          BitVec.add_neg_eq_sub]; done))
+    evalTactic (← `(tactic| first | rfl | decide +kernel | assumption | ($fallback; done)))
     if (← getGoals).isEmpty then return true
     saved.restore
     return false
@@ -194,15 +259,14 @@ private meta def retire (old : FVarId) : TacticM Unit := withMainContext do
   else goal ← goal.tryClear old
   replaceMainGoal [goal]
 
-private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
-
 end Step
 
 /--
 `rivet_step` executes the instruction at the current address of an
 `Ensures program (· = s) Q` goal, using that instruction's contract.
 
-It needs a hypothesis `s.status = .running pc` for a numeral `pc`, and continues
+It needs a hypothesis `s.status = .running pc`, where `pc` is a numeral or a
+definition that unfolds to one, and continues
 with a fresh successor state plus one fact per field: `t.registers = …`,
 `t.memory = …`, `t.status = .running next`, and so on.
 
@@ -212,10 +276,14 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   the successor and keeps it as a checkpoint.
 * **Facts** are inaccessible (`h✝`). Use them with `simp [*]`, `simp_all`,
   `omega` or `assumption`, or retrieve one by statement, e.g. `‹t.memory = _›`.
-* **Side conditions** the discharger cannot prove remain as goals tagged with
+* **Side conditions.** The location and instruction evidence are supplied
+  directly. Others that the discharger cannot prove remain as goals tagged with
   the contract's parameter name (`case writable`, `case slot`, …).
   `rivet_step (disch := tac)` replaces the fallback discharger (`simp [*]`);
-  `assumption`, `rfl` and `decide` are always tried first.
+  `rfl`, `decide` and `assumption` are always tried first.
+* **Lookup.** For programs generated as suffix chains (as by `rivet-import`),
+  instructions are found and their facts proved in constant time; otherwise the
+  list is evaluated.
 * **Conditional jumps** produce goals tagged `taken` and `fallthrough`, each with
   its path condition as a hypothesis.
 * `rivet_step tracking [status, registers, memory]` records only those fields
@@ -229,8 +297,10 @@ syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")? ("
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
   let (program, old) ← goalParts (← getMainGoal)
-  let pc ← findPc old
-  let (operation, next) ← fetch program pc
+  let (pc, location) ← findPc old
+  let fetched ← fetch program pc
+  let operation := fetched.operation
+  let next := fetched.next
   -- Inaccessible (generated) states are temporary; states you named are kept.
   let temporary := (← old.fvarId!.getUserName).hasMacroScopes
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
@@ -246,7 +316,15 @@ open Step in
     let (proof, sides) ← instantiate name (#[program, mkNatLit pc] ++ operands ++ #[old])
     let main ← getMainGoal
     for side in sides do
-      unless ← discharge discharger side do unsolved := unsolved.push side
+      -- Location and instruction evidence are known; no context search is needed.
+      match ← side.getTag with
+      | `location => side.assign location
+      | `code =>
+        match fetched.code? with
+        | some code => side.assign code
+        | none => unless ← discharge (some (← `(tactic| decide +kernel))) side do
+            unsolved := unsolved.push side
+      | _ => unless ← discharge discharger side do unsolved := unsolved.push side
     setGoals [main]
     Term.exprToSyntax proof
   -- 2. Continue from a fresh successor. Internal names are fixed and replaced at the end.
@@ -277,12 +355,19 @@ open Step in
     internal := internal.push fact
   evalTactic (← `(tactic| clear $equation))
   let programStx ← Term.exprToSyntax program
-  let nextFact ← `(show Program.nextAddress $programStx $(quote pc) = $(quote next) by decide +kernel)
+  let nextFact ← match fetched.nextProof? with
+    | some proof => Term.exprToSyntax proof
+    | none => `(show Program.nextAddress $programStx $(quote pc) = $(quote next) by decide +kernel)
   let locations : Array (TSyntax `term) := internal.map (⟨mkIdent ·⟩)
   evalTactic (← `(tactic| try simp only [$nextFact:term, MachineState.writeOperand,
       MachineState.readOperand, MachineState.recordRead, MachineState.write,
       MachineState.writeMemory_eq_storeBytes, Operand.width, Width.bits, Width.bytes,
-      BitVec.setWidth_eq, List.append_assoc, List.cons_append, List.nil_append] at $locations*))
+      BitVec.setWidth_eq, List.append_assoc, List.cons_append, List.nil_append,
+      -- Addresses as point reads of registers (`r .rbx - 8#64`), never the whole register file.
+      Address.evaluate, Scale.value, Option.map_some, Option.map_none, Option.getD_some,
+      Option.getD_none, Step.zero_mul, BitVec.mul_one, Step.add_zero, Step.zero_add, BitVec.add_zero,
+      BitVec.zero_add,
+      BitVec.ofInt_neg, BitVec.ofInt_natCast, BitVec.add_neg_eq_sub, BitVec.ofInt_ofNat] at $locations*))
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   let isBranch := operation.isAppOfArity ``Op.jcc 2 && tracked.contains `status
   if isBranch then

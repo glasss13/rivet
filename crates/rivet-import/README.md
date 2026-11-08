@@ -6,6 +6,13 @@ decodes their code with iced-x86, and writes a Lean module containing `entry : N
 instruction encodings, and initial segment data come from the binary. No assembly
 text is parsed along the way.
 
+`program` is emitted as a chain of suffixes (`program.suffix_<address>`, listed
+last to first because each refers to the next) with one Lean-checked fact per
+instruction (`program.from_<address> : program.FetchesFrom ...`). These let
+proofs, including `rivet_step`, fetch any instruction in time independent of the
+program size. Instructions are emitted in strictly increasing address order,
+which the facts rely on.
+
 ```sh
 cargo run --release -p rivet-import -- ./example \
   --function sum_bytes --namespace Example --output Example.lean
