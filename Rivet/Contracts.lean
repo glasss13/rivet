@@ -238,4 +238,128 @@ theorem Reaches.preserves_register (reached : Reaches program initial final) (re
   have := (List.all_eq_true.mp unchanged) instruction member
   simpa using this
 
+private structure MemoryInvariant (before after : Memory) : Prop where
+  readable : after.readable = before.readable
+  writable : after.writable = before.writable
+  unwritable : ∀ address, before.writable address = false → after address = before address
+
+private theorem MemoryInvariant.refl (memory : Memory) : MemoryInvariant memory memory := ⟨rfl, rfl, by intros; rfl⟩
+
+private theorem MemoryInvariant.trans (first : MemoryInvariant before middle) (second : MemoryInvariant middle after) :
+    MemoryInvariant before after := by
+  refine ⟨second.readable.trans first.readable, second.writable.trans first.writable, ?_⟩
+  intro address readonly
+  rw [second.unwritable address (by rw [first.writable]; exact readonly), first.unwritable address readonly]
+
+private theorem MemoryInvariant.storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
+    (allowed : permits memory.writable address size = true) :
+    MemoryInvariant memory (memory.storeBytes address size bytes) := by
+  refine ⟨Memory.readable_storeBytes _ _ _ _, Memory.writable_storeBytes _ _ _ _, ?_⟩
+  intro other readonly
+  apply Memory.read_storeBytes_outside
+  by_cases before : other < address
+  · exact Or.inl before
+  · by_cases after : address + size ≤ other
+    · exact Or.inr after
+    · have permitted := (permits_iff _ _ _).mp allowed |>.2 (other - address) (by omega)
+      rw [Nat.add_sub_of_le (by omega), readonly] at permitted
+      contradiction
+
+private theorem MemoryInvariant.writeMemory (state : MachineState) (address : Nat) (width : Width)
+    (value : BitVec 64) (allowed : permits state.memory.writable address width.bytes = true) :
+    MemoryInvariant state.memory (state.writeMemory address width value).memory := by
+  exact MemoryInvariant.storeBytes state.memory address width.bytes
+    (fun offset => ⟨value.toNat / 256^offset % 256, Nat.mod_lt _ (by decide)⟩) allowed
+
+private theorem MemoryInvariant.writeOperand (state : MachineState) (destination : Operand) (value : BitVec 64)
+    (allowed : state.canWrite destination = true) :
+    MemoryInvariant state.memory (state.writeOperand destination value).memory := by
+  cases destination <;> try exact MemoryInvariant.refl _
+  case memory width address => exact MemoryInvariant.writeMemory state _ width value allowed
+
+/-- The memory effect of one decoded operation, including faulting paths. -/
+private theorem op_memory_invariant (operation : Op) (state : MachineState) (nextPC : Nat) (flags : FlagValues) :
+    MemoryInvariant state.memory (stepOp operation nextPC state flags).memory := by
+  cases operation with
+  | binary operation destination source =>
+    simp only [stepOp, MachineState.binary]
+    split
+    · split
+      · apply MemoryInvariant.writeOperand
+        simp_all [Bool.and_eq_true]
+      · exact MemoryInvariant.refl _
+    · exact MemoryInvariant.refl _
+  | mov destination source | not destination | setcc condition destination =>
+    simp only [stepOp]
+    split
+    · apply MemoryInvariant.writeOperand
+      simp_all [Bool.and_eq_true]
+    · exact MemoryInvariant.refl _
+  | shift operation destination count =>
+    simp only [stepOp]
+    split
+    · split <;> apply MemoryInvariant.writeOperand <;>
+        cases destination <;> simp_all [validShift, MachineState.canWrite]
+    · exact MemoryInvariant.refl _
+  | imul destination source immediate | cmovcc condition destination source =>
+    simp only [stepOp]
+    split
+    · apply MemoryInvariant.writeOperand
+      cases destination <;> simp_all [validImul, validConditionalMove, MachineState.canWrite]
+    · exact MemoryInvariant.refl _
+  | storeXmm kind destination source =>
+    simp only [stepOp]
+    split
+    · exact MemoryInvariant.storeBytes state.memory (destination.evaluate state.registers).toNat 16
+        (fun offset => ⟨(state.xmmRegisters source).toNat / 256^offset % 256, Nat.mod_lt _ (by decide)⟩) (by assumption)
+    · exact MemoryInvariant.refl _
+  | push source | call target =>
+    simp only [stepOp]
+    split
+    · apply MemoryInvariant.writeMemory
+      assumption
+    · exact MemoryInvariant.refl _
+  | _ =>
+    simp only [stepOp]
+    first
+    | exact MemoryInvariant.refl _
+    | (split <;> exact MemoryInvariant.refl _)
+
+private theorem step_memory_invariant (program : Program) (state : MachineState) (flags : FlagValues) :
+    MemoryInvariant state.memory (step program state flags).memory := by
+  unfold step
+  split
+  · split
+    · exact op_memory_invariant _ _ _ _
+    · exact MemoryInvariant.refl _
+  · exact MemoryInvariant.refl _
+
+private theorem execute_memory_invariant (program : Program) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
+    MemoryInvariant state.memory (execute program steps state choices).memory := by
+  induction steps generalizing state choices with
+  | zero => exact MemoryInvariant.refl _
+  | succ steps ih =>
+    exact (step_memory_invariant program state (choices 0)).trans
+      (ih (step program state (choices 0)) (choices.drop 1))
+
+/-- Execution preserves the readable permission map, including when it faults. -/
+theorem Reaches.preserves_readable (reached : Reaches program initial final) :
+    final.memory.readable = initial.memory.readable := by
+  obtain ⟨choices, steps, rfl⟩ := reached
+  exact (execute_memory_invariant program steps initial choices).readable
+
+/-- Execution preserves the writable permission map, including when it faults. -/
+theorem Reaches.preserves_writable (reached : Reaches program initial final) :
+    final.memory.writable = initial.memory.writable := by
+  obtain ⟨choices, steps, rfl⟩ := reached
+  exact (execute_memory_invariant program steps initial choices).writable
+
+/-- Every initially unwritable byte is preserved by execution, including faulting
+executions. This covers read-only data and unmapped addresses alike. -/
+theorem Reaches.preserves_unwritable (reached : Reaches program initial final) (address : Nat)
+    (readonly : initial.memory.writable address = false) :
+    final.memory address = initial.memory address := by
+  obtain ⟨choices, steps, rfl⟩ := reached
+  exact (execute_memory_invariant program steps initial choices).unwritable address readonly
+
 end Rivet
