@@ -37,13 +37,6 @@ private theorem append_nat (a : BitVec m) (b : BitVec n) :
     (a ++ b).toNat = a.toNat * 2^n + b.toNat := by
   rw [BitVec.toNat_append, ← Nat.shiftLeft_add_eq_or_of_lt b.isLt, Nat.shiftLeft_eq]
 
-private theorem byte_extract (value : BitVec width) (offset : Nat) :
-    (value.extractLsb' (8 * offset) 8).toFin =
-      (⟨value.toNat / 256^offset % 256, Nat.mod_lt _ (by decide)⟩ : Fin 256) := by
-  apply Fin.ext
-  change (value.extractLsb' (8 * offset) 8).toNat = _
-  simp [BitVec.extractLsb', Nat.shiftRight_eq_div_pow, Nat.pow_mul]
-
 private theorem shuffle_value (original : BitVec 128) (order : Nat) :
     BitVec.ofNat 128 ((List.range 4).foldr (fun lane result =>
       let selected := order / 4^lane % 4
@@ -133,15 +126,13 @@ theorem store_xmm (program : Program) (address : Nat) (operation : XmmMove)
       first | assumption | rfl) :
     let pointer := (destination.evaluate initial.registers).toNat
     Ensures program (· = initial) (· = { initial with
-      memory := initial.memory.storeBytes pointer 16
-        (fun offset => ((initial.xmmRegisters source).extractLsb' (8 * offset) 8).toFin)
+      memory := initial.memory.storeBytes pointer 16 (littleEndianBytes (initial.xmmRegisters source))
       status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
   simp only [stepOp, writable, ite_true, next, location]
-  simp only [byte_extract]
 
 /-- LEA computes an effective address from the initial registers. It neither
 reads memory nor changes flags or read history. -/

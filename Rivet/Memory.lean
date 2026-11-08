@@ -105,9 +105,9 @@ theorem Memory.read_storeBytes_outside (memory : Memory) (address size : Nat) (b
   rw [memory.read_storeBytes address size bytes other (by intro inside; exact False.elim (excluded inside))]
   exact ite_eq_right excluded
 
-/-- Little-endian bytes of a 64-bit value: byte `offset` is what
-`MachineState.writeMemory` stores and what `readBytes` decodes. -/
-def littleEndianBytes (value : BitVec 64) : Nat → Fin 256 :=
+/-- Little-endian bytes of a value of any width: byte `offset` is what scalar
+and vector stores write, and what `readBytes` decodes. -/
+def littleEndianBytes (value : BitVec n) : Nat → Fin 256 :=
   fun offset => ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩
 
 /-- Little-endian bytes, independent of scalar or vector instruction widths.
@@ -125,5 +125,228 @@ theorem permits_iff (permission : Nat → Bool) (address size : Nat) :
     permits permission address size = true ↔
       address + size ≤ word ∧ ∀ offset < size, permission (address + offset) = true := by
   simp [permits, List.all_eq_true, List.mem_range]
+
+/-! ## Reasoning about memory
+
+Addresses and sizes in these lemmas are plain `Nat`s, so their side conditions
+close by `omega`. A footprint is a set of addresses, `Nat → Prop`, such as
+`fun address => output ≤ address ∧ address < output + count`. -/
+
+private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
+    (same : ∀ offset < size, first offset = second offset) :
+    (List.range size).foldr (fun offset value => first offset + 256 * value) 0 =
+      (List.range size).foldr (fun offset value => second offset + 256 * value) 0 := by
+  have each : ∀ offsets : List Nat, (∀ offset ∈ offsets, offset < size) →
+      offsets.foldr (fun offset value => first offset + 256 * value) 0 =
+        offsets.foldr (fun offset value => second offset + 256 * value) 0 := by
+    intro offsets bounded
+    induction offsets with
+    | nil => rfl
+    | cons offset rest inductionHypothesis =>
+      simp only [List.foldr_cons]
+      rw [same offset (bounded offset List.mem_cons_self),
+        inductionHypothesis (fun other member => bounded other (List.mem_cons_of_mem _ member))]
+  exact each _ (fun offset member => List.mem_range.mp member)
+
+/-- A read depends only on the bytes it covers. -/
+theorem readBytes_congr {first second : Nat → Fin 256} {address other size : Nat}
+    (same : ∀ offset < size, first (address + offset) = second (other + offset)) :
+    readBytes first address size = readBytes second other size := by
+  unfold readBytes
+  rw [foldr_bytes (fun offset bound => congrArg Fin.val (same offset bound))]
+
+private theorem foldr_littleEndian (value offset size : Nat) :
+    (List.range size).foldr (fun index rest => value / 256^(offset + index) % 256 + 256 * rest) 0 =
+      value / 256^offset % 256^size := by
+  induction size generalizing offset with
+  | zero => simp [Nat.mod_one]
+  | succ size inductionHypothesis =>
+    rw [List.range_succ_eq_map, List.foldr_cons, List.foldr_map]
+    have shifted : (fun index rest => value / 256^(offset + (index + 1)) % 256 + 256 * rest) =
+        (fun index rest => value / 256^((offset + 1) + index) % 256 + 256 * rest) := by
+      funext index rest
+      rw [show offset + (index + 1) = (offset + 1) + index by omega]
+    simp only [Nat.succ_eq_add_one, Nat.add_zero]
+    rw [shifted, inductionHypothesis (offset + 1), Nat.pow_succ 256 size, Nat.mul_comm _ 256,
+      Nat.mod_mul, Nat.pow_succ 256 offset, ← Nat.div_div_eq_div_mul]
+
+/-- Reading back stored little-endian bytes selects the corresponding bits. -/
+theorem readBytes_littleEndianBytes (value : BitVec n) (offset size : Nat) :
+    readBytes (littleEndianBytes value) offset size = value.extractLsb' (8 * offset) (8 * size) := by
+  apply BitVec.eq_of_toNat_eq
+  simp only [readBytes, littleEndianBytes, BitVec.toNat_ofNat, BitVec.extractLsb'_toNat,
+    Nat.shiftRight_eq_div_pow]
+  rw [foldr_littleEndian, Nat.pow_mul, Nat.pow_mul]
+  simp only [Nat.reducePow, Nat.mod_mod]
+
+/-- Bytes a store does not cover are unchanged, even when unmapped. -/
+theorem Memory.readBytes_storeBytes_disjoint (memory : Memory) (bytes : Nat → Fin 256)
+    {address size other count : Nat} (away : other + count ≤ address ∨ address + size ≤ other) :
+    readBytes (memory.storeBytes address size bytes) other count = readBytes memory other count :=
+  readBytes_congr fun _ _ => memory.read_storeBytes_outside address size bytes _ (by omega)
+
+/-- Reading inside a store returns the stored bytes. The store's write permission
+ensures every byte is mapped (stores to unmapped bytes are dropped). -/
+theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : Nat → Fin 256)
+    {address size other count : Nat} (writable : permits memory.writable address size = true)
+    (lower : address ≤ other) (upper : other + count ≤ address + size) :
+    readBytes (memory.storeBytes address size bytes) other count =
+      readBytes bytes (other - address) count := by
+  apply readBytes_congr
+  intro offset bound
+  rw [memory.read_storeBytes address size bytes _ (fun inside => by
+    have allowed := ((permits_iff _ _ _).mp writable).2 (other + offset - address) (by omega)
+    rw [show address + (other + offset - address) = other + offset by omega] at allowed
+    simp only [Memory.writable, List.any_eq_true, Bool.and_eq_true] at allowed
+    obtain ⟨region, member, contains, _⟩ := allowed
+    exact ⟨region, member, contains⟩)]
+  have inside : address ≤ other + offset ∧ other + offset < address + size := ⟨by omega, by omega⟩
+  simp only [inside, and_self, ↓reduceIte]
+  rw [show other + offset - address = other - address + offset by omega]
+
+/-- A permission over a range holds over every subrange. -/
+theorem permits_within {permission : Nat → Bool} {address size other count : Nat}
+    (whole : permits permission address size = true)
+    (lower : address ≤ other) (upper : other + count ≤ address + size) :
+    permits permission other count = true := by
+  rw [permits_iff] at whole ⊢
+  refine ⟨by omega, fun offset bound => ?_⟩
+  have allowed := whole.2 (other + offset - address) (by omega)
+  rwa [show address + (other + offset - address) = other + offset by omega] at allowed
+
+/-- `after` holds the same bytes as `before` at every address outside `footprint`. -/
+def Memory.SameOutside (before after : Memory) (footprint : Nat → Prop) : Prop :=
+  ∀ address, ¬ footprint address → after address = before address
+
+theorem Memory.SameOutside.refl (memory : Memory) (footprint : Nat → Prop) :
+    memory.SameOutside memory footprint :=
+  fun _ _ => rfl
+
+theorem Memory.SameOutside.trans {first second third : Memory} {footprint : Nat → Prop}
+    (earlier : first.SameOutside second footprint) (later : second.SameOutside third footprint) :
+    first.SameOutside third footprint :=
+  fun address outside => (later address outside).trans (earlier address outside)
+
+/-- A footprint can always be enlarged. -/
+theorem Memory.SameOutside.mono {before after : Memory} {footprint larger : Nat → Prop}
+    (agree : before.SameOutside after footprint) (covered : ∀ address, footprint address → larger address) :
+    before.SameOutside after larger :=
+  fun address outside => agree address (fun inside => outside (covered address inside))
+
+/-- A store inside the footprint keeps the agreement. -/
+theorem Memory.SameOutside.storeBytes {before after : Memory} {footprint : Nat → Prop}
+    (agree : before.SameOutside after footprint) {address size : Nat} (bytes : Nat → Fin 256)
+    (inside : ∀ other, address ≤ other → other < address + size → footprint other) :
+    before.SameOutside (after.storeBytes address size bytes) footprint := by
+  intro other outside
+  rw [after.read_storeBytes_outside address size bytes other
+    ((Nat.lt_or_ge other address).elim Or.inl fun lower =>
+      Or.inr (Nat.le_of_not_lt fun upper => outside (inside other lower upper)))]
+  exact agree other outside
+
+/-- The frame law: a read outside the footprint sees the original bytes. -/
+theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : Nat → Prop}
+    (agree : before.SameOutside after footprint) {address size : Nat}
+    (away : ∀ other, address ≤ other → other < address + size → ¬ footprint other) :
+    Rivet.readBytes after address size = Rivet.readBytes before address size :=
+  readBytes_congr fun offset bound => agree _ (away _ (by omega) (by omega))
+
+/-! ## Facts from the layout
+
+Each lemma takes `member : region ∈ memory.regions`. For a layout given as
+`layout : memory.regions = [...]`, state the region and prove membership by
+`rw [layout]; simp`; ascribing the clean statement then unfolds the region:
+
+    have member : ({ address := input, size := count, contents := bytes,
+                     readable := true, writable := false } : MemoryRegion) ∈ memory.regions := by
+      rw [layout]; simp
+    have readable : permits memory.readable input count = true :=
+      memory.permits_readable_of_mem member rfl -/
+
+private theorem validLayout_iff (regions : List MemoryRegion) :
+    MemoryRegion.validLayout regions = true ↔
+      (∀ region ∈ regions, region.address + region.size ≤ word) ∧
+      regions.Pairwise fun first second => first.size = 0 ∨ second.size = 0 ∨
+        first.address + first.size ≤ second.address ∨ second.address + second.size ≤ first.address := by
+  induction regions with
+  | nil => simp [MemoryRegion.validLayout]
+  | cons region rest inductionHypothesis =>
+    simp only [MemoryRegion.validLayout, Bool.and_eq_true, inductionHypothesis, List.all_eq_true,
+      Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq, List.pairwise_cons, List.mem_cons,
+      forall_eq_or_imp]
+    constructor
+    · intro ⟨⟨fits, apart⟩, restFits, restApart⟩
+      exact ⟨⟨fits, restFits⟩, fun other member => by have := apart other member; omega, restApart⟩
+    · intro ⟨⟨fits, restFits⟩, apart, restApart⟩
+      exact ⟨⟨fits, fun other member => by have := apart other member; omega⟩, restFits, restApart⟩
+
+/-- Distinct regions share no address. -/
+theorem Memory.regions_disjoint (memory : Memory) :
+    memory.regions.Pairwise fun first second => first.size = 0 ∨ second.size = 0 ∨
+      first.address + first.size ≤ second.address ∨ second.address + second.size ≤ first.address :=
+  ((validLayout_iff _).mp memory.valid).2
+
+/-- Every region fits in the 64-bit address space. -/
+theorem Memory.fits_of_mem (memory : Memory) {region : MemoryRegion} (member : region ∈ memory.regions) :
+    region.address + region.size ≤ word :=
+  ((validLayout_iff _).mp memory.valid).1 region member
+
+private theorem permits_of_mem (memory : Memory) (field : MemoryRegion → Bool) {region : MemoryRegion}
+    (member : region ∈ memory.regions) (allowed : field region = true) {address size : Nat}
+    (lower : region.address ≤ address) (upper : address + size ≤ region.address + region.size) :
+    permits (fun other => memory.regions.any fun region => region.contains other && field region)
+      address size = true := by
+  have fits := memory.fits_of_mem member
+  rw [permits_iff]
+  refine ⟨by omega, fun offset bound => List.any_eq_true.mpr ⟨region, member, ?_⟩⟩
+  simp only [MemoryRegion.contains, allowed, Bool.and_true, Bool.and_eq_true, decide_eq_true_eq]
+  omega
+
+/-- A readable region is readable throughout; use `permits_within` for parts of it. -/
+theorem Memory.permits_readable_of_mem (memory : Memory) {region : MemoryRegion}
+    (member : region ∈ memory.regions) (readable : region.readable = true) :
+    permits memory.readable region.address region.size = true :=
+  permits_of_mem memory MemoryRegion.readable member readable (Nat.le_refl _) (Nat.le_refl _)
+
+/-- A writable region is writable throughout; use `permits_within` for parts of it. -/
+theorem Memory.permits_writable_of_mem (memory : Memory) {region : MemoryRegion}
+    (member : region ∈ memory.regions) (writable : region.writable = true) :
+    permits memory.writable region.address region.size = true :=
+  permits_of_mem memory MemoryRegion.writable member writable (Nat.le_refl _) (Nat.le_refl _)
+
+private theorem find_region {regions : List MemoryRegion}
+    (disjoint : regions.Pairwise fun first second => first.size = 0 ∨ second.size = 0 ∨
+      first.address + first.size ≤ second.address ∨ second.address + second.size ≤ first.address)
+    {region : MemoryRegion} (member : region ∈ regions) {address : Nat}
+    (contains : region.contains address = true) :
+    regions.find? (·.contains address) = some region := by
+  induction regions with
+  | nil => cases member
+  | cons head rest inductionHypothesis =>
+    rw [List.pairwise_cons] at disjoint
+    by_cases here : head.contains address = true
+    · simp only [List.find?_cons, here]
+      rcases List.mem_cons.mp member with equal | later
+      · rw [equal]
+      · have apart := disjoint.1 region later
+        simp only [MemoryRegion.contains, Bool.and_eq_true, decide_eq_true_eq] at here contains
+        omega
+    · simp only [List.find?_cons, Bool.not_eq_true] at here ⊢
+      rw [here]
+      rcases List.mem_cons.mp member with equal | later
+      · rw [equal] at contains; simp [contains] at here
+      · exact inductionHypothesis disjoint.2 later
+
+/-- Inside a region, memory reads the region's contents. -/
+theorem Memory.readBytes_of_mem (memory : Memory) {region : MemoryRegion}
+    (member : region ∈ memory.regions) {address size : Nat}
+    (lower : region.address ≤ address) (upper : address + size ≤ region.address + region.size) :
+    readBytes memory address size = readBytes region.contents (address - region.address) size := by
+  apply readBytes_congr
+  intro offset bound
+  have found := find_region memory.regions_disjoint member (address := address + offset) (by
+    simp only [MemoryRegion.contains, Bool.and_eq_true, decide_eq_true_eq]; omega)
+  simp only [Memory.read, found]
+  rw [show address + offset - region.address = address - region.address + offset by omega]
 
 end Rivet
