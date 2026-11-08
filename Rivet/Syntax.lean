@@ -226,9 +226,10 @@ def Program.fetch (program : Program) (address : Nat) : Option Instruction :=
   program.find? fun instruction => instruction.address == address && address < word &&
     0 < instruction.length && instruction.length ≤ 15
 
-/-- The byte address following an instruction, with 64-bit address arithmetic. -/
-def Program.nextAddress (program : Program) (address : Nat) : Nat :=
-  ((program.fetch address).map fun instruction => (address + instruction.length) % word).getD address
+/-- The instruction at `address` has `length` and `operation`. Execution continues at
+`(address + length) % word` unless the operation transfers control. -/
+abbrev InstructionAt (program : Program) (address length : Nat) (operation : Op) : Prop :=
+  program.fetch address = some ⟨address, length, operation⟩
 
 /-- At and above `address`, `program` fetches as `suffix` does. Generated programs
 state this once per instruction, so any instruction is found in constant time. -/

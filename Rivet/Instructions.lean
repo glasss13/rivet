@@ -1,12 +1,10 @@
 module
 public import Rivet.Contracts
+public import Rivet.Fetch
 import all Rivet.Model
 import all Rivet.Contracts
 @[expose] public section
 namespace Rivet
-
-abbrev InstructionAt (program : Program) (address : Nat) (instruction : Op) : Prop :=
-  (program.fetch address).map Instruction.op = some instruction
 
 -- Normalize known operand constructors without expanding unknown operands.
 -- These equations already exist; only their simplification attributes are new.
@@ -27,13 +25,10 @@ attribute [simp] Operand.width.eq_1 Operand.width.eq_2 Operand.width.eq_3
 @[simp] theorem MachineState.write_readHistory (state : MachineState) (register : Reg)
     (value : BitVec 64) : (state.write register value).readHistory = state.readHistory := rfl
 
-private theorem one (code : InstructionAt program address instruction)
+private theorem one (code : InstructionAt program address length instruction)
     (location : initial.status = .running address) (undefinedFlags : FlagValues) :
-    step program initial undefinedFlags = stepOp instruction (program.nextAddress address) initial undefinedFlags := by
-  simp only [step, location]
-  cases entry : program.fetch address with
-  | none => simp [InstructionAt, entry] at code
-  | some found => simp [InstructionAt, entry] at code; simp [code, Program.nextAddress, entry]
+    step program initial undefinedFlags = stepOp instruction ((address + length) % word) initial undefinedFlags := by
+  simp only [step, location, code]
 
 -- Every instruction has the same contract shape as a multi-instruction block.
 -- `code` is checked automatically for concrete programs, or supplied explicitly.
@@ -71,12 +66,13 @@ private theorem shuffle_value (original : BitVec 128) (order : Nat) :
 96 bits. Other XMM registers, GPRs, flags, memory, and history are preserved. -/
 theorem movd (program : Program) (address : Nat) (destination : Xmm) (source : Reg32)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.movd destination source) := by first | rfl | assumption | decide +kernel) :
+    (code : InstructionAt program address length (.movd destination source) := by rivet_fetch) :
     let value := ((initial.registers source.parent).setWidth 32).setWidth 128
     Ensures program (· = initial) (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
-      status := .running (program.nextAddress address) }) := by
+      status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -87,15 +83,16 @@ theorem movd (program : Program) (address : Nat) (destination : Xmm) (source : R
 selectors. Lane 0 is least significant; source/destination aliasing is allowed. -/
 theorem pshufd (program : Program) (address : Nat) (destination source : Xmm) (order : Nat)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.pshufd destination source order) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.pshufd destination source order) := by rivet_fetch)
     (encoded : order < 256 := by first | assumption | omega) :
     let lane (index : Nat) : BitVec 32 :=
       (initial.xmmRegisters source).extractLsb' (32 * (order / 4^index % 4)) 32
     let value : BitVec 128 := lane 3 ++ lane 2 ++ lane 1 ++ lane 0
     Ensures program (· = initial) (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
-      status := .running (program.nextAddress address) }) := by
+      status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -108,15 +105,16 @@ theorem pshufd (program : Program) (address : Nat) (destination source : Xmm) (o
 16-byte access and changes only the destination XMM register and fallthrough PC. -/
 theorem load_xmm (program : Program) (address : Nat) (operation : XmmMove)
     (destination : Xmm) (source : Address) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.loadXmm operation destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.loadXmm operation destination source) := by rivet_fetch)
     (readable : permits initial.memory.readable (source.evaluate initial.registers).toNat 16 = true := by
       first | assumption | rfl) :
     let pointer := (source.evaluate initial.registers).toNat
     let value := readBytes initial.memory pointer 16
     Ensures program (· = initial) (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
-      status := .running (program.nextAddress address)
+      status := .running ((address + length) % word)
       readHistory := initial.readHistory ++ [⟨pointer,16⟩] }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -128,15 +126,16 @@ theorem load_xmm (program : Program) (address : Nat) (operation : XmmMove)
 Only write permission is required; registers, flags, and read history are preserved. -/
 theorem store_xmm (program : Program) (address : Nat) (operation : XmmMove)
     (destination : Address) (source : Xmm) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.storeXmm operation destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.storeXmm operation destination source) := by rivet_fetch)
     (writable : permits initial.memory.writable (destination.evaluate initial.registers).toNat 16 = true := by
       first | assumption | rfl) :
     let pointer := (destination.evaluate initial.registers).toNat
     Ensures program (· = initial) (· = { initial with
       memory := initial.memory.storeBytes pointer 16
         (fun offset => ((initial.xmmRegisters source).extractLsb' (8 * offset) 8).toFin)
-      status := .running (program.nextAddress address) }) := by
+      status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -148,10 +147,11 @@ theorem store_xmm (program : Program) (address : Nat) (operation : XmmMove)
 reads memory nor changes flags or read history. -/
 theorem lea (program : Program) (address : Nat) (destination : Reg) (source : Address)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.lea destination source) := by first | rfl | assumption | decide +kernel) :
+    (code : InstructionAt program address length (.lea destination source) := by rivet_fetch) :
     Ensures program (· = initial) (· = { initial.write destination (source.evaluate initial.registers) with
-      status := .running (program.nextAddress address) }) := by
+      status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -162,13 +162,14 @@ theorem lea (program : Program) (address : Nat) (destination : Reg) (source : Ad
 clearing its parent register's upper half and recording only actual memory reads. -/
 theorem movzx (program : Program) (address : Nat) (destination : Reg32) (source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.movzx destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.movzx destination source) := by rivet_fetch)
     (valid : source.width = some .byte ∨ source.width = some .word := by
       first | assumption | exact Or.inl rfl | exact Or.inr rfl)
     (readable : initial.canRead source = true := by first | assumption | simp) :
     Ensures program (· = initial) (· = { initial.write destination.parent (initial.readOperand source) with
-      status := .running (program.nextAddress address)
+      status := .running ((address + length) % word)
       readHistory := (initial.recordRead source).readHistory }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -182,12 +183,13 @@ theorem movzx (program : Program) (address : Nat) (destination : Reg32) (source 
 memory sources require read permission and append their access to read history. -/
 theorem movsxd (program : Program) (address : Nat) (destination : Reg) (source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.movsxd destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.movsxd destination source) := by rivet_fetch)
     (valid : source.width = some .dword := by first | rfl | assumption)
     (readable : initial.canRead source = true := by first | assumption | simp) :
     Ensures program (· = initial) (· = { initial.write destination ((initial.readOperand source).setWidth 32 |>.signExtend 64) with
-      status := .running (program.nextAddress address)
+      status := .running ((address + length) % word)
       readHistory := (initial.recordRead source).readHistory }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -198,8 +200,9 @@ theorem movsxd (program : Program) (address : Nat) (destination : Reg) (source :
 -- Interpreter plumbing is shared privately; public rules expose opcode semantics.
 private theorem binary (operation : BinaryOp) (program : Program) (address : Nat)
     (destination source : Operand) (initial : MachineState) (width : Width)
+    {length : Nat}
     (location : initial.status = .running address)
-    (code : InstructionAt program address (.binary operation destination source))
+    (code : InstructionAt program address length (.binary operation destination source))
     (hasWidth : destination.width = some width)
     (valid : validBinary operation destination source = true)
     (leftReadable : initial.canRead destination = true)
@@ -210,7 +213,7 @@ private theorem binary (operation : BinaryOp) (program : Program) (address : Nat
     let result := operation.result left right initial.carryFlag
     let updated := if operation.writes then initial.writeOperand destination (result.setWidth 64) else initial
     Ensures program (· = initial) (· = { updated with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := operation.carry left right result initial.carryFlag, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   apply Ensures.of_step
@@ -232,8 +235,9 @@ private theorem sub_beq_zero (left right : BitVec width) :
 /-- Successful ADD for every supported scalar width and operand form. -/
 theorem add (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .add destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .add destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -249,7 +253,7 @@ theorem add (program : Program) (address : Nat) (destination source : Operand)
     let right := (initial.readOperand source).setWidth width.bits
     let result := left + right
     Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := result < left, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .add program address destination source initial width location code hasWidth valid
@@ -258,8 +262,9 @@ theorem add (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful SUB for every supported scalar width and operand form. -/
 theorem sub (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .sub destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .sub destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -275,7 +280,7 @@ theorem sub (program : Program) (address : Nat) (destination source : Operand)
     let right := (initial.readOperand source).setWidth width.bits
     let result := left - right
     Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := left < right, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .sub program address destination source initial width location code hasWidth valid
@@ -284,8 +289,9 @@ theorem sub (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful SBB for every supported scalar width and operand form. -/
 theorem sbb (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .sbb destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .sbb destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -301,7 +307,7 @@ theorem sbb (program : Program) (address : Nat) (destination source : Operand)
     let right := (initial.readOperand source).setWidth width.bits
     let result := left - right - (if initial.carryFlag then 1 else 0)
     Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := left < right || (initial.carryFlag && left == right), signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .sbb program address destination source initial width location code hasWidth valid
@@ -310,8 +316,9 @@ theorem sbb (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful CMP for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
 theorem compare (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .cmp destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .cmp destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -326,7 +333,7 @@ theorem compare (program : Program) (address : Nat) (destination source : Operan
     let right := (initial.readOperand source).setWidth width.bits
     let result := left - right
     Ensures program (· = initial) (· = { initial with
-      status := .running (program.nextAddress address), zeroFlag := left == right,
+      status := .running ((address + length) % word), zeroFlag := left == right,
       carryFlag := left < right, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   simpa only [BinaryOp.writes, Bool.false_eq_true, ite_false, BinaryOp.result, BinaryOp.carry, sub_beq_zero] using
@@ -336,8 +343,9 @@ theorem compare (program : Program) (address : Nat) (destination source : Operan
 /-- Successful TEST for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
 theorem test (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .test destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .test destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -352,7 +360,7 @@ theorem test (program : Program) (address : Nat) (destination source : Operand)
     let right := (initial.readOperand source).setWidth width.bits
     let result := left &&& right
     Ensures program (· = initial) (· = { initial with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := false, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .test program address destination source initial width location code hasWidth valid
@@ -361,8 +369,9 @@ theorem test (program : Program) (address : Nat) (destination source : Operand)
 /-- Successful AND for every supported scalar width and operand form. -/
 theorem bitwise_and (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .and destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .and destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -378,7 +387,7 @@ theorem bitwise_and (program : Program) (address : Nat) (destination source : Op
     let right := (initial.readOperand source).setWidth width.bits
     let result := left &&& right
     Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := false, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .and program address destination source initial width location code hasWidth valid
@@ -387,8 +396,9 @@ theorem bitwise_and (program : Program) (address : Nat) (destination source : Op
 /-- Successful OR for every supported scalar width and operand form. -/
 theorem bitwise_or (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .or destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .or destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -404,7 +414,7 @@ theorem bitwise_or (program : Program) (address : Nat) (destination source : Ope
     let right := (initial.readOperand source).setWidth width.bits
     let result := left ||| right
     Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := false, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .or program address destination source initial width location code hasWidth valid
@@ -413,8 +423,9 @@ theorem bitwise_or (program : Program) (address : Nat) (destination source : Ope
 /-- Successful XOR for every supported scalar width and operand form. -/
 theorem bitwise_xor (program : Program) (address : Nat) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.binary .xor destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.binary .xor destination source) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -430,7 +441,7 @@ theorem bitwise_xor (program : Program) (address : Nat) (destination source : Op
     let right := (initial.readOperand source).setWidth width.bits
     let result := left ^^^ right
     Ensures program (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
-      status := .running (program.nextAddress address), zeroFlag := result == 0,
+      status := .running ((address + length) % word), zeroFlag := result == 0,
       carryFlag := false, signFlag := result.msb
       readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
   exact binary .xor program address destination source initial width location code hasWidth valid
@@ -441,8 +452,9 @@ The result and carry flag are specified; SF/ZF remain unconstrained for every
 undefined-flag choice supply. Source reads always use the initial state. -/
 theorem imul (program : Program) (address : Nat) (destination source : Operand)
     (immediate : Option Int) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.imul destination source immediate) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.imul destination source immediate) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -461,7 +473,7 @@ theorem imul (program : Program) (address : Nat) (destination source : Operand)
     let result := BitVec.ofInt width.bits product
     Ensures program (· = initial) (fun final => ∃ sign zero : Bool,
       final = { initial.writeOperand destination (result.setWidth 64) with
-        status := .running (program.nextAddress address)
+        status := .running ((address + length) % word)
         carryFlag := result.toInt != product, signFlag := sign, zeroFlag := zero
         readHistory := (initial.recordRead source).readHistory }) := by
   apply Ensures.of_step
@@ -479,8 +491,9 @@ encoded count is masked to the operand width. Zero masked counts preserve flags,
 but still write the destination (and clear the upper half of an r32 parent). -/
 theorem shift (program : Program) (address : Nat) (operation : ShiftOp)
     (destination : Operand) (count : Nat) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.shift operation destination count) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.shift operation destination count) := by rivet_fetch)
     (width : Width := match destination.width with
       | some width => width
       | none => .qword)
@@ -494,9 +507,9 @@ theorem shift (program : Program) (address : Nat) (operation : ShiftOp)
       | .shr => BitVec.ushiftRight value amount
     let updated := initial.writeOperand destination (result.setWidth 64)
     Ensures program (· = initial) (· = if amount == 0 then
-      { updated with status := .running (program.nextAddress address) }
+      { updated with status := .running ((address + length) % word) }
     else { updated with
-      status := .running (program.nextAddress address)
+      status := .running ((address + length) % word)
       carryFlag := value.getLsbD (match operation with | .shl => width.bits - amount | .shr => amount - 1)
       zeroFlag := result == 0, signFlag := result.msb }) := by
   apply Ensures.of_step
@@ -519,12 +532,13 @@ theorem shift (program : Program) (address : Nat) (operation : ShiftOp)
 flags; memory destinations require read/write permission and record the read. -/
 theorem bitwise_not (program : Program) (address : Nat) (destination : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.not destination) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.not destination) := by rivet_fetch)
     (readable : initial.canRead destination = true := by first | assumption | simp)
     (writable : initial.canWrite destination = true := by first | assumption | simp) :
     Ensures program (· = initial) (· = { initial.writeOperand destination (~~~(initial.readOperand destination)) with
-      status := .running (program.nextAddress address)
+      status := .running ((address + length) % word)
       readHistory := (initial.recordRead destination).readHistory }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -536,12 +550,13 @@ theorem bitwise_not (program : Program) (address : Nat) (destination : Operand)
 It requires only write access to its destination and performs no memory read. -/
 theorem setcc (program : Program) (address : Nat) (condition : Condition) (destination : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.setcc condition destination) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.setcc condition destination) := by rivet_fetch)
     (valid : destination.width = some .byte := by first | rfl | assumption)
     (writable : initial.canWrite destination = true := by first | assumption | simp) :
     Ensures program (· = initial) (· = { initial.writeOperand destination (if condition.holds initial then 1 else 0) with
-      status := .running (program.nextAddress address) }) := by
+      status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -553,14 +568,15 @@ through the destination preserves narrow-register semantics, including clearing
 the upper half of a 32-bit destination on both paths. Flags are preserved. -/
 theorem cmovcc (program : Program) (address : Nat) (condition : Condition) (destination source : Operand)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.cmovcc condition destination source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.cmovcc condition destination source) := by rivet_fetch)
     (valid : validConditionalMove destination source = true := by
       first | assumption | simp [validConditionalMove])
     (readable : initial.canRead source = true := by first | assumption | simp) :
     let value := if condition.holds initial then initial.readOperand source else initial.readOperand destination
     Ensures program (· = initial) (· = { initial.writeOperand destination value with
-      status := .running (program.nextAddress address)
+      status := .running ((address + length) % word)
       readHistory := (initial.recordRead source).readHistory }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -569,11 +585,12 @@ theorem cmovcc (program : Program) (address : Nat) (condition : Condition) (dest
   simp [stepOp, valid, readable, next, location]
 
 theorem inc (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.inc register) := by decide +kernel) :
+    {length : Nat}
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address length (.inc register) := by rivet_fetch) :
     let result := initial.registers register + 1
     Ensures program (· = initial) (· = { initial.write register result with
-      status := .running (program.nextAddress address), zeroFlag := result == 0, signFlag := result.msb }) := by
+      status := .running ((address + length) % word), zeroFlag := result == 0, signFlag := result.msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -581,11 +598,12 @@ theorem inc (program : Program) (address : Nat) (register : Reg) (initial : Mach
   simp_all [MachineState.write, stepOp, next] <;> try rfl
 
 theorem dec (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.dec register) := by decide +kernel) :
+    {length : Nat}
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt program address length (.dec register) := by rivet_fetch) :
     let result := initial.registers register - 1
     Ensures program (· = initial) (· = { initial.write register result with
-      status := .running (program.nextAddress address), zeroFlag := result == 0, signFlag := result.msb }) := by
+      status := .running ((address + length) % word), zeroFlag := result == 0, signFlag := result.msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -594,10 +612,11 @@ theorem dec (program : Program) (address : Nat) (register : Reg) (initial : Mach
 
 /-- NOP preserves the entire state except for advancing the program counter. -/
 theorem nop (program : Program) (address : Nat) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address .nop := by first | rfl | assumption | decide +kernel) :
+    (code : InstructionAt program address length .nop := by rivet_fetch) :
     Ensures program (· = initial) (· = { initial with
-      status := .running (program.nextAddress address) }) := by
+      status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -606,8 +625,9 @@ theorem nop (program : Program) (address : Nat) (initial : MachineState)
 
 /-- JMP preserves the entire state except for setting the program counter. -/
 theorem jump (program : Program) (address target : Nat) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.jmp target) := by first | rfl | assumption | decide +kernel) :
+    (code : InstructionAt program address length (.jmp target) := by rivet_fetch) :
     Ensures program (· = initial) (· = { initial with status := .running target }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -619,10 +639,11 @@ theorem jump (program : Program) (address target : Nat) (initial : MachineState)
 registers, flags, memory, or read history. Covers every modeled condition. -/
 theorem branch (program : Program) (address : Nat) (condition : Condition) (target : Nat)
     (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.jcc condition target) := by first | rfl | assumption | decide +kernel) :
+    (code : InstructionAt program address length (.jcc condition target) := by rivet_fetch) :
     Ensures program (· = initial) (· = { initial with
-      status := .running (if condition.holds initial then target else program.nextAddress address) }) := by
+      status := .running (if condition.holds initial then target else ((address + length) % word)) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -633,13 +654,14 @@ theorem branch (program : Program) (address : Nat) (condition : Condition) (targ
 /-- PUSH stores the source's initial 64-bit value before updating RSP. Only
 write permission for the eight-byte slot at the decremented pointer is required. -/
 theorem push (program : Program) (address : Nat) (source : Reg) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.push source) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.push source) := by rivet_fetch)
     (writable : permits initial.memory.writable (initial.registers .rsp - 8).toNat 8 = true := by
       first | assumption | rfl) :
     Ensures program (· = initial) (· = {
       (initial.writeMemory (initial.registers .rsp - 8).toNat .qword (initial.registers source)).write
-        .rsp (initial.registers .rsp - 8) with status := .running (program.nextAddress address) }) := by
+        .rsp (initial.registers .rsp - 8) with status := .running ((address + length) % word) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -651,14 +673,15 @@ theorem push (program : Program) (address : Nat) (source : Reg) (initial : Machi
 For POP RSP the loaded value replaces the incremented pointer. Flags and memory
 are preserved, and the eight-byte read is recorded at the original pointer. -/
 theorem pop (program : Program) (address : Nat) (destination : Reg) (initial : MachineState)
+    {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt program address (.pop destination) := by first | rfl | assumption | decide +kernel)
+    (code : InstructionAt program address length (.pop destination) := by rivet_fetch)
     (readable : permits initial.memory.readable (initial.registers .rsp).toNat 8 = true := by
       first | assumption | rfl) :
     Ensures program (· = initial) (· = {
       (initial.write .rsp (initial.registers .rsp + 8)).write destination
         (readBytes initial.memory (initial.registers .rsp).toNat 8) with
-      status := .running (program.nextAddress address)
+      status := .running ((address + length) % word)
       readHistory := initial.readHistory ++ [⟨(initial.registers .rsp).toNat,8⟩] }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -667,12 +690,13 @@ theorem pop (program : Program) (address : Nat) (destination : Reg) (initial : M
   simp [stepOp, readable, next, MachineState.write, location]
 
 theorem call (program : Program) (address target : Nat) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
+    {length : Nat}
+    (location : initial.status = .running address := by first | rfl | assumption)
     (writable : permits initial.memory.writable (initial.registers .rsp - 8).toNat 8 = true := by rfl)
-    (code : InstructionAt program address (.call target) := by decide +kernel) :
+    (code : InstructionAt program address length (.call target) := by rivet_fetch) :
     Ensures program (· = initial) (· = {
       (initial.writeMemory (initial.registers .rsp - 8).toNat .qword
-        (BitVec.ofNat 64 (program.nextAddress address))).write .rsp (initial.registers .rsp - 8) with
+        (BitVec.ofNat 64 (((address + length) % word)))).write .rsp (initial.registers .rsp - 8) with
       status := .running target }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -682,8 +706,9 @@ theorem call (program : Program) (address target : Nat) (initial : MachineState)
   rw [ite_eq_left writable]
 
 theorem return_ (program : Program) (address : Nat) (initial : MachineState)
-    (location : initial.status = .running address) (slot : initial.ValidReturnSlot)
-    (code : InstructionAt program address .ret := by decide +kernel) :
+    {length : Nat}
+    (location : initial.status = .running address := by first | rfl | assumption) (slot : initial.ValidReturnSlot)
+    (code : InstructionAt program address length .ret := by rivet_fetch) :
     Ensures program (· = initial) (· = { initial.write .rsp (initial.registers .rsp + 8) with
       status := .running initial.returnAddress, readHistory := initial.readHistory ++ [⟨(initial.registers .rsp).toNat,8⟩] }) := by
   apply Ensures.of_step
@@ -692,13 +717,14 @@ theorem return_ (program : Program) (address : Nat) (initial : MachineState)
   rw [one code location undefinedFlags]
   simp_all [MachineState.write, MachineState.ValidReturnSlot, MachineState.returnAddress, stepOp]
 theorem move (program : Program) (address : Nat) (destination source : Operand) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
+    {length : Nat}
+    (location : initial.status = .running address := by first | rfl | assumption)
     (valid : validMove destination source = true := by decide +kernel)
     (readable : initial.canRead source = true := by rfl)
     (writable : initial.canWrite destination = true := by rfl)
-    (code : InstructionAt program address (.mov destination source) := by decide +kernel) :
+    (code : InstructionAt program address length (.mov destination source) := by rivet_fetch) :
     Ensures program (· = initial) (· = { initial.writeOperand destination (initial.readOperand source) with
-      status := .running (program.nextAddress address), readHistory := (initial.recordRead source).readHistory }) := by
+      status := .running ((address + length) % word), readHistory := (initial.recordRead source).readHistory }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
