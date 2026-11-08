@@ -64,7 +64,8 @@ pub fn module(
             if index + 1 < regions.len() { "," } else { "" }
         )?;
     }
-    writeln!(source, "]\n\nend {namespace}")?;
+    // An address index lets proofs look up instructions in logarithmic time.
+    writeln!(source, "]\n\nrivet_index program\n\nend {namespace}")?;
     Ok(source)
 }
 
