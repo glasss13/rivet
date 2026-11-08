@@ -328,6 +328,47 @@ theorem bitwise_xor (program : Program) (address : Nat) (destination source : Op
   exact binary .xor program address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
+/-- Successful SHL/SHR for supported immediate-count register forms. The
+encoded count is masked to the operand width. Zero masked counts preserve flags,
+but still write the destination (and clear the upper half of an r32 parent). -/
+theorem shift (program : Program) (address : Nat) (operation : ShiftOp)
+    (destination : Operand) (count : Nat) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.shift operation destination count) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validShift destination count = true := by
+      first | assumption | (simp [validShift] <;> omega)) :
+    let amount := count % width.bits
+    let value := (initial.readOperand destination).setWidth width.bits
+    let result : BitVec width.bits := match operation with
+      | .shl => BitVec.shiftLeft value amount
+      | .shr => BitVec.ushiftRight value amount
+    let updated := initial.writeOperand destination (result.setWidth 64)
+    Ensures program (· = initial) (· = if amount == 0 then
+      { updated with status := .running (program.nextAddress address) }
+    else { updated with
+      status := .running (program.nextAddress address)
+      carryFlag := value.getLsbD (match operation with | .shl => width.bits - amount | .shr => amount - 1)
+      zeroFlag := result == 0, signFlag := result.msb }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  have zero (value : BitVec width.bits) : (value.toNat == 0) = (value == 0) := by
+    apply Bool.eq_iff_iff.mpr
+    simp only [beq_iff_eq]
+    constructor
+    · intro equal; exact BitVec.eq_of_toNat_eq equal
+    · intro equal; rw [equal]; rfl
+  simp only [stepOp, valid, ite_true]
+  rw [hasWidth]
+  simp only [Option.getD_some]
+  cases operation <;> split <;>
+    simp only [zero] <;> simp_all [next, ExecutionStatus.advance]
+
 /-- NOT complements a supported register or memory destination without changing
 flags; memory destinations require read/write permission and record the read. -/
 theorem bitwise_not (program : Program) (address : Nat) (destination : Operand)
