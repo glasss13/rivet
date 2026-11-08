@@ -397,24 +397,4 @@ theorem move (program : Program) (address : Nat) (destination source : Operand) 
   rw [one code location undefinedFlags]
   simp [stepOp, next, ExecutionStatus.advance, location, valid, readable, writable]
 
-theorem write_byte (program : Program) (address : Nat) (base : Reg) (source : Reg8) (initial : MachineState)
-    (location : initial.status = .running address) (allowed : initial.memory.writable (initial.registers base).toNat = true)
-    (code : InstructionAt program address (.mov (.memory .byte { base := some base }) (.reg8 source)) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial.writeMemory (initial.registers base).toNat .byte
-      (((initial.registers source.parent).setWidth 8).setWidth 64) with
-      status := .running (program.nextAddress address) }) := by
-  apply Ensures.of_step
-  intro actual equal undefinedFlags
-  subst actual
-  rw [one code location undefinedFlags]
-  have bound : (initial.registers base).toNat + 1 ≤ word := by
-    have := (initial.registers base).isLt
-    unfold word
-    omega
-  simp [stepOp, validMove, Operand.width, MachineState.canRead, MachineState.canWrite,
-    MachineState.writeOperand, MachineState.readOperand, MachineState.recordRead,
-    Address.evaluate, Scale.value,
-    permits, next, ExecutionStatus.advance, allowed, bound]
-  simp [MachineState.writeMemory, location]
-
 end Rivet
