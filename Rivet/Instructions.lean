@@ -328,6 +328,44 @@ theorem bitwise_xor (program : Program) (address : Nat) (destination source : Op
   exact binary .xor program address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
+/-- Successful truncating signed IMUL for every modeled width and operand form.
+The result and carry flag are specified; SF/ZF remain unconstrained for every
+undefined-flag choice supply. Source reads always use the initial state. -/
+theorem imul (program : Program) (address : Nat) (destination source : Operand)
+    (immediate : Option Int) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.imul destination source immediate) := by first | assumption | decide +kernel)
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validImul destination source immediate = true := by
+      first | assumption | (
+        dsimp +instances [validImul, validConditionalMove, validBinary, validMove, Operand.width]
+        all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
+        all_goals omega))
+    (readable : initial.canRead source = true := by first | assumption | simp) :
+    let sourceValue := (initial.readOperand source).setWidth width.bits
+    let multiplier : BitVec width.bits := match immediate with
+      | none => (initial.readOperand destination).setWidth width.bits
+      | some value => BitVec.ofInt width.bits value
+    let product := sourceValue.toInt * multiplier.toInt
+    let result := BitVec.ofInt width.bits product
+    Ensures program (· = initial) (fun final => ∃ sign zero : Bool,
+      final = { initial.writeOperand destination (result.setWidth 64) with
+        status := .running (program.nextAddress address)
+        carryFlag := result.toInt != product, signFlag := sign, zeroFlag := zero
+        readHistory := (initial.recordRead source).readHistory }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  refine ⟨undefinedFlags.signFlag, undefinedFlags.zeroFlag, ?_⟩
+  rw [one code location undefinedFlags]
+  simp only [stepOp, valid, readable, Bool.true_and, ite_true]
+  rw [hasWidth]
+  simp only [Option.getD_some, next, ExecutionStatus.advance, MachineState.writeOperand_status, location]
+  cases immediate <;> rfl
+
 /-- Successful SHL/SHR for supported immediate-count register forms. The
 encoded count is masked to the operand width. Zero masked counts preserve flags,
 but still write the destination (and clear the upper half of an r32 parent). -/
