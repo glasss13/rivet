@@ -296,20 +296,6 @@ theorem bitwise_xor (program : Program) (address : Nat) (destination source : Op
   exact binary .xor program address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-theorem clear (program : Program) (address : Nat) (destination : Reg32) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.binary .xor (.reg32 destination) (.reg32 destination)) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial.write destination.parent 0 with
-      status := .running (program.nextAddress address), zeroFlag := true, carryFlag := false, signFlag := false }) := by
-  simpa using bitwise_xor program address (.reg32 destination) (.reg32 destination) initial location code
-
-theorem test_zero (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
-    (location : initial.status = .running address := by rfl)
-    (code : InstructionAt program address (.binary .test (.reg64 register) (.reg64 register)) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial with
-      status := .running (program.nextAddress address), zeroFlag := initial.registers register == 0, carryFlag := false, signFlag := (initial.registers register).msb }) := by
-  simpa using Rivet.test program address (.reg64 register) (.reg64 register) initial location code
-
 theorem inc (program : Program) (address : Nat) (register : Reg) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
     (code : InstructionAt program address (.inc register) := by decide +kernel) :
