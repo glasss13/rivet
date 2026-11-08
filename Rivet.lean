@@ -1,4 +1,4 @@
 module
-public import Rivet.Contracts
+public import Rivet.Instructions
 public import Rivet.ExecutionProperties
 public import Rivet.Memory

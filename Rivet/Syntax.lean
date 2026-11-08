@@ -12,7 +12,7 @@ inductive Reg32 where
   | eax | ebx | ecx | edx | esi | edi | ebp | esp
   | r8d | r9d | r10d | r11d | r12d | r13d | r14d | r15d
   deriving DecidableEq
-@[simp] def Reg32.parent : Reg32 → Reg
+def Reg32.parent : Reg32 → Reg
   | .eax => .rax
   | .ebx => .rbx
   | .ecx => .rcx
@@ -34,7 +34,7 @@ inductive Reg32 where
 inductive Reg8 where
   | al | bl | cl | dl | sil | dil | bpl | spl | r8l | r9l | r10l | r11l | r12l | r13l | r14l | r15l
   deriving DecidableEq
-@[simp] def Reg8.parent : Reg8 → Reg
+def Reg8.parent : Reg8 → Reg
   | .al => .rax
   | .bl => .rbx
   | .cl => .rcx
@@ -54,7 +54,7 @@ inductive Reg8 where
 inductive Reg16 where
   | ax | bx | cx | dx | si | di | bp | sp | r8w | r9w | r10w | r11w | r12w | r13w | r14w | r15w
   deriving DecidableEq
-@[simp] def Reg16.parent : Reg16 → Reg
+def Reg16.parent : Reg16 → Reg
   | .ax => .rax
   | .bx => .rbx
   | .cx => .rcx
@@ -72,6 +72,20 @@ inductive Reg16 where
   | .r14w => .r14
   | .r15w => .r15
 
+-- Parent registers of symbolic aliases stay abstract; concrete aliases reduce.
+attribute [simp] Reg8.parent.eq_1 Reg8.parent.eq_2 Reg8.parent.eq_3 Reg8.parent.eq_4
+  Reg8.parent.eq_5 Reg8.parent.eq_6 Reg8.parent.eq_7 Reg8.parent.eq_8
+  Reg8.parent.eq_9 Reg8.parent.eq_10 Reg8.parent.eq_11 Reg8.parent.eq_12
+  Reg8.parent.eq_13 Reg8.parent.eq_14 Reg8.parent.eq_15 Reg8.parent.eq_16
+  Reg16.parent.eq_1 Reg16.parent.eq_2 Reg16.parent.eq_3 Reg16.parent.eq_4
+  Reg16.parent.eq_5 Reg16.parent.eq_6 Reg16.parent.eq_7 Reg16.parent.eq_8
+  Reg16.parent.eq_9 Reg16.parent.eq_10 Reg16.parent.eq_11 Reg16.parent.eq_12
+  Reg16.parent.eq_13 Reg16.parent.eq_14 Reg16.parent.eq_15 Reg16.parent.eq_16
+  Reg32.parent.eq_1 Reg32.parent.eq_2 Reg32.parent.eq_3 Reg32.parent.eq_4
+  Reg32.parent.eq_5 Reg32.parent.eq_6 Reg32.parent.eq_7 Reg32.parent.eq_8
+  Reg32.parent.eq_9 Reg32.parent.eq_10 Reg32.parent.eq_11 Reg32.parent.eq_12
+  Reg32.parent.eq_13 Reg32.parent.eq_14 Reg32.parent.eq_15 Reg32.parent.eq_16
+
 /-- The sixteen legacy 128-bit XMM registers available in 64-bit mode. -/
 inductive Xmm where
   | xmm0 | xmm1 | xmm2 | xmm3 | xmm4 | xmm5 | xmm6 | xmm7
@@ -86,10 +100,11 @@ inductive Width where
   | byte | word | dword | qword
   deriving DecidableEq
 
-def Width.bytes : Width → Nat
+@[simp] abbrev Width.bytes : Width → Nat
   | .byte => 1 | .word => 2 | .dword => 4 | .qword => 8
 
-def Width.bits (width : Width) : Nat := 8 * width.bytes
+@[simp] abbrev Width.bits : Width → Nat
+  | .byte => 8 | .word => 16 | .dword => 32 | .qword => 64
 
 inductive Scale where
   | one | two | four | eight
@@ -115,7 +130,7 @@ inductive Operand where
   | immediate (value : Int)
   deriving DecidableEq
 
-def Operand.width : Operand → Option Width
+abbrev Operand.width : Operand → Option Width
   | .reg8 _ => some .byte | .reg16 _ => some .word
   | .reg32 _ => some .dword | .reg64 _ => some .qword
   | .memory width _ => some width | .immediate _ => none
