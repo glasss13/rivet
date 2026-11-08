@@ -32,28 +32,56 @@ private theorem one (code : InstructionAt program address instruction)
 
 -- Every instruction has the same contract shape as a multi-instruction block.
 -- `code` is checked automatically for concrete programs, or supplied explicitly.
-theorem read_byte (program : Program) (address : Nat) (destination : Reg32) (base : Reg) (initial : MachineState)
-    (location : initial.status = .running address) (allowed : initial.memory.readable (initial.registers base).toNat = true)
-    (code : InstructionAt program address (.movzx destination (.memory .byte { base := some base })) := by decide +kernel) :
-    Ensures program (· = initial) (· = { initial.write destination.parent (BitVec.ofNat 64 (initial.memory (initial.registers base).toNat).val) with
-      status := .running (program.nextAddress address), readHistory := initial.readHistory ++ [⟨(initial.registers base).toNat,1⟩] }) := by
+/-- LEA computes an effective address from the initial registers. It neither
+reads memory nor changes flags or read history. -/
+theorem lea (program : Program) (address : Nat) (destination : Reg) (source : Address)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.lea destination source) := by first | assumption | decide +kernel) :
+    Ensures program (· = initial) (· = { initial.write destination (source.evaluate initial.registers) with
+      status := .running (program.nextAddress address) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  have bound : (initial.registers base).toNat + 1 ≤ word := by
-    have := (initial.registers base).isLt
-    unfold word
-    omega
-  simp_all [ExecutionStatus.advance, MachineState.write, stepOp, next, Address.evaluate, Scale.value,
-    Operand.width, MachineState.canRead, permits, MachineState.readOperand,
-    readBytes, MachineState.recordRead] <;> try rfl
-  have byte (value : Fin 256) :
-      ({toFin := value} : BitVec 8).setWidth 64 = BitVec.ofNat 64 value.val := by
-    apply BitVec.eq_of_toNat_eq
-    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofNat]
-    rfl
-  rw [byte]
+  simp [stepOp, next, ExecutionStatus.advance, MachineState.write, location]
+
+/-- MOVZX zero-extends any modeled byte or word source into a 32-bit destination,
+clearing its parent register's upper half and recording only actual memory reads. -/
+theorem movzx (program : Program) (address : Nat) (destination : Reg32) (source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.movzx destination source) := by first | assumption | decide +kernel)
+    (valid : source.width = some .byte ∨ source.width = some .word := by
+      first | assumption | exact Or.inl rfl | exact Or.inr rfl)
+    (readable : initial.canRead source = true := by first | assumption | simp) :
+    Ensures program (· = initial) (· = { initial.write destination.parent (initial.readOperand source) with
+      status := .running (program.nextAddress address)
+      readHistory := (initial.recordRead source).readHistory }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  have encoded : (source.width == some .byte || source.width == some .word) = true := by
+    simpa only [Bool.or_eq_true, beq_iff_eq] using valid
+  simp [stepOp, encoded, readable, next, ExecutionStatus.advance, MachineState.write, location]
+
+/-- MOVSXD sign-extends any modeled dword source to 64 bits. Flags are preserved;
+memory sources require read permission and append their access to read history. -/
+theorem movsxd (program : Program) (address : Nat) (destination : Reg) (source : Operand)
+    (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.movsxd destination source) := by first | assumption | decide +kernel)
+    (valid : source.width = some .dword := by first | assumption | rfl)
+    (readable : initial.canRead source = true := by first | assumption | simp) :
+    Ensures program (· = initial) (· = { initial.write destination ((initial.readOperand source).setWidth 32 |>.signExtend 64) with
+      status := .running (program.nextAddress address)
+      readHistory := (initial.recordRead source).readHistory }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp [stepOp, valid, readable, next, ExecutionStatus.advance, MachineState.write, location]
 
 -- Interpreter plumbing is shared privately; public rules expose opcode semantics.
 private theorem binary (operation : BinaryOp) (program : Program) (address : Nat)
