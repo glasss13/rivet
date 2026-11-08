@@ -178,14 +178,14 @@ def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (undefine
       let count := count % width
       let value := (state.readOperand destination).setWidth width
       let result : BitVec width := match operation with
-        | .shl => value <<< count
-        | .shr => value >>> count
+        | .shl => BitVec.shiftLeft value count
+        | .shr => BitVec.ushiftRight value count
       -- Even a zero-count r32 shift clears the upper half of its parent register.
       let updated := state.writeOperand destination (result.setWidth 64)
       if count == 0 then next nextAddress updated else
         next nextAddress { updated with
           carryFlag := value.getLsbD (match operation with | .shl => width - count | .shr => count - 1)
-          zeroFlag := result == 0
+          zeroFlag := result.toNat == 0
           signFlag := result.msb }
     else { state with status := .fault }
   | .imul destination source immediate =>
