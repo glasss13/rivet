@@ -484,6 +484,42 @@ theorem branch (program : Program) (address : Nat) (condition : Condition) (targ
   simp only [stepOp, ExecutionStatus.advance, location]
   split <;> rfl
 
+/-- PUSH stores the source's initial 64-bit value before updating RSP. Only
+write permission for the eight-byte slot at the decremented pointer is required. -/
+theorem push (program : Program) (address : Nat) (source : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.push source) := by first | assumption | decide +kernel)
+    (writable : permits initial.memory.writable (initial.registers .rsp - 8).toNat 8 = true := by
+      first | assumption | rfl) :
+    Ensures program (· = initial) (· = {
+      (initial.writeMemory (initial.registers .rsp - 8).toNat .qword (initial.registers source)).write
+        .rsp (initial.registers .rsp - 8) with status := .running (program.nextAddress address) }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp only [stepOp, writable, ite_true]
+  simp [next, MachineState.write, MachineState.writeMemory, ExecutionStatus.advance, location]
+
+/-- POP reads the old stack slot, increments RSP, then writes the destination.
+For POP RSP the loaded value replaces the incremented pointer. Flags and memory
+are preserved, and the eight-byte read is recorded at the original pointer. -/
+theorem pop (program : Program) (address : Nat) (destination : Reg) (initial : MachineState)
+    (location : initial.status = .running address := by first | assumption | rfl)
+    (code : InstructionAt program address (.pop destination) := by first | assumption | decide +kernel)
+    (readable : permits initial.memory.readable (initial.registers .rsp).toNat 8 = true := by
+      first | assumption | rfl) :
+    Ensures program (· = initial) (· = {
+      (initial.write .rsp (initial.registers .rsp + 8)).write destination
+        (readBytes initial.memory (initial.registers .rsp).toNat 8) with
+      status := .running (program.nextAddress address)
+      readHistory := initial.readHistory ++ [⟨(initial.registers .rsp).toNat,8⟩] }) := by
+  apply Ensures.of_step
+  intro actual equal undefinedFlags
+  subst actual
+  rw [one code location undefinedFlags]
+  simp [stepOp, readable, next, MachineState.write, ExecutionStatus.advance, location]
+
 theorem call (program : Program) (address target : Nat) (initial : MachineState)
     (location : initial.status = .running address := by rfl)
     (writable : permits initial.memory.writable (initial.registers .rsp - 8).toNat 8 = true := by rfl)
