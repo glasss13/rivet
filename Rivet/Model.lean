@@ -59,8 +59,7 @@ def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVe
 /-- Write a whole value after its complete range has passed permission checks. -/
 def MachineState.writeMemory (state : MachineState) (address : Nat) (width : Width)
     (value : BitVec 64) : MachineState :=
-  { state with memory := state.memory.storeBytes address width.bytes (fun offset =>
-      ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩) }
+  { state with memory := state.memory.storeBytes address width.bytes (littleEndianBytes value) }
 
 def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
   | .reg8 register => ((state.registers register.parent).setWidth 8).setWidth 64

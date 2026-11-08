@@ -22,7 +22,7 @@ attribute [simp] Operand.width.eq_1 Operand.width.eq_2 Operand.width.eq_3
     (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
 
-@[simp] theorem MachineState.write_readHistory (state : MachineState) (register : Reg)
+@[simp] private theorem MachineState.write_readHistory (state : MachineState) (register : Reg)
     (value : BitVec 64) : (state.write register value).readHistory = state.readHistory := rfl
 
 private theorem one (code : InstructionAt program address length instruction)

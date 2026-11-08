@@ -4,17 +4,6 @@ public meta import Lean
 @[expose] public section
 namespace Rivet
 
-/-- Little-endian bytes of a 64-bit value, as stored by `MachineState.writeMemory`.
-A named form, so that rewriting the value does not pass through `Fin.mk`'s proof. -/
-def littleEndianBytes (value : BitVec 64) : Nat → Fin 256 :=
-  fun offset => ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩
-
-theorem MachineState.writeMemory_eq_storeBytes (state : MachineState) (address : Nat)
-    (width : Width) (value : BitVec 64) :
-    state.writeMemory address width value =
-      { state with memory := state.memory.storeBytes address width.bytes (littleEndianBytes value) } :=
-  rfl
-
 namespace Step
 -- Address normalization: `Option.getD` leaves a numeral zero (`OfNat` form) for an
 -- absent base or index. Rewriting only these keeps other numerals untouched.
@@ -236,10 +225,8 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   its path condition as a hypothesis, stated in terms of named states.
 * `rivet_step tracking [status, registers, memory]` records only those fields
   (default: all). Later facts that depend on an untracked field are dropped.
-* `rivet_step using e` applies the contract application `e` instead of looking
-  one up.
 -/
-syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")? (" using " term)?
+syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")?
   (" as " ident)? (" tracking " "[" ident,* "]")? : tactic
 
 open Step in
@@ -249,14 +236,14 @@ open Step in
   let (instruction, instructionProof) ← fetch program pc
   let operation := instruction.getArg! 2
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
-  let named? : Option Name := if stx[3].getNumArgs > 0 then some stx[3][1].getId else none
+  let named? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
   let tracked : List Name :=
-    if stx[4].getNumArgs > 0 then (stx[4][2].getSepArgs.map (·.getId)).toList else fields
+    if stx[3].getNumArgs > 0 then (stx[3][2].getSepArgs.map (·.getId)).toList else fields
   for field in tracked do
     unless fields.contains field do throwError "rivet_step: unknown field `{field}`"
   -- 1. The contract, with side conditions as goals; discharge what we can.
   let mut unsolved : Array MVarId := #[]
-  let contract : Term ← if stx[2].getNumArgs > 0 then pure ⟨stx[2][1]⟩ else do
+  let contract : Term ← do
     let (name, operands) ← contractFor operation
     let (proof, sides) ← instantiate name (#[program, mkNatLit pc] ++ operands ++ #[old])
     let main ← getMainGoal
@@ -302,7 +289,7 @@ open Step in
   let locations : Array (TSyntax `term) := internal.map (⟨mkIdent ·⟩)
   evalTactic (← `(tactic| try simp only [MachineState.writeOperand,
       MachineState.readOperand, MachineState.recordRead, MachineState.write,
-      MachineState.writeMemory_eq_storeBytes, Operand.width, Width.bits, Width.bytes,
+      MachineState.writeMemory, Operand.width, Width.bits, Width.bytes,
       BitVec.setWidth_eq, List.append_assoc, List.cons_append, List.nil_append,
       -- The successor `(pc + length) % word` reduces to a numeral.
       word, Nat.reducePow, Nat.reduceAdd, Nat.reduceMod,

@@ -105,6 +105,11 @@ theorem Memory.read_storeBytes_outside (memory : Memory) (address size : Nat) (b
   rw [memory.read_storeBytes address size bytes other (by intro inside; exact False.elim (excluded inside))]
   exact ite_eq_right excluded
 
+/-- Little-endian bytes of a 64-bit value: byte `offset` is what
+`MachineState.writeMemory` stores and what `readBytes` decodes. -/
+def littleEndianBytes (value : BitVec 64) : Nat → Fin 256 :=
+  fun offset => ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩
+
 /-- Little-endian bytes, independent of scalar or vector instruction widths.
 This raw read does not check permissions. -/
 def readBytes (memory : Nat → Fin 256) (address size : Nat) : BitVec (8 * size) :=
