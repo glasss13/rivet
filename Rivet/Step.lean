@@ -1,6 +1,5 @@
 module
 public import Rivet.Instructions
-public import Rivet.Index
 public meta import Lean
 @[expose] public section
 namespace Rivet
@@ -59,44 +58,50 @@ private meta def findPc (state : Expr) : MetaM (Nat × Expr) := do
     if let some pc ← (evalNat (← whnfD address)).run then return (pc, .fvar decl.fvarId)
   throwError "rivet_step: no hypothesis `{state}.status = .running <numeral>`"
 
+private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
+
 /-- The instruction at an address: its operation, the fall-through address, and
-(with an index) proofs of `InstructionAt` and of the fall-through address. -/
+(for a generated suffix chain) proofs of `InstructionAt` and of the fall-through address. -/
 private structure Fetched where
   operation : Expr
   next : Nat
   code? : Option Expr
   nextProof? : Option Expr
 
-/-- Look up the instruction at `pc`. With an index from `rivet_index`, lookup and
-its proofs take time logarithmic in the program size; otherwise the program
-list is evaluated. -/
+/-- Look up the instruction at `pc`.
+
+Generated programs are chains of suffixes with a step `program.from_<pc>` per
+instruction: `∀ a, pc ≤ a → program.fetch a = suffix.fetch a`, where `suffix`
+starts with the instruction at `pc`. Then lookup and its proofs take constant time
+in the program size. Otherwise the program list is evaluated. -/
 private meta def fetch (program : Expr) (pc : Nat) : MetaM Fetched := withTransparency .all do
   let address := mkNatLit pc
   if let some name := program.constName? then
-    let indexName := name ++ `instructionTree_indexes
-    if (← getEnv).contains indexName then
-      let tree := mkConst (name ++ `instructionTree)
-      let index := mkConst indexName
-      let lookup := mkApp2 (mkConst ``InstructionTree.lookup) tree address
-      let found ← whnf lookup
-      unless found.isAppOfArity ``Option.some 2 do
-        throwError "rivet_step: no instruction at address {pc}"
-      let instruction ← whnf found.appArg!
+    let stepName := name ++ Name.mkSimple s!"from_{hex pc}"
+    if (← getEnv).contains stepName then
+      let same := mkApp2 (mkConst stepName) address (mkApp (mkConst ``Nat.le_refl) address)
+      let some (_, _, fetched) := (← instantiateMVars (← inferType same)).eq?
+        | throwError "rivet_step: unexpected type for {stepName}"
+      let suffix := fetched.appFn!.appArg!
+      let list ← whnf suffix
+      unless list.isAppOfArity ``List.cons 3 do throwError "rivet_step: {stepName} has an empty suffix"
+      let instruction ← whnf (list.getArg! 1)
       unless instruction.isAppOfArity ``Instruction.mk 3 do
         throwError "rivet_step: cannot decode the instruction at {pc}"
-      let operation ← whnf instruction.appArg!
       let some length ← (evalNat (← whnf (instruction.getArg! 1))).run
         | throwError "rivet_step: cannot compute the address after {pc}"
+      let operation ← whnf instruction.appArg!
       let next := (pc + length) % 2^64
-      -- `(tree.lookup pc).map Instruction.op = some operation`, by evaluation in the kernel.
-      let foundType ← mkEq (← mkAppM ``Option.map #[mkConst ``Instruction.op, lookup])
-        (← mkAppM ``Option.some #[operation])
-      let foundProof ← mkExpectedTypeHint (← mkEqRefl (← mkAppM ``Option.some #[operation])) foundType
-      let code ← mkAppM ``InstructionTree.Indexes.instruction #[index, foundProof]
-      let nextEquation ← mkAppM ``InstructionTree.Indexes.nextAddress_eq #[index, address]
-      let some (_, _, value) := (← inferType nextEquation).eq? | throwError "rivet_step: bad index"
-      let evaluated ← mkExpectedTypeHint (← mkEqRefl (mkNatLit next)) (← mkEq value (mkNatLit next))
-      return { operation, next, code? := some code, nextProof? := some (← mkEqTrans nextEquation evaluated) }
+      -- `(program.fetch pc).map op = (suffix.fetch pc).map op = some operation`; the
+      -- second step evaluates only the head of `suffix` in the kernel.
+      let mapOp ← mkAppM ``Option.map #[mkConst ``Instruction.op]
+      let some_ ← mkAppM ``Option.some #[operation]
+      let headCode ← mkExpectedTypeHint (← mkEqRefl some_) (← mkEq (mkApp mapOp fetched) some_)
+      let code ← mkEqTrans (← mkCongrArg mapOp same) headCode
+      let nextSame ← mkAppM ``Program.nextAddress_congr #[same]
+      let some (_, _, suffixNext) := (← inferType nextSame).eq? | throwError "rivet_step: bad chain"
+      let headNext ← mkExpectedTypeHint (← mkEqRefl (mkNatLit next)) (← mkEq suffixNext (mkNatLit next))
+      return { operation, next, code? := some code, nextProof? := some (← mkEqTrans nextSame headNext) }
   let found ← whnf (← mkAppM ``Program.fetch #[program, address])
   unless found.isAppOfArity ``Option.some 2 do
     throwError "rivet_step: no instruction at address {pc}"
@@ -244,8 +249,6 @@ private meta def retire (old : FVarId) : TacticM Unit := withMainContext do
   else goal ← goal.tryClear old
   replaceMainGoal [goal]
 
-private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
-
 end Step
 
 /--
@@ -268,8 +271,9 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   the contract's parameter name (`case writable`, `case slot`, …).
   `rivet_step (disch := tac)` replaces the fallback discharger (`simp [*]`);
   `rfl`, `decide` and `assumption` are always tried first.
-* **Lookup.** With an index from `rivet_index program`, instructions are found
-  and their facts proved in logarithmic time; otherwise the list is evaluated.
+* **Lookup.** For programs generated as suffix chains (as by `rivet-import`),
+  instructions are found and their facts proved in constant time; otherwise the
+  list is evaluated.
 * **Conditional jumps** produce goals tagged `taken` and `fallthrough`, each with
   its path condition as a hypothesis.
 * `rivet_step tracking [status, registers, memory]` records only those fields

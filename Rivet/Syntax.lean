@@ -229,6 +229,19 @@ def Program.fetch (program : Program) (address : Nat) : Option Instruction :=
 /-- The byte address following an instruction, with 64-bit address arithmetic. -/
 def Program.nextAddress (program : Program) (address : Nat) : Nat :=
   ((program.fetch address).map fun instruction => (address + instruction.length) % word).getD address
+
+/-- Fetching past an instruction with a lower address skips it. Generated programs
+chain these steps so each instruction's lookup is checked in constant time. -/
+theorem Program.fetch_cons_of_lt {instruction : Instruction} {rest : Program} {address : Nat}
+    (lower : instruction.address < address) :
+    Program.fetch (instruction :: rest) address = Program.fetch rest address := by
+  have differs : (instruction.address == address) = false := by simp; omega
+  simp [Program.fetch, differs]
+
+theorem Program.nextAddress_congr {program other : Program} {address : Nat}
+    (same : program.fetch address = other.fetch address) :
+    program.nextAddress address = other.nextAddress address := by
+  simp [Program.nextAddress, same]
 structure Access where
   address : Nat
   size : Nat

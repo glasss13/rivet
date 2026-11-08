@@ -2,10 +2,15 @@
 
 `rivet-import` reads all defined function symbols from a linked x86-64 ELF executable,
 decodes their code with iced-x86, and writes a Lean module containing `entry : Nat`,
-`program : Rivet.Program`, and `regions : List Rivet.MemoryRegion`. It ends with
-`rivet_index program`, so `rivet_step` looks up instructions in logarithmic time.
-Addresses, instruction encodings, and initial segment data come from the binary.
-No assembly text is parsed along the way.
+`program : Rivet.Program`, and `regions : List Rivet.MemoryRegion`. Addresses,
+instruction encodings, and initial segment data come from the binary. No assembly
+text is parsed along the way.
+
+`program` is emitted as a chain of suffixes (`program.suffix_<address>`, listed
+last to first because each refers to the next) with one Lean-checked step per
+instruction (`program.from_<address>`). These let proofs, including `rivet_step`,
+fetch any instruction in time independent of the program size. Instructions are
+emitted in strictly increasing address order, which the steps rely on.
 
 ```sh
 cargo run --release -p rivet-import -- ./example \
