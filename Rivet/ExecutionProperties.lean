@@ -6,10 +6,6 @@ namespace Rivet
 @[simp] private theorem writeMemory_registers (state : MachineState) (address : Nat) (width : Width)
     (value : BitVec 64) : (state.writeMemory address width value).registers = state.registers := rfl
 
-@[simp] theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
-    (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
-  cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
-
 @[simp] private theorem writeMemory_readHistory (state : MachineState) (address : Nat) (width : Width)
     (value : BitVec 64) : (state.writeMemory address width value).readHistory = state.readHistory := rfl
 
