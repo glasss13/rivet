@@ -79,8 +79,9 @@ Each loadable segment is emitted three ways:
 - as `segment_<address> : Rivet.Memory`, its bytes at their absolute addresses.
   These use a `ByteArray` and return zero past its end, so BSS does not expand the
   generated source;
-- in `Loaded (memory : Rivet.Memory) : Prop`, which says `memory.Holds start stop
-  segment_<address>` for every segment: what the loader guarantees.
+- in `Loaded (memory : Rivet.Memory) : Prop`, which says that for every segment,
+  `memory address = segment_<address> address` at each address in it: what the
+  loader guarantees.
 
 Addresses are emitted as `BitVec 64` literals (`0x401000#64`). Build the image
 from the segments plus the caller's regions, and assume `Loaded` of the initial

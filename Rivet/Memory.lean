@@ -216,7 +216,7 @@ theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : BitVec
 /-! ## The image -/
 
 /-- Addresses `[start, stop)` and what the program may do with them. A region
-carries no bytes: what memory holds there is a fact about memory (`Memory.Holds`). -/
+carries no bytes: what memory holds there is a fact about memory. -/
 structure Region where
   start : BitVec 64
   stop : BitVec 64
@@ -241,13 +241,5 @@ def Image.readable (image : Image) (address : BitVec 64) : Bool :=
 /-- An address is writable when some region containing it is writable. -/
 def Image.writable (image : Image) (address : BitVec 64) : Bool :=
   image.regions.any fun region => region.writable && region.start ≤ address && address < region.stop
-
-/-! ## Known bytes -/
-
-/-- Memory holds `bytes` at every address in `[start, stop)`. The importer states
-the loaded segments of a binary this way; other addresses are unconstrained.
-`readBytes_congr` reads from such a range. -/
-def Memory.Holds (memory : Memory) (start stop : BitVec 64) (bytes : Memory) : Prop :=
-  ∀ address, start ≤ address → address < stop → memory address = bytes address
 
 end Rivet

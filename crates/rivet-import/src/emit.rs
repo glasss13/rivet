@@ -84,7 +84,7 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
         .iter()
         .map(|segment| {
             format!(
-                "memory.Holds {:#x}#64 {:#x}#64 segment_{:x}",
+                "(∀ address, {:#x}#64 ≤ address → address < {:#x}#64 → memory address = segment_{:x} address)",
                 segment.address,
                 segment.address + segment.size,
                 segment.address
