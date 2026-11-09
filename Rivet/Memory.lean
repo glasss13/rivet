@@ -92,7 +92,7 @@ private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
         inductionHypothesis (fun other member => bounded other (List.mem_cons_of_mem _ member))]
   exact each _ (fun offset member => List.mem_range.mp member)
 
-private theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Nat}
+private theorem readBytes_offsets_congr {first second : Memory} {address : BitVec 64} {size : Nat}
     (same : ∀ offset < size, first (address + BitVec.ofNat 64 offset) = second (address + BitVec.ofNat 64 offset)) :
     readBytes first address size = readBytes second address size := by
   unfold readBytes
@@ -104,13 +104,23 @@ private theorem covered {address : BitVec 64} {size offset : Nat}
     address ≤ address + BitVec.ofNat 64 offset ∧ address + BitVec.ofNat 64 offset < address + BitVec.ofNat 64 size := by
   bv_omega
 
+/-- Memories that agree on the addresses a read covers give the same read. -/
+theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Nat}
+    (agree : ∀ other, address ≤ other → other < address + BitVec.ofNat 64 size → first other = second other)
+    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
+    readBytes first address size = readBytes second address size := by
+  apply readBytes_offsets_congr
+  intro offset bound
+  have ⟨above, below⟩ := covered fits small bound
+  exact agree _ above below
+
 /-- A read inside a store sees the stored bytes. -/
 theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : Memory)
     {start stop address : BitVec 64} {size : Nat}
     (lower : start ≤ address) (upper : address + BitVec.ofNat 64 size ≤ stop)
     (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
     readBytes (memory.storeBytes start stop bytes) address size = readBytes bytes address size := by
-  apply readBytes_congr
+  apply readBytes_offsets_congr
   intro offset bound
   have ⟨above, below⟩ := covered fits small bound
   have inside : start ≤ address + BitVec.ofNat 64 offset ∧ address + BitVec.ofNat 64 offset < stop := by
@@ -123,7 +133,7 @@ theorem Memory.readBytes_storeBytes_disjoint (memory : Memory) (bytes : Memory)
     (away : address + BitVec.ofNat 64 size ≤ start ∨ stop ≤ address)
     (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
     readBytes (memory.storeBytes start stop bytes) address size = readBytes memory address size := by
-  apply readBytes_congr
+  apply readBytes_offsets_congr
   intro offset bound
   have ⟨above, below⟩ := covered fits small bound
   exact Memory.read_storeBytes_outside _ _ _ _ _ (by bv_omega)
@@ -198,7 +208,7 @@ theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : BitVec
     (away : ∀ other, address ≤ other → other < address + BitVec.ofNat 64 size → ¬ footprint other)
     (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
     Rivet.readBytes after address size = Rivet.readBytes before address size := by
-  apply readBytes_congr
+  apply readBytes_offsets_congr
   intro offset bound
   have ⟨above, below⟩ := covered fits small bound
   exact agree _ (away _ above below)
@@ -213,126 +223,31 @@ structure Region where
   readable : Bool
   writable : Bool
 
-def Region.contains (region : Region) (address : BitVec 64) : Bool :=
-  region.start ≤ address && address < region.stop
-
-/-- Two regions share no address. -/
-def Region.Disjoint (first second : Region) : Prop :=
-  first.stop ≤ first.start ∨ second.stop ≤ second.start ∨
-    first.stop ≤ second.start ∨ second.stop ≤ first.start
-
 /-- What the loader fixes for a run: the code, and the regions of the address space
 with their permissions. Neither changes during execution; only memory's bytes do. -/
 structure Image where
   program : Program
   regions : List Region := []
 
+/-! A permission is a fact about regions. For an image whose regions are listed,
+`simp [Image.writable]` (with the image's definition) turns `image.writable a`
+into "`a` lies in one of the writable regions", a disjunction of bounds that
+`bv_omega` decides from facts in context; `permits_iff` does the same for a range. -/
+
 /-- An address is readable when some region containing it is readable. -/
 def Image.readable (image : Image) (address : BitVec 64) : Bool :=
-  image.regions.any fun region => region.contains address && region.readable
+  image.regions.any fun region => region.readable && region.start ≤ address && address < region.stop
 
 /-- An address is writable when some region containing it is writable. -/
 def Image.writable (image : Image) (address : BitVec 64) : Bool :=
-  image.regions.any fun region => region.contains address && region.writable
-
-/-! A permission comes from a region: name the region, show it is in
-`image.regions`, and show the addresses lie between its start and stop. For a
-literal image, membership is `by simp [image]`; bounds are `bv_omega` goals. -/
-
-theorem Image.readable_of_mem {image : Image} {region : Region} (member : region ∈ image.regions)
-    (allowed : region.readable = true) {address : BitVec 64}
-    (lower : region.start ≤ address) (upper : address < region.stop) : image.readable address = true :=
-  List.any_eq_true.mpr ⟨region, member, by simp [Region.contains, allowed, lower, upper]⟩
-
-theorem Image.writable_of_mem {image : Image} {region : Region} (member : region ∈ image.regions)
-    (allowed : region.writable = true) {address : BitVec 64}
-    (lower : region.start ≤ address) (upper : address < region.stop) : image.writable address = true :=
-  List.any_eq_true.mpr ⟨region, member, by simp [Region.contains, allowed, lower, upper]⟩
-
-/-- An access to `[start, stop)` inside a readable region is permitted. -/
-theorem Image.permits_readable_of_mem {image : Image} {region : Region} (member : region ∈ image.regions)
-    (allowed : region.readable = true) {start stop : BitVec 64}
-    (lower : region.start ≤ start) (valid : start ≤ stop) (upper : stop ≤ region.stop) :
-    permits image.readable start stop = true :=
-  (permits_iff _ _ _).mpr ⟨valid, fun _ above below =>
-    Image.readable_of_mem member allowed (by bv_omega) (by bv_omega)⟩
-
-/-- An access to `[start, stop)` inside a writable region is permitted. -/
-theorem Image.permits_writable_of_mem {image : Image} {region : Region} (member : region ∈ image.regions)
-    (allowed : region.writable = true) {start stop : BitVec 64}
-    (lower : region.start ≤ start) (valid : start ≤ stop) (upper : stop ≤ region.stop) :
-    permits image.writable start stop = true :=
-  (permits_iff _ _ _).mpr ⟨valid, fun _ above below =>
-    Image.writable_of_mem member allowed (by bv_omega) (by bv_omega)⟩
-
-/-- When regions do not overlap, the region containing an address decides its
-permissions: an address in a region that is not writable is unwritable. -/
-private theorem any_of_disjoint {regions : List Region} (disjoint : regions.Pairwise Region.Disjoint)
-    (field : Region → Bool) {region : Region} (member : region ∈ regions) {address : BitVec 64}
-    (contains : region.contains address = true) :
-    (regions.any fun other => other.contains address && field other) = field region := by
-  induction regions with
-  | nil => cases member
-  | cons head rest inductionHypothesis =>
-    rw [List.pairwise_cons] at disjoint
-    rcases List.mem_cons.mp member with equal | later
-    · subst equal
-      have outside : (rest.any fun other => other.contains address && field other) = false := by
-        apply List.any_eq_false.mpr
-        intro other inside both
-        have apart := disjoint.1 other inside
-        simp only [Region.Disjoint] at apart
-        simp only [Region.contains, Bool.and_eq_true, decide_eq_true_eq] at contains both
-        bv_omega
-      simp [List.any_cons, contains, outside]
-    · have missing : head.contains address = false := by
-        have apart := disjoint.1 region later
-        simp only [Region.Disjoint] at apart
-        simp only [Region.contains, Bool.and_eq_true, decide_eq_true_eq] at contains
-        simp only [Region.contains, Bool.and_eq_false_imp, decide_eq_true_eq, decide_eq_false_iff_not]
-        bv_omega
-      simp [List.any_cons, missing, inductionHypothesis disjoint.2 later]
-
-/-- In a disjoint image, an address inside a region is readable exactly when the region is. -/
-theorem Image.readable_eq_of_mem {image : Image} (disjoint : image.regions.Pairwise Region.Disjoint)
-    {region : Region} (member : region ∈ image.regions) {address : BitVec 64}
-    (lower : region.start ≤ address) (upper : address < region.stop) :
-    image.readable address = region.readable :=
-  any_of_disjoint disjoint Region.readable member (by simp [Region.contains, lower, upper])
-
-/-- In a disjoint image, an address inside a region is writable exactly when the
-region is; so read-only data is unwritable. -/
-theorem Image.writable_eq_of_mem {image : Image} (disjoint : image.regions.Pairwise Region.Disjoint)
-    {region : Region} (member : region ∈ image.regions) {address : BitVec 64}
-    (lower : region.start ≤ address) (upper : address < region.stop) :
-    image.writable address = region.writable :=
-  any_of_disjoint disjoint Region.writable member (by simp [Region.contains, lower, upper])
+  image.regions.any fun region => region.writable && region.start ≤ address && address < region.stop
 
 /-! ## Known bytes -/
 
 /-- Memory holds `bytes` at every address in `[start, stop)`. The importer states
-the loaded segments of a binary this way; other addresses are unconstrained. -/
+the loaded segments of a binary this way; other addresses are unconstrained.
+`readBytes_congr` reads from such a range. -/
 def Memory.Holds (memory : Memory) (start stop : BitVec 64) (bytes : Memory) : Prop :=
   ∀ address, start ≤ address → address < stop → memory address = bytes address
-
-/-- A read inside a range memory holds sees those bytes. -/
-theorem Memory.Holds.readBytes {memory bytes : Memory} {start stop : BitVec 64}
-    (holds : memory.Holds start stop bytes) {address : BitVec 64} {size : Nat}
-    (lower : start ≤ address) (upper : address + BitVec.ofNat 64 size ≤ stop)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
-    Rivet.readBytes memory address size = Rivet.readBytes bytes address size := by
-  apply readBytes_congr
-  intro offset bound
-  have ⟨above, below⟩ := covered fits small bound
-  exact holds _ (by bv_omega) (by bv_omega)
-
-/-- Bytes a run leaves alone are still held: combine with `Reaches.preserves_unwritable`
-or a footprint `SameOutside` to keep loaded constants after stores elsewhere. -/
-theorem Memory.Holds.of_sameOutside {before after bytes : Memory} {start stop : BitVec 64}
-    {footprint : BitVec 64 → Prop} (holds : before.Holds start stop bytes)
-    (agree : before.SameOutside after footprint)
-    (away : ∀ address, start ≤ address → address < stop → ¬ footprint address) :
-    after.Holds start stop bytes :=
-  fun address lower upper => (agree address (away address lower upper)).trans (holds address lower upper)
 
 end Rivet
