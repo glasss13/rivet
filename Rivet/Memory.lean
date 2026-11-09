@@ -3,107 +3,37 @@ public import Rivet.Syntax
 @[expose] public section
 namespace Rivet
 
-/-- A memory range with offset-indexed contents, concrete or symbolic. -/
-structure MemoryRegion where
-  address : Nat
-  size : Nat
-  contents : Nat → Fin 256 := fun _ => 0
-  readable : Bool
-  writable : Bool
-
-def MemoryRegion.contains (region : MemoryRegion) (address : Nat) : Bool :=
-  region.address ≤ address && address < region.address + region.size
-
-/-- Regions must be disjoint and contained in the 64-bit address space. -/
-def MemoryRegion.validLayout : List MemoryRegion → Bool
-  | [] => true
-  | region :: rest =>
-    region.address + region.size ≤ word &&
-    rest.all (fun other => region.size == 0 || other.size == 0 ||
-      region.address + region.size ≤ other.address || other.address + other.size ≤ region.address) &&
-    validLayout rest
-
-/-- A complete memory layout. Its validity proof is preserved by stores. -/
+/-- The flat 64-bit address space: a byte and read and write permissions at every
+address. Unmapped addresses have neither permission. Build one from a layout with
+`Memory.ofRegions`. -/
 structure Memory where
-  regions : List MemoryRegion
-  valid : MemoryRegion.validLayout regions = true := by decide +kernel
+  bytes : Nat → Fin 256 := fun _ => 0
+  readable : Nat → Bool := fun _ => false
+  writable : Nat → Bool := fun _ => false
 
-/-- Checked construction for runtime layouts. Symbolic layouts can supply `valid` directly. -/
-def Memory.ofRegions (regions : List MemoryRegion) : Except String Memory :=
-  if valid : MemoryRegion.validLayout regions = true then .ok ⟨regions, valid⟩
-  else .error "memory regions overlap or exceed the 64-bit address space"
+instance : CoeFun Memory (fun _ => Nat → Fin 256) := ⟨Memory.bytes⟩
 
-/-- Inspect a byte; instruction semantics check read permission before loading it. -/
-def Memory.read (memory : Memory) (address : Nat) : Fin 256 :=
-  match memory.regions.find? (·.contains address) with
-  | some region => region.contents (address - region.address)
-  | none => 0
-
-instance : CoeFun Memory (fun _ => Nat → Fin 256) := ⟨Memory.read⟩
-
-def Memory.readable (memory : Memory) (address : Nat) : Bool :=
-  memory.regions.any fun region => region.contains address && region.readable
-
-def Memory.writable (memory : Memory) (address : Nat) : Bool :=
-  memory.regions.any fun region => region.contains address && region.writable
-
-private theorem valid_contents (regions : List MemoryRegion) (contents : MemoryRegion → Nat → Fin 256) :
-    MemoryRegion.validLayout (regions.map (fun region => { region with contents := contents region })) =
-      MemoryRegion.validLayout regions := by
-  induction regions with
-  | nil => rfl
-  | cons region rest inductionHypothesis =>
-    simp only [List.map_cons, MemoryRegion.validLayout, inductionHypothesis]
-    simp [List.all_map, Function.comp_def]
-
-/-- Store offset-indexed bytes without changing the layout or permissions. -/
+/-- Store `bytes 0, bytes 1, …` at `address, address + 1, …`. Permissions are
+unchanged; instructions check them before storing. -/
 def Memory.storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256) : Memory :=
-  { regions := memory.regions.map (fun region =>
-      { region with
-        contents := fun offset =>
-          if address ≤ region.address + offset && region.address + offset < address + size then
-            bytes (region.address + offset - address)
-          else region.contents offset })
-    valid := by rw [valid_contents]; exact memory.valid }
+  { memory with bytes := fun other =>
+      if address ≤ other ∧ other < address + size then bytes (other - address) else memory other }
 
 @[simp] theorem Memory.readable_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256) :
-    (memory.storeBytes address size bytes).readable = memory.readable := by
-  funext other
-  simp [Memory.readable, Memory.storeBytes, List.any_map, MemoryRegion.contains, Function.comp_def]
+    (memory.storeBytes address size bytes).readable = memory.readable := rfl
 
 @[simp] theorem Memory.writable_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256) :
-    (memory.storeBytes address size bytes).writable = memory.writable := by
-  funext other
-  simp [Memory.writable, Memory.storeBytes, List.any_map, MemoryRegion.contains, Function.comp_def]
+    (memory.storeBytes address size bytes).writable = memory.writable := rfl
 
-/-- Inside a store, mapping suffices to recover the written byte. Outside it,
-no mapping or permission assumption is needed. -/
-theorem Memory.read_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
-    (other : Nat) (mapped : address ≤ other ∧ other < address + size →
-      ∃ region ∈ memory.regions, region.contains other = true) :
+theorem Memory.read_storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256) (other : Nat) :
     (memory.storeBytes address size bytes) other =
-      if address ≤ other ∧ other < address + size then bytes (other - address) else memory other := by
-  simp only [Memory.storeBytes, Memory.read, List.find?_map, Function.comp_def, MemoryRegion.contains]
-  cases found : memory.regions.find?
-      (fun region => region.address ≤ other && other < region.address + region.size) with
-  | none =>
-    have outside : ¬ (address ≤ other ∧ other < address + size) := by
-      intro inside
-      obtain ⟨region, member, contains⟩ := mapped inside
-      exact (List.find?_eq_none.mp found region member) contains
-    simp [outside]
-  | some region =>
-    have bounds : region.address ≤ other ∧ other < region.address + region.size := by
-      simpa using List.find?_some found
-    simp [Nat.add_sub_of_le bounds.1]
+      if address ≤ other ∧ other < address + size then bytes (other - address) else memory other := rfl
 
-/-- Bytes outside a store are unchanged, even when unmapped. -/
 theorem Memory.read_storeBytes_outside (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
     (other : Nat) (outside : other < address ∨ address + size ≤ other) :
     (memory.storeBytes address size bytes) other = memory other := by
-  have excluded : ¬ (address ≤ other ∧ other < address + size) := by omega
-  rw [memory.read_storeBytes address size bytes other (by intro inside; exact False.elim (excluded inside))]
-  exact ite_eq_right excluded
+  have away : ¬ (address ≤ other ∧ other < address + size) := by omega
+  simp only [Memory.read_storeBytes, away, ↓reduceIte]
 
 /-- Little-endian bytes of a value of any width: byte `offset` is what scalar
 and vector stores write, and what `readBytes` decodes. -/
@@ -179,29 +109,24 @@ theorem readBytes_littleEndianBytes (value : BitVec n) (offset size : Nat) :
   rw [foldr_littleEndian, Nat.pow_mul, Nat.pow_mul]
   simp only [Nat.reducePow, Nat.mod_mod]
 
-/-- Bytes a store does not cover are unchanged, even when unmapped. -/
+/-- A read outside a store sees the bytes from before it. -/
 theorem Memory.readBytes_storeBytes_disjoint (memory : Memory) (bytes : Nat → Fin 256)
     {address size other count : Nat} (away : other + count ≤ address ∨ address + size ≤ other) :
-    readBytes (memory.storeBytes address size bytes) other count = readBytes memory other count :=
-  readBytes_congr fun _ _ => memory.read_storeBytes_outside address size bytes _ (by omega)
+    readBytes (memory.storeBytes address size bytes) other count = readBytes memory other count := by
+  apply readBytes_congr
+  intro offset bound
+  have outside : ¬ (address ≤ other + offset ∧ other + offset < address + size) := by omega
+  simp only [Memory.read_storeBytes, outside, ↓reduceIte]
 
-/-- Reading inside a store returns the stored bytes. The store's write permission
-ensures every byte is mapped (stores to unmapped bytes are dropped). -/
+/-- A read inside a store sees the stored bytes. -/
 theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : Nat → Fin 256)
-    {address size other count : Nat} (writable : permits memory.writable address size = true)
-    (lower : address ≤ other) (upper : other + count ≤ address + size) :
+    {address size other count : Nat} (lower : address ≤ other) (upper : other + count ≤ address + size) :
     readBytes (memory.storeBytes address size bytes) other count =
       readBytes bytes (other - address) count := by
   apply readBytes_congr
   intro offset bound
-  rw [memory.read_storeBytes address size bytes _ (fun inside => by
-    have allowed := ((permits_iff _ _ _).mp writable).2 (other + offset - address) (by omega)
-    rw [show address + (other + offset - address) = other + offset by omega] at allowed
-    simp only [Memory.writable, List.any_eq_true, Bool.and_eq_true] at allowed
-    obtain ⟨region, member, contains, _⟩ := allowed
-    exact ⟨region, member, contains⟩)]
   have inside : address ≤ other + offset ∧ other + offset < address + size := ⟨by omega, by omega⟩
-  simp only [inside, and_self, ↓reduceIte]
+  simp only [Memory.read_storeBytes, inside, and_self, ↓reduceIte]
   rw [show other + offset - address = other - address + offset by omega]
 
 /-- A permission over a range holds over every subrange. -/
@@ -239,9 +164,9 @@ theorem Memory.SameOutside.storeBytes {before after : Memory} {footprint : Nat �
     (inside : ∀ other, address ≤ other → other < address + size → footprint other) :
     before.SameOutside (after.storeBytes address size bytes) footprint := by
   intro other outside
-  rw [after.read_storeBytes_outside address size bytes other
-    ((Nat.lt_or_ge other address).elim Or.inl fun lower =>
-      Or.inr (Nat.le_of_not_lt fun upper => outside (inside other lower upper)))]
+  have away : ¬ (address ≤ other ∧ other < address + size) :=
+    fun ⟨lower, upper⟩ => outside (inside other lower upper)
+  simp only [Memory.read_storeBytes, away, ↓reduceIte]
   exact agree other outside
 
 /-- The frame law: a read outside the footprint sees the original bytes. -/
@@ -251,72 +176,70 @@ theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : Nat �
     Rivet.readBytes after address size = Rivet.readBytes before address size :=
   readBytes_congr fun offset bound => agree _ (away _ (by omega) (by omega))
 
-/-! ## Facts from the layout
+/-! ## Building memory from regions -/
 
-Each lemma takes `member : region ∈ memory.regions`. For a layout given as
-`layout : memory.regions = [...]`, state the region and prove membership by
-`rw [layout]; simp`; ascribing the clean statement then unfolds the region:
+/-- A block of memory with offset-indexed contents, concrete or symbolic. The
+importer emits each loadable segment of a binary as a region. -/
+structure MemoryRegion where
+  address : Nat
+  size : Nat
+  contents : Nat → Fin 256 := fun _ => 0
+  readable : Bool
+  writable : Bool
 
-    have member : ({ address := input, size := count, contents := bytes,
-                     readable := true, writable := false } : MemoryRegion) ∈ memory.regions := by
-      rw [layout]; simp
-    have readable : permits memory.readable input count = true :=
-      memory.permits_readable_of_mem member rfl -/
+def MemoryRegion.contains (region : MemoryRegion) (address : Nat) : Bool :=
+  region.address ≤ address && address < region.address + region.size
 
-private theorem validLayout_iff (regions : List MemoryRegion) :
-    MemoryRegion.validLayout regions = true ↔
-      (∀ region ∈ regions, region.address + region.size ≤ word) ∧
-      regions.Pairwise fun first second => first.size = 0 ∨ second.size = 0 ∨
-        first.address + first.size ≤ second.address ∨ second.address + second.size ≤ first.address := by
-  induction regions with
-  | nil => simp [MemoryRegion.validLayout]
-  | cons region rest inductionHypothesis =>
-    simp only [MemoryRegion.validLayout, Bool.and_eq_true, inductionHypothesis, List.all_eq_true,
-      Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq, List.pairwise_cons, List.mem_cons,
-      forall_eq_or_imp]
-    constructor
-    · intro ⟨⟨fits, apart⟩, restFits, restApart⟩
-      exact ⟨⟨fits, restFits⟩, fun other member => by have := apart other member; omega, restApart⟩
-    · intro ⟨⟨fits, restFits⟩, apart, restApart⟩
-      exact ⟨⟨fits, fun other member => by have := apart other member; omega⟩, restFits, restApart⟩
+/-- Two regions share no address. -/
+def MemoryRegion.Disjoint (first second : MemoryRegion) : Prop :=
+  first.size = 0 ∨ second.size = 0 ∨
+    first.address + first.size ≤ second.address ∨ second.address + second.size ≤ first.address
 
-/-- Distinct regions share no address. -/
-theorem Memory.regions_disjoint (memory : Memory) :
-    memory.regions.Pairwise fun first second => first.size = 0 ∨ second.size = 0 ∨
-      first.address + first.size ≤ second.address ∨ second.address + second.size ≤ first.address :=
-  ((validLayout_iff _).mp memory.valid).2
+/-- Memory laid out as regions. An address has a permission if a region containing
+it grants one, and its byte comes from the first region containing it. Addresses
+outside every region read zero and have no permissions. -/
+def Memory.ofRegions (regions : List MemoryRegion) : Memory where
+  bytes address := match regions.find? (·.contains address) with
+    | some region => region.contents (address - region.address)
+    | none => 0
+  readable address := regions.any fun region => region.contains address && region.readable
+  writable address := regions.any fun region => region.contains address && region.writable
 
-/-- Every region fits in the 64-bit address space. -/
-theorem Memory.fits_of_mem (memory : Memory) {region : MemoryRegion} (member : region ∈ memory.regions) :
-    region.address + region.size ≤ word :=
-  ((validLayout_iff _).mp memory.valid).1 region member
+/-! The lemmas below take `member : region ∈ regions` and read the region's fields
+from it, so their side conditions close by `omega`. State the region when proving
+membership:
 
-private theorem permits_of_mem (memory : Memory) (field : MemoryRegion → Bool) {region : MemoryRegion}
-    (member : region ∈ memory.regions) (allowed : field region = true) {address size : Nat}
-    (lower : region.address ≤ address) (upper : address + size ≤ region.address + region.size) :
-    permits (fun other => memory.regions.any fun region => region.contains other && field region)
-      address size = true := by
-  have fits := memory.fits_of_mem member
+    have input : ({ address := base, size := count, contents := bytes,
+                    readable := true, writable := false } : MemoryRegion) ∈ regions := by
+      simp [regions]
+    have readable : permits (Memory.ofRegions regions).readable base count = true :=
+      Memory.permits_readable_ofRegions input (by omega) -/
+
+private theorem permits_ofRegions (regions : List MemoryRegion) (field : MemoryRegion → Bool)
+    {region : MemoryRegion} (member : region ∈ regions) (allowed : field region = true)
+    (fits : region.address + region.size ≤ word) :
+    permits (fun other => regions.any fun region => region.contains other && field region)
+      region.address region.size = true := by
   rw [permits_iff]
-  refine ⟨by omega, fun offset bound => List.any_eq_true.mpr ⟨region, member, ?_⟩⟩
+  refine ⟨fits, fun offset bound => List.any_eq_true.mpr ⟨region, member, ?_⟩⟩
   simp only [MemoryRegion.contains, allowed, Bool.and_true, Bool.and_eq_true, decide_eq_true_eq]
   omega
 
 /-- A readable region is readable throughout; use `permits_within` for parts of it. -/
-theorem Memory.permits_readable_of_mem (memory : Memory) {region : MemoryRegion}
-    (member : region ∈ memory.regions) (readable : region.readable = true) :
-    permits memory.readable region.address region.size = true :=
-  permits_of_mem memory MemoryRegion.readable member readable (Nat.le_refl _) (Nat.le_refl _)
+theorem Memory.permits_readable_ofRegions {regions : List MemoryRegion} {address size : Nat}
+    {contents : Nat → Fin 256} {writable : Bool}
+    (member : ⟨address, size, contents, true, writable⟩ ∈ regions) (fits : address + size ≤ word) :
+    permits (Memory.ofRegions regions).readable address size = true :=
+  permits_ofRegions regions MemoryRegion.readable member rfl fits
 
 /-- A writable region is writable throughout; use `permits_within` for parts of it. -/
-theorem Memory.permits_writable_of_mem (memory : Memory) {region : MemoryRegion}
-    (member : region ∈ memory.regions) (writable : region.writable = true) :
-    permits memory.writable region.address region.size = true :=
-  permits_of_mem memory MemoryRegion.writable member writable (Nat.le_refl _) (Nat.le_refl _)
+theorem Memory.permits_writable_ofRegions {regions : List MemoryRegion} {address size : Nat}
+    {contents : Nat → Fin 256} {readable : Bool}
+    (member : ⟨address, size, contents, readable, true⟩ ∈ regions) (fits : address + size ≤ word) :
+    permits (Memory.ofRegions regions).writable address size = true :=
+  permits_ofRegions regions MemoryRegion.writable member rfl fits
 
-private theorem find_region {regions : List MemoryRegion}
-    (disjoint : regions.Pairwise fun first second => first.size = 0 ∨ second.size = 0 ∨
-      first.address + first.size ≤ second.address ∨ second.address + second.size ≤ first.address)
+private theorem find_region {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
     {region : MemoryRegion} (member : region ∈ regions) {address : Nat}
     (contains : region.contains address = true) :
     regions.find? (·.contains address) = some region := by
@@ -329,6 +252,7 @@ private theorem find_region {regions : List MemoryRegion}
       rcases List.mem_cons.mp member with equal | later
       · rw [equal]
       · have apart := disjoint.1 region later
+        simp only [MemoryRegion.Disjoint] at apart
         simp only [MemoryRegion.contains, Bool.and_eq_true, decide_eq_true_eq] at here contains
         omega
     · simp only [List.find?_cons, Bool.not_eq_true] at here ⊢
@@ -337,16 +261,60 @@ private theorem find_region {regions : List MemoryRegion}
       · rw [equal] at contains; simp [contains] at here
       · exact inductionHypothesis disjoint.2 later
 
-/-- Inside a region, memory reads the region's contents. -/
-theorem Memory.readBytes_of_mem (memory : Memory) {region : MemoryRegion}
-    (member : region ∈ memory.regions) {address size : Nat}
-    (lower : region.address ≤ address) (upper : address + size ≤ region.address + region.size) :
-    readBytes memory address size = readBytes region.contents (address - region.address) size := by
+private theorem contains_inside {base count address : Nat} {contents : Nat → Fin 256} {readable writable : Bool}
+    (lower : base ≤ address) (upper : address < base + count) :
+    (⟨base, count, contents, readable, writable⟩ : MemoryRegion).contains address = true := by
+  simp only [MemoryRegion.contains, Bool.and_eq_true, decide_eq_true_eq]; omega
+
+private theorem any_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
+    (field : MemoryRegion → Bool) {region : MemoryRegion} (member : region ∈ regions) {address : Nat}
+    (contains : region.contains address = true) :
+    (regions.any fun other => other.contains address && field other) = field region := by
+  have unique : ∀ other ∈ regions, other.contains address = true → other = region := fun other inside hit =>
+    Option.some.inj ((find_region disjoint inside hit).symm.trans (find_region disjoint member contains))
+  cases granted : field region
+  · apply List.any_eq_false.mpr
+    intro other inside both
+    simp only [Bool.and_eq_true] at both
+    rw [unique other inside both.1, granted] at both
+    simp at both
+  · exact List.any_eq_true.mpr ⟨region, member, by simp [contains, granted]⟩
+
+/-- At an address inside a region of a disjoint layout, memory holds the region's byte. -/
+theorem Memory.read_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
+    {base count : Nat} {contents : Nat → Fin 256} {readable writable : Bool}
+    (member : ⟨base, count, contents, readable, writable⟩ ∈ regions) {address : Nat}
+    (lower : base ≤ address) (upper : address < base + count) :
+    (Memory.ofRegions regions) address = contents (address - base) := by
+  have found := find_region disjoint member (contains_inside (address := address) lower upper)
+  simp only [Memory.ofRegions, found]
+
+/-- Inside a region of a disjoint layout, an address is readable exactly when the region is. -/
+theorem Memory.readable_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
+    {base count : Nat} {contents : Nat → Fin 256} {readable writable : Bool}
+    (member : ⟨base, count, contents, readable, writable⟩ ∈ regions) {address : Nat}
+    (lower : base ≤ address) (upper : address < base + count) :
+    (Memory.ofRegions regions).readable address = readable :=
+  any_ofRegions disjoint MemoryRegion.readable member (contains_inside lower upper)
+
+/-- Inside a region of a disjoint layout, an address is writable exactly when the region is;
+so read-only data is unwritable. -/
+theorem Memory.writable_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
+    {base count : Nat} {contents : Nat → Fin 256} {readable writable : Bool}
+    (member : ⟨base, count, contents, readable, writable⟩ ∈ regions) {address : Nat}
+    (lower : base ≤ address) (upper : address < base + count) :
+    (Memory.ofRegions regions).writable address = writable :=
+  any_ofRegions disjoint MemoryRegion.writable member (contains_inside lower upper)
+
+/-- Inside a region of a disjoint layout, memory holds the region's contents. -/
+theorem Memory.readBytes_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
+    {base count : Nat} {contents : Nat → Fin 256} {readable writable : Bool}
+    (member : ⟨base, count, contents, readable, writable⟩ ∈ regions) {address size : Nat}
+    (lower : base ≤ address) (upper : address + size ≤ base + count) :
+    readBytes (Memory.ofRegions regions) address size = readBytes contents (address - base) size := by
   apply readBytes_congr
   intro offset bound
-  have found := find_region memory.regions_disjoint member (address := address + offset) (by
-    simp only [MemoryRegion.contains, Bool.and_eq_true, decide_eq_true_eq]; omega)
-  simp only [Memory.read, found]
-  rw [show address + offset - region.address = address - region.address + offset by omega]
+  rw [Memory.read_ofRegions disjoint member (by omega) (by omega),
+    show address + offset - base = address - base + offset by omega]
 
 end Rivet

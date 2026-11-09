@@ -258,29 +258,24 @@ theorem Reaches.preserves_register (reached : Reaches program initial final) (re
 private structure MemoryInvariant (before after : Memory) : Prop where
   readable : after.readable = before.readable
   writable : after.writable = before.writable
-  unwritable : ∀ address, before.writable address = false → after address = before address
+  unwritable : before.SameOutside after (before.writable · = true)
 
-private theorem MemoryInvariant.refl (memory : Memory) : MemoryInvariant memory memory := ⟨rfl, rfl, by intros; rfl⟩
+private theorem MemoryInvariant.refl (memory : Memory) : MemoryInvariant memory memory :=
+  ⟨rfl, rfl, Memory.SameOutside.refl _ _⟩
 
 private theorem MemoryInvariant.trans (first : MemoryInvariant before middle) (second : MemoryInvariant middle after) :
     MemoryInvariant before after := by
-  refine ⟨second.readable.trans first.readable, second.writable.trans first.writable, ?_⟩
-  intro address readonly
-  rw [second.unwritable address (by rw [first.writable]; exact readonly), first.unwritable address readonly]
+  refine ⟨second.readable.trans first.readable, second.writable.trans first.writable,
+    first.unwritable.trans ?_⟩
+  rw [← first.writable]
+  exact second.unwritable
 
 private theorem MemoryInvariant.storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
     (allowed : permits memory.writable address size = true) :
     MemoryInvariant memory (memory.storeBytes address size bytes) := by
-  refine ⟨Memory.readable_storeBytes _ _ _ _, Memory.writable_storeBytes _ _ _ _, ?_⟩
-  intro other readonly
-  apply Memory.read_storeBytes_outside
-  by_cases before : other < address
-  · exact Or.inl before
-  · by_cases after : address + size ≤ other
-    · exact Or.inr after
-    · have permitted := (permits_iff _ _ _).mp allowed |>.2 (other - address) (by omega)
-      rw [Nat.add_sub_of_le (by omega), readonly] at permitted
-      contradiction
+  refine ⟨rfl, rfl, (Memory.SameOutside.refl _ _).storeBytes bytes fun other lower upper => ?_⟩
+  have permitted := (permits_iff _ _ _).mp allowed |>.2 (other - address) (by omega)
+  rwa [Nat.add_sub_of_le lower] at permitted
 
 private theorem MemoryInvariant.writeMemory (state : MachineState) (address : Nat) (width : Width)
     (value : BitVec 64) (allowed : permits state.memory.writable address width.bytes = true) :
@@ -371,12 +366,11 @@ theorem Reaches.preserves_writable (reached : Reaches program initial final) :
   obtain ⟨choices, steps, rfl⟩ := reached
   exact (execute_memory_invariant program steps initial choices).writable
 
-/-- Every initially unwritable byte is preserved by execution, including faulting
-executions. This covers read-only data and unmapped addresses alike. -/
-theorem Reaches.preserves_unwritable (reached : Reaches program initial final) (address : Nat)
-    (readonly : initial.memory.writable address = false) :
-    final.memory address = initial.memory address := by
+/-- Execution changes memory only where it was writable, including when it faults.
+Read-only data and unmapped addresses are unchanged. -/
+theorem Reaches.preserves_unwritable (reached : Reaches program initial final) :
+    initial.memory.SameOutside final.memory (initial.memory.writable · = true) := by
   obtain ⟨choices, steps, rfl⟩ := reached
-  exact (execute_memory_invariant program steps initial choices).unwritable address readonly
+  exact (execute_memory_invariant program steps initial choices).unwritable
 
 end Rivet

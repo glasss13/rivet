@@ -80,28 +80,21 @@ Construct the complete memory layout before constructing the machine state:
 
 ```lean
 def initial (registers : Rivet.Reg → BitVec 64)
-    (stack input output : Rivet.MemoryRegion) : Except String Rivet.MachineState := do
-  let memory ← Rivet.Memory.ofRegions (Example.regions ++ [stack, input, output])
-  return {
-    memory
-    registers
-    zeroFlag := false
-    status := .running Example.entry
-    readHistory := [] }
+    (stack input output : Rivet.MemoryRegion) : Rivet.MachineState := {
+  memory := Rivet.Memory.ofRegions (Example.regions ++ [stack, input, output])
+  registers
+  zeroFlag := false
+  status := .running Example.entry
+  readHistory := [] }
 ```
 
-`Memory.ofRegions` rejects overlap and addresses beyond the 64-bit address space.
-A `Memory` also carries its layout validity proof, so direct record construction
-must establish the same invariant. For concrete layouts, the `valid` field is
-proved automatically; symbolic layouts can supply that proof explicitly.
-
-`MachineState.memory` is a `Memory`, not an unrestricted byte function. It remains
-callable as `state.memory address`; `state.readable` and `state.writable` derive
-permissions from its regions. Addresses outside every region are inaccessible
-and inspect as zero. Buffers that alias should share a region rather than declare
-overlapping regions. Stores change contents without changing layout or permissions.
-Low-level store helpers rely on instruction semantics to check write permissions.
-`initializeMemory` and the separate permission fields are removed.
+`MachineState.memory` is a flat `Memory`: a byte, a read permission, and a write
+permission at every address. `Memory.ofRegions` builds one from a layout. Addresses
+outside every region are inaccessible and read zero. A byte in overlapping regions
+comes from the first region containing it, so buffers that alias should share a
+region; proofs about region contents assume the regions are pairwise disjoint.
+Stores change bytes without changing permissions. Low-level store helpers rely on
+instruction semantics to check write permissions.
 
 These are the ELF-declared byte ranges and read/write flags, not an exact Linux
 page map. Page rounding, shared boundary pages, dynamic loading, process startup,
