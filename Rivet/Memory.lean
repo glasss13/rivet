@@ -42,7 +42,7 @@ def readBytes (memory : Memory) (address : BitVec 64) (size : Nat) : BitVec (8 *
 def permits (permission : BitVec 64 → Bool) (start stop : BitVec 64) : Bool :=
   start ≤ stop && (List.range (stop - start).toNat).all (fun offset => permission (start + BitVec.ofNat 64 offset))
 
-theorem permits_iff (permission : BitVec 64 → Bool) (start stop : BitVec 64) :
+theorem permits_iff {permission : BitVec 64 → Bool} {start stop : BitVec 64} :
     permits permission start stop = true ↔
       start ≤ stop ∧ ∀ address, start ≤ address → address < stop → permission address = true := by
   simp only [permits, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range]
@@ -58,7 +58,7 @@ theorem permits_iff (permission : BitVec 64 → Bool) (start stop : BitVec 64) :
 /-- A permitted access does not wrap. -/
 theorem permits_valid {permission : BitVec 64 → Bool} {start stop : BitVec 64}
     (allowed : permits permission start stop = true) : start ≤ stop :=
-  ((permits_iff _ _ _).mp allowed).1
+  (permits_iff.mp allowed).1
 
 /-- A permission over a range holds over every subrange. -/
 theorem permits_within {permission : BitVec 64 → Bool} {start stop first last : BitVec 64}

@@ -81,7 +81,8 @@ Each loadable segment is emitted three ways:
   generated source;
 - in `Loaded (memory : Rivet.Memory) : Prop`, which says that for every segment,
   `memory address = segment_<address> address` at each address in it: what the
-  loader guarantees.
+  loader guarantees. It is a structure with one field per segment, named after
+  the segment, so `loaded.segment_<address> a lower upper` gives the byte at `a`.
 
 Addresses are emitted as `BitVec 64` literals (`0x401000#64`). Build the image
 from the segments plus the caller's regions, and assume `Loaded` of the initial

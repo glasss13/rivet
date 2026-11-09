@@ -37,7 +37,7 @@ pub fn module(
 /// Emits the loadable segments three ways: `regions`, their addresses and
 /// permissions for the image; `segment_<a>`, the bytes of the segment at `a`
 /// (zero past the file's data); and `Loaded memory`, that memory holds every
-/// segment's bytes, as the loader leaves it.
+/// segment's bytes, as the loader leaves it, with a field `segment_<a>` per segment.
 fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt::Result {
     writeln!(source, "\n-- Loadable segments: addresses and permissions.")?;
     writeln!(source, "def regions : List Rivet.Region := [")?;
@@ -73,26 +73,24 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
             segment.address
         )?;
     }
+    // One field per segment, named after the segment's bytes, so a proof reads
+    // `loaded.segment_<a>` whatever the number or order of segments.
     writeln!(
         source,
-        "\n-- What the loader guarantees: memory holds each segment's bytes.\ndef Loaded (memory : Rivet.Memory) : Prop :="
+        "\n-- What the loader guarantees: memory holds each segment's bytes.\nstructure Loaded (memory : Rivet.Memory) : Prop{}",
+        if segments.is_empty() { "" } else { " where" }
     )?;
-    if segments.is_empty() {
-        return writeln!(source, "  True");
+    for segment in segments {
+        writeln!(
+            source,
+            "  segment_{:x} : ∀ address, {:#x}#64 ≤ address → address < {:#x}#64 → memory address = segment_{:x} address",
+            segment.address,
+            segment.address,
+            segment.address + segment.size,
+            segment.address
+        )?;
     }
-    let held = segments
-        .iter()
-        .map(|segment| {
-            format!(
-                "(∀ address, {:#x}#64 ≤ address → address < {:#x}#64 → memory address = segment_{:x} address)",
-                segment.address,
-                segment.address + segment.size,
-                segment.address
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ∧\n  ");
-    writeln!(source, "  {held}")
+    Ok(())
 }
 
 /// Emits `program` as a chain of suffixes, so that a proof can fetch any
