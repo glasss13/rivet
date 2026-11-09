@@ -33,9 +33,9 @@ private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
 
-/-- The address `pc` and the hypothesis `state.status = .running pc`, where `pc`
-is a numeral or a definition that unfolds to one. -/
-private meta def findPc (state : Expr) : MetaM (Nat × Expr) := do
+/-- The address in the hypothesis `state.status = .running address`, its value, and
+the hypothesis. The address is a literal or a definition that unfolds to one. -/
+private meta def findPc (state : Expr) : MetaM (Expr × Nat × Expr) := do
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
     let some (_, lhs, rhs) := (← instantiateMVars decl.type).eq? | continue
@@ -43,15 +43,14 @@ private meta def findPc (state : Expr) : MetaM (Nat × Expr) := do
     unless rhs.isAppOfArity ``ExecutionStatus.running 1 do continue
     -- A numeral, or a definition such as an imported `entry` that unfolds to one.
     let address := rhs.appArg!
-    if let some pc ← (evalNat address).run then return (pc, .fvar decl.fvarId)
-    if let some pc ← (evalNat (← whnfD address)).run then return (pc, .fvar decl.fvarId)
-  throwError "rivet_step: no hypothesis `{state}.status = .running <numeral>`"
+    if let some pc ← Fetch.addressValue? address then return (address, pc, .fvar decl.fvarId)
+  throwError "rivet_step: no hypothesis `{state}.status = .running <address>`"
 
 /-- The instruction at `pc` (as `Instruction.mk address length operation`) and a proof
 that `Program.fetch` returns it, from the shared lookup `Fetch.prove`: constant time
 in the program size for generated programs. -/
-private meta def fetch (program : Expr) (pc : Nat) : MetaM (Expr × Expr) := do
-  let some found ← Fetch.prove program pc
+private meta def fetch (program address : Expr) (pc : Nat) : MetaM (Expr × Expr) := do
+  let some found ← Fetch.prove program address pc
     | throwError "rivet_step: no instruction at address {pc}"
   return found
 
@@ -236,8 +235,8 @@ syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")?
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
   let (program, old) ← goalParts (← getMainGoal)
-  let (pc, location) ← findPc old
-  let (instruction, instructionProof) ← fetch program pc
+  let (address, pc, location) ← findPc old
+  let (instruction, instructionProof) ← fetch program address pc
   let operation := instruction.getArg! 2
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
   let named? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
@@ -252,7 +251,7 @@ open Step in
   let pending := (← getGoals).filter (· != mainGoal)
   let contract : Expr ← do
     let (name, operands) ← contractFor operation
-    let (proof, sides) ← instantiate name (#[program, mkNatLit pc] ++ operands ++ #[old])
+    let (proof, sides) ← instantiate name (#[program, address] ++ operands ++ #[old])
     for side in sides do
       -- Location and instruction evidence are known; no context search is needed.
       match ← side.getTag with
@@ -304,8 +303,8 @@ open Step in
       MachineState.readOperand, MachineState.recordRead, MachineState.write,
       MachineState.writeMemory, Operand.width, Width.bits, Width.bytes,
       BitVec.setWidth_eq, List.append_assoc, List.cons_append, List.nil_append,
-      -- The successor `(pc + length) % word` reduces to a numeral.
-      word, Nat.reducePow, Nat.reduceAdd, Nat.reduceMod,
+      -- The successor `address + length` reduces to a literal.
+      BitVec.reduceOfNat, BitVec.reduceAdd,
       -- Addresses as point reads of registers (`r .rbx - 8#64`), never the whole register file.
       Address.evaluate, Scale.value, Option.map_some, Option.map_none, Option.getD_some,
       Option.getD_none, Step.zero_mul, BitVec.mul_one, Step.add_zero, Step.zero_add, BitVec.add_zero,

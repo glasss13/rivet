@@ -10,6 +10,17 @@ namespace Fetch
 
 private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
 
+/-- The value of a closed address: a literal (`0x1000`, `0x1000#64`, `BitVec.ofNat 64 n`),
+or an expression over definitions such as `entry + 3#64`, evaluated by reduction. -/
+meta def addressValue? (address : Expr) : MetaM (Option Nat) := do
+  let address ← instantiateMVars address
+  if let some ⟨_, value⟩ ← getBitVecValue? address then return some value.toNat
+  if address.hasFVar || address.hasMVar then return none
+  try
+    let value ← withTransparency .default <| whnf (← mkAppM ``BitVec.toNat #[address])
+    (evalNat value).run
+  catch _ => return none
+
 /-- The first instruction of a concrete list that `Program.fetch` returns at `pc`,
 found by walking the list (at most `limit` entries). Mirrors `Program.fetch`: the
 address must equal `pc`, `pc` must be a 64-bit address, and the length 1 to 15. -/
@@ -22,25 +33,25 @@ private meta def firstMatch (list : Expr) (pc : Nat) (limit : Nat := 0) : MetaM 
     unless current.isAppOfArity ``List.cons 3 do return none
     let instruction ← whnf (current.getArg! 1)
     unless instruction.isAppOfArity ``Instruction.mk 3 do return none
-    let some address ← (evalNat (← whnf (instruction.getArg! 0))).run | return none
+    let some address ← addressValue? (instruction.getArg! 0) | return none
     let some length ← (evalNat (← whnf (instruction.getArg! 1))).run | return none
-    if address == pc && pc < 2^64 && 0 < length && length ≤ 15 then return some instruction
+    if address == pc && 0 < length && length ≤ 15 then return some instruction
     current := current.getArg! 2
     visited := visited + 1
   return none
 
-/-- For a concrete program and address, the instruction `Program.fetch` returns and
-a proof `program.fetch pc = some instruction`, checked by the kernel.
+/-- For a concrete program and an address `address` with value `pc`, the instruction
+`Program.fetch` returns and a proof `program.fetch address = some instruction`,
+checked by the kernel.
 
 A generated program has a fact `program.from_<pc> : program.FetchesFrom suffix pc`
 whose suffix starts with that instruction; the proof then evaluates only that one
 entry, in time independent of the program size. Otherwise the list is searched. -/
-meta def prove (program : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
-  let address := mkNatLit pc
+meta def prove (program address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
   if let some name := program.constName? then
     let stepName := name ++ Name.mkSimple s!"from_{hex pc}"
     if (← getEnv).contains stepName then
-      let same := mkApp2 (mkConst stepName) address (mkApp (mkConst ``Nat.le_refl) address)
+      let same := mkApp2 (mkConst stepName) address (mkApp2 (mkConst ``BitVec.le_refl) (mkNatLit 64) address)
       let some (_, _, suffixFetch) := (← instantiateMVars (← inferType same)).eq? | return none
       let some instruction ← firstMatch (suffixFetch.appFn!.appArg!) pc (limit := 1) | return none
       let result ← mkAppM ``Option.some #[instruction]
@@ -73,9 +84,10 @@ syntax (name := rivetFetch) "rivet_fetch" : tactic
   unless fetched.isAppOfArity ``Program.fetch 2 do
     throwError "rivet_fetch: goal is not `program.fetch address = some instruction`"
   let program := fetched.getArg! 0
-  let some pc ← (evalNat (← whnfD (fetched.getArg! 1))).run
+  let address := fetched.getArg! 1
+  let some pc ← Fetch.addressValue? address
     | evalTactic (← `(tactic| assumption))
-  match ← Fetch.prove program pc with
+  match ← Fetch.prove program address pc with
   | some (instruction, proof) =>
     unless ← isDefEq expected (← mkAppM ``Option.some #[instruction]) do
       throwError "rivet_fetch: the instruction at address {pc} is `{instruction.getArg! 2}`"

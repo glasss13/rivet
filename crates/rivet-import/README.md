@@ -1,7 +1,7 @@
 # Binary importer
 
 `rivet-import` reads all defined function symbols from a linked x86-64 ELF executable,
-decodes their code with iced-x86, and writes a Lean module containing `entry : Nat`,
+decodes their code with iced-x86, and writes a Lean module containing `entry : BitVec 64`,
 `program : Rivet.Program`, and `regions : List Rivet.MemoryRegion`. Addresses,
 instruction encodings, and initial segment data come from the binary. No assembly
 text is parsed along the way.
@@ -71,8 +71,9 @@ with unsupported instructions also cause import to fail; link only the code you
 need (for example, using function sections and linker garbage collection).
 Errors report the instruction address, and translation errors leave the output file untouched.
 
-Each loadable segment becomes a `MemoryRegion` with `address`, `size`, `contents`,
-`readable`, and `writable`. `contents` maps byte offsets to `Fin 256` values.
+Each loadable segment becomes a `MemoryRegion` with `start`, `stop`, `contents`,
+`readable`, and `writable`, covering `[start, stop)`. `contents` maps absolute
+addresses to `Fin 256` values. Addresses are emitted as `BitVec 64` literals (`0x401000#64`).
 Imported contents use a `ByteArray` and return zero past its end, so BSS does not
 expand the generated source. Handwritten regions can use symbolic byte functions.
 
