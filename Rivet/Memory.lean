@@ -3,30 +3,18 @@ public import Rivet.Syntax
 @[expose] public section
 namespace Rivet
 
-/-- The 64-bit address space: a byte and read and write permissions at every
-address. Unmapped addresses have neither permission. Build one from a layout with
-`Memory.ofRegions`. -/
-structure Memory where
-  bytes : BitVec 64 → Fin 256 := fun _ => 0
-  readable : BitVec 64 → Bool := fun _ => false
-  writable : BitVec 64 → Bool := fun _ => false
-
-instance : CoeFun Memory (fun _ => BitVec 64 → Fin 256) := ⟨Memory.bytes⟩
+/-- The bytes of the 64-bit address space. Permissions are not part of memory:
+they never change during execution, so they belong to the `Image`. -/
+abbrev Memory := BitVec 64 → Fin 256
 
 /-! A range of memory is a pair of addresses `[start, stop)`: the addresses `x`
 with `start ≤ x ∧ x < stop`, compared unsigned. A range with `start ≤ stop` does
 not wrap. Side conditions in these terms close by `bv_omega`. -/
 
 /-- Every address in `[start, stop)` takes its byte from `bytes`; the rest keep
-theirs. Permissions are unchanged; instructions check them before storing. -/
+theirs. Instructions check permissions before storing. -/
 def Memory.storeBytes (memory : Memory) (start stop : BitVec 64) (bytes : BitVec 64 → Fin 256) : Memory :=
-  { memory with bytes := fun address => if start ≤ address ∧ address < stop then bytes address else memory address }
-
-@[simp] theorem Memory.readable_storeBytes (memory : Memory) (start stop : BitVec 64)
-    (bytes : BitVec 64 → Fin 256) : (memory.storeBytes start stop bytes).readable = memory.readable := rfl
-
-@[simp] theorem Memory.writable_storeBytes (memory : Memory) (start stop : BitVec 64)
-    (bytes : BitVec 64 → Fin 256) : (memory.storeBytes start stop bytes).writable = memory.writable := rfl
+  fun address => if start ≤ address ∧ address < stop then bytes address else memory address
 
 theorem Memory.read_storeBytes (memory : Memory) (start stop : BitVec 64) (bytes : BitVec 64 → Fin 256)
     (address : BitVec 64) :
@@ -234,13 +222,24 @@ def MemoryRegion.Disjoint (first second : MemoryRegion) : Prop :=
   first.stop ≤ first.start ∨ second.stop ≤ second.start ∨
     first.stop ≤ second.start ∨ second.stop ≤ first.start
 
-/-- Memory laid out as regions. An address has a permission if a region containing
-it grants one, and its byte comes from the first region containing it. Addresses
-outside every region read zero and have no permissions. -/
-def Memory.ofRegions (regions : List MemoryRegion) : Memory where
-  bytes address := match regions.find? (·.contains address) with
-    | some region => region.contents address
-    | none => 0
+/-- The bytes a layout starts with: each address's byte comes from the first region
+containing it, and addresses outside every region read zero. -/
+def Memory.ofRegions (regions : List MemoryRegion) : Memory := fun address =>
+  match regions.find? (·.contains address) with
+  | some region => region.contents address
+  | none => 0
+
+/-- What the loader fixes for a run: the code, and which addresses may be read or
+written. Neither changes during execution; only memory's bytes do. -/
+structure Image where
+  program : Program
+  readable : BitVec 64 → Bool := fun _ => false
+  writable : BitVec 64 → Bool := fun _ => false
+
+/-- An image whose permissions come from a layout: an address has a permission if a
+region containing it grants one. Addresses outside every region have none. -/
+def Image.ofRegions (program : Program) (regions : List MemoryRegion) : Image where
+  program
   readable address := regions.any fun region => region.contains address && region.readable
   writable address := regions.any fun region => region.contains address && region.writable
 
@@ -250,8 +249,8 @@ from it. State the region when proving membership:
     have input : ({ start := base, stop := limit, contents := bytes,
                     readable := true, writable := false } : MemoryRegion) ∈ regions := by
       simp [regions]
-    have readable : permits (Memory.ofRegions regions).readable base limit = true :=
-      Memory.permits_readable_ofRegions input valid -/
+    have readable : permits (Image.ofRegions program regions).readable base limit = true :=
+      Image.permits_readable_ofRegions input valid -/
 
 private theorem permits_ofRegions (regions : List MemoryRegion) (field : MemoryRegion → Bool)
     {region : MemoryRegion} (member : region ∈ regions) (allowed : field region = true)
@@ -263,17 +262,17 @@ private theorem permits_ofRegions (regions : List MemoryRegion) (field : MemoryR
   simp [MemoryRegion.contains, allowed, lower, upper]
 
 /-- A readable region is readable throughout; use `permits_within` for parts of it. -/
-theorem Memory.permits_readable_ofRegions {regions : List MemoryRegion} {start stop : BitVec 64}
+theorem Image.permits_readable_ofRegions {program : Program} {regions : List MemoryRegion} {start stop : BitVec 64}
     {contents : BitVec 64 → Fin 256} {writable : Bool}
     (member : ⟨start, stop, contents, true, writable⟩ ∈ regions) (valid : start ≤ stop) :
-    permits (Memory.ofRegions regions).readable start stop = true :=
+    permits (Image.ofRegions program regions).readable start stop = true :=
   permits_ofRegions regions MemoryRegion.readable member rfl valid
 
 /-- A writable region is writable throughout; use `permits_within` for parts of it. -/
-theorem Memory.permits_writable_ofRegions {regions : List MemoryRegion} {start stop : BitVec 64}
+theorem Image.permits_writable_ofRegions {program : Program} {regions : List MemoryRegion} {start stop : BitVec 64}
     {contents : BitVec 64 → Fin 256} {readable : Bool}
     (member : ⟨start, stop, contents, readable, true⟩ ∈ regions) (valid : start ≤ stop) :
-    permits (Memory.ofRegions regions).writable start stop = true :=
+    permits (Image.ofRegions program regions).writable start stop = true :=
   permits_ofRegions regions MemoryRegion.writable member rfl valid
 
 private theorem find_region {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
@@ -328,20 +327,20 @@ theorem Memory.read_ofRegions {regions : List MemoryRegion} (disjoint : regions.
   simp only [Memory.ofRegions, found]
 
 /-- Inside a region of a disjoint layout, an address is readable exactly when the region is. -/
-theorem Memory.readable_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
+theorem Image.readable_ofRegions {program : Program} {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
     {start stop : BitVec 64} {contents : BitVec 64 → Fin 256} {readable writable : Bool}
     (member : ⟨start, stop, contents, readable, writable⟩ ∈ regions) {address : BitVec 64}
     (lower : start ≤ address) (upper : address < stop) :
-    (Memory.ofRegions regions).readable address = readable :=
+    (Image.ofRegions program regions).readable address = readable :=
   any_ofRegions disjoint MemoryRegion.readable member (contains_inside lower upper)
 
 /-- Inside a region of a disjoint layout, an address is writable exactly when the region is;
 so read-only data is unwritable. -/
-theorem Memory.writable_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
+theorem Image.writable_ofRegions {program : Program} {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
     {start stop : BitVec 64} {contents : BitVec 64 → Fin 256} {readable writable : Bool}
     (member : ⟨start, stop, contents, readable, writable⟩ ∈ regions) {address : BitVec 64}
     (lower : start ≤ address) (upper : address < stop) :
-    (Memory.ofRegions regions).writable address = writable :=
+    (Image.ofRegions program regions).writable address = writable :=
   any_ofRegions disjoint MemoryRegion.writable member (contains_inside lower upper)
 
 /-- A read inside a region of a disjoint layout sees the region's contents. -/

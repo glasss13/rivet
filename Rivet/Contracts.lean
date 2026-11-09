@@ -6,8 +6,8 @@ namespace Rivet
 
 /-- Some finite execution reaches the final state. This alone does not guarantee
 termination or correctness for every choice of undefined flags. -/
-def Reaches (program : Program) (initial final : MachineState) : Prop :=
-  ∃ (choices : FlagChoices) (steps : Nat), execute program steps initial choices = final
+def Reaches (image : Image) (initial final : MachineState) : Prop :=
+  ∃ (choices : FlagChoices) (steps : Nat), execute image steps initial choices = final
 
 /-- Use a finite prefix of one supply, then continue with another. -/
 private def appendChoices (choices : FlagChoices) (count : Nat) (rest : FlagChoices) : FlagChoices :=
@@ -19,9 +19,9 @@ private def appendChoices (choices : FlagChoices) (count : Nat) (rest : FlagChoi
   simp [FlagChoices.drop, appendChoices, Nat.not_lt_of_ge (Nat.le_add_right count index)]
 
 /-- Bounded execution only depends on the corresponding finite prefix of choices. -/
-private theorem execute_congr_choices (program : Program) (steps : Nat) (state : MachineState)
+private theorem execute_congr_choices (image : Image) (steps : Nat) (state : MachineState)
     (first second : FlagChoices) (agree : ∀ index < steps, first index = second index) :
-    execute program steps state first = execute program steps state second := by
+    execute image steps state first = execute image steps state second := by
   induction steps generalizing state first second with
   | zero => rfl
   | succ steps inductionHypothesis =>
@@ -30,65 +30,65 @@ private theorem execute_congr_choices (program : Program) (steps : Nat) (state :
     intro index bound
     exact agree (1 + index) (by omega)
 
-@[simp] private theorem execute_appendChoices (program : Program) (steps : Nat) (state : MachineState)
+@[simp] private theorem execute_appendChoices (image : Image) (steps : Nat) (state : MachineState)
     (choices rest : FlagChoices) :
-    execute program steps state (appendChoices choices steps rest) = execute program steps state choices := by
+    execute image steps state (appendChoices choices steps rest) = execute image steps state choices := by
   apply execute_congr_choices
   intro index bound
   simp [appendChoices, bound]
 
-theorem Reaches.trans (first : Reaches program initial intermediate)
-    (second : Reaches program intermediate final) : Reaches program initial final := by
+theorem Reaches.trans (first : Reaches image initial intermediate)
+    (second : Reaches image intermediate final) : Reaches image initial final := by
   obtain ⟨choices, earlier, rfl⟩ := first
   obtain ⟨rest, later, rfl⟩ := second
   exact ⟨appendChoices choices earlier rest, earlier + later, by simp [execute_add]⟩
 
 /-- For every choice supply, a block eventually satisfies its postcondition.
 The witness may depend on the supply; no instruction budget is required of callers. -/
-structure Ensures (program : Program) (precondition postcondition : MachineState → Prop) : Prop where
+structure Ensures (image : Image) (precondition postcondition : MachineState → Prop) : Prop where
   private mk ::
   private allChoices : ∀ initial, precondition initial → ∀ choices : FlagChoices,
-    ∃ final, (∃ steps, execute program steps initial choices = final) ∧ postcondition final
+    ∃ final, (∃ steps, execute image steps initial choices = final) ∧ postcondition final
 
 /-- Obtain one reachable result. The contract itself guarantees the postcondition
 for every choice supply; this theorem does not expose that implementation detail. -/
-theorem Ensures.run (contract : Ensures program precondition postcondition)
+theorem Ensures.run (contract : Ensures image precondition postcondition)
     (initial : MachineState) (assumption : precondition initial) :
-    ∃ final, Reaches program initial final ∧ postcondition final := by
+    ∃ final, Reaches image initial final ∧ postcondition final := by
   let choices : FlagChoices := fun _ => ⟨false, false⟩
   obtain ⟨final, reached, result⟩ := contract.allChoices initial assumption choices
   exact ⟨final, ⟨choices, reached⟩, result⟩
 
 /-- Prove a contract separately for each initial state satisfying the precondition. -/
 theorem Ensures.intro
-    (body : ∀ initial, precondition initial → Ensures program (· = initial) postcondition) :
-    Ensures program precondition postcondition :=
+    (body : ∀ initial, precondition initial → Ensures image (· = initial) postcondition) :
+    Ensures image precondition postcondition :=
   ⟨fun initial assumption => (body initial assumption).allChoices initial rfl⟩
 
 /-- Internal bridge from one interpreter step to an instruction contract. -/
 private theorem Ensures.of_step
     (transition : ∀ initial, precondition initial → ∀ undefinedFlags,
-      postcondition (step program initial undefinedFlags)) :
-    Ensures program precondition postcondition := by
+      postcondition (step image initial undefinedFlags)) :
+    Ensures image precondition postcondition := by
   constructor
   intro initial assumption choices
-  exact ⟨step program initial (choices 0), ⟨1, rfl⟩, transition initial assumption (choices 0)⟩
+  exact ⟨step image initial (choices 0), ⟨1, rfl⟩, transition initial assumption (choices 0)⟩
 
 /-- Retain reachability alongside a block's result, for deriving facts about the
 initial/final state pair without opening the execution witness. -/
-theorem Ensures.with_reachability (contract : Ensures program (· = initial) postcondition) :
-    Ensures program (· = initial) (fun final => Reaches program initial final ∧ postcondition final) := by
+theorem Ensures.with_reachability (contract : Ensures image (· = initial) postcondition) :
+    Ensures image (· = initial) (fun final => Reaches image initial final ∧ postcondition final) := by
   constructor
   intro actual equal choices
   subst actual
   obtain ⟨final, reached, result⟩ := contract.allChoices initial rfl choices
   exact ⟨final, reached, ⟨choices, reached⟩, result⟩
 
-theorem Ensures.refl : Ensures program predicate predicate :=
+theorem Ensures.refl : Ensures image predicate predicate :=
   ⟨fun initial assumption _ => ⟨initial, ⟨0, rfl⟩, assumption⟩⟩
 
-theorem Ensures.seq (first : Ensures program precondition intermediate)
-    (second : Ensures program intermediate postcondition) : Ensures program precondition postcondition := by
+theorem Ensures.seq (first : Ensures image precondition intermediate)
+    (second : Ensures image intermediate postcondition) : Ensures image precondition postcondition := by
   constructor
   intro initial assumption choices
   obtain ⟨middle, ⟨earlier, rfl⟩, holds⟩ := first.allChoices initial assumption choices
@@ -98,15 +98,15 @@ theorem Ensures.seq (first : Ensures program precondition intermediate)
 /-- Continue from each state the first contract can reach, as a named state.
 For an exact-state contract (`· = e`), the continuation receives a fresh state
 `t` with `t = e` rather than the expression `e` itself. -/
-theorem Ensures.bind (first : Ensures program precondition intermediate)
-    (continuation : ∀ state, intermediate state → Ensures program (· = state) postcondition) :
-    Ensures program precondition postcondition :=
+theorem Ensures.bind (first : Ensures image precondition intermediate)
+    (continuation : ∀ state, intermediate state → Ensures image (· = state) postcondition) :
+    Ensures image precondition postcondition :=
   first.seq (Ensures.intro continuation)
 
-theorem Ensures.consequence (contract : Ensures program precondition postcondition)
+theorem Ensures.consequence (contract : Ensures image precondition postcondition)
     (strengthenPrecondition : ∀ state, strongerPrecondition state → precondition state)
     (weakenPostcondition : ∀ state, postcondition state → weakerPostcondition state) :
-    Ensures program strongerPrecondition weakerPostcondition := by
+    Ensures image strongerPrecondition weakerPostcondition := by
   constructor
   intro initial assumption choices
   obtain ⟨final, reached, result⟩ := contract.allChoices initial (strengthenPrecondition _ assumption) choices
@@ -115,8 +115,8 @@ theorem Ensures.consequence (contract : Ensures program precondition postconditi
 /-- Iterate blocks while a natural-valued measure decreases. No instruction counts enter the rule. -/
 theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : MachineState → Nat)
     (body : ∀ initial, invariant initial → ¬ finished initial →
-      Ensures program (· = initial) (fun final => invariant final ∧ measure final < measure initial)) :
-    Ensures program invariant (fun final => invariant final ∧ finished final) := by
+      Ensures image (· = initial) (fun final => invariant final ∧ measure final < measure initial)) :
+    Ensures image invariant (fun final => invariant final ∧ finished final) := by
   constructor
   intro initial assumption choices
   induction bound : measure initial using Nat.strongRecOn generalizing initial choices with
@@ -128,20 +128,20 @@ theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : Mac
       exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
 /-- A stopped state remains unchanged under any further bounded execution. -/
-theorem execute_stopped (program : Program) (steps : Nat) (state : MachineState) {choices : FlagChoices} (stopped : state.status.isRunning = false) :
-    execute program steps state choices = state := by
-  have stepUnchanged (undefinedFlags : FlagValues) : step program state undefinedFlags = state := by
+theorem execute_stopped (image : Image) (steps : Nat) (state : MachineState) {choices : FlagChoices} (stopped : state.status.isRunning = false) :
+    execute image steps state choices = state := by
+  have stepUnchanged (undefinedFlags : FlagValues) : step image state undefinedFlags = state := by
     cases status : state.status <;> simp_all [step, ExecutionStatus.isRunning]
   induction steps generalizing choices with
   | zero => rfl
   | succ steps inductionHypothesis => simpa [execute, stepUnchanged] using inductionHypothesis (choices := choices.drop 1)
 
-theorem Reaches.stopped (reached : Reaches program initial final)
+theorem Reaches.stopped (reached : Reaches image initial final)
     (stopped : initial.status.isRunning = false) : final = initial := by
   obtain ⟨choices, steps, rfl⟩ := reached
   exact execute_stopped _ _ _ stopped
 
-theorem Reaches.not_fault (reached : Reaches program initial final)
+theorem Reaches.not_fault (reached : Reaches image initial final)
     (notFaulted : final.status ≠ .fault) : initial.status ≠ .fault := by
   intro faulted
   have equal := reached.stopped (by simp [faulted, ExecutionStatus.isRunning])
@@ -159,8 +159,8 @@ theorem Reaches.not_fault (reached : Reaches program initial final)
     (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
-private theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : BitVec 64} (unchanged : modifies operation register = false) :
-    (stepOp operation nextAddress state undefinedFlags).registers register = state.registers register := by
+private theorem op_preserves (image : Image) (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : BitVec 64} (unchanged : modifies operation register = false) :
+    (stepOp image operation nextAddress state undefinedFlags).registers register = state.registers register := by
   cases operation with
   | binary operation destination source =>
     simp only [stepOp, MachineState.binary]
@@ -186,9 +186,9 @@ private theorem op_preserves (operation : Op) (state : MachineState) (register :
     simp_all [modifies, stepOp, next, MachineState.write, Ne.symm] <;>
       split <;> simp_all [Ne.symm]
 
-private theorem step_preserves (program : Program) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues}
-    (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
-    (step program state undefinedFlags).registers register = state.registers register := by
+private theorem step_preserves (image : Image) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues}
+    (unchanged : ∀ instruction ∈ image.program, modifies instruction.op register = false) :
+    (step image state undefinedFlags).registers register = state.registers register := by
   unfold step
   split
   · split
@@ -199,15 +199,15 @@ private theorem step_preserves (program : Program) (state : MachineState) (regis
   · rfl
 
 /-- A register untouched by every instruction is preserved for any amount of fuel. -/
-private theorem execute_preserves (program : Program) (steps : Nat) (state : MachineState) (register : Reg) {choices : FlagChoices}
-    (unchanged : ∀ instruction ∈ program, modifies instruction.op register = false) :
-    (execute program steps state choices).registers register = state.registers register := by
+private theorem execute_preserves (image : Image) (steps : Nat) (state : MachineState) (register : Reg) {choices : FlagChoices}
+    (unchanged : ∀ instruction ∈ image.program, modifies instruction.op register = false) :
+    (execute image steps state choices).registers register = state.registers register := by
   induction steps generalizing state choices with
   | zero => rfl
-  | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_preserves program state register unchanged]
+  | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_preserves image state register unchanged]
 
-private theorem step_reads_monotone (program : Program) (state : MachineState) (access : Access) {undefinedFlags : FlagValues}
-    (recorded : access ∈ state.readHistory) : access ∈ (step program state undefinedFlags).readHistory := by
+private theorem step_reads_monotone (image : Image) (state : MachineState) (access : Access) {undefinedFlags : FlagValues}
+    (recorded : access ∈ state.readHistory) : access ∈ (step image state undefinedFlags).readHistory := by
   unfold step
   split
   · split
@@ -234,20 +234,20 @@ private theorem step_reads_monotone (program : Program) (state : MachineState) (
     · exact recorded
   · exact recorded
 
-private theorem execute_reads_monotone (program : Program) (state : MachineState) (steps : Nat) (access : Access) {choices : FlagChoices}
-    (recorded : access ∈ state.readHistory) : access ∈ (execute program steps state choices).readHistory := by
+private theorem execute_reads_monotone (image : Image) (state : MachineState) (steps : Nat) (access : Access) {choices : FlagChoices}
+    (recorded : access ∈ state.readHistory) : access ∈ (execute image steps state choices).readHistory := by
   induction steps generalizing state choices with
   | zero => exact recorded
   | succ steps inductionHypothesis =>
-    exact inductionHypothesis (step program state (choices 0)) (step_reads_monotone program state access recorded)
+    exact inductionHypothesis (step image state (choices 0)) (step_reads_monotone image state access recorded)
 
-theorem Reaches.reads_mono (reached : Reaches program initial final)
+theorem Reaches.reads_mono (reached : Reaches image initial final)
     (recorded : access ∈ initial.readHistory) : access ∈ final.readHistory := by
   obtain ⟨choices, steps, rfl⟩ := reached
   exact execute_reads_monotone _ _ steps _ recorded
 
-theorem Reaches.preserves_register (reached : Reaches program initial final) (register : Reg)
-    (unchanged : program.all (fun instruction => !(modifies instruction.op register)) = true) :
+theorem Reaches.preserves_register (reached : Reaches image initial final) (register : Reg)
+    (unchanged : image.program.all (fun instruction => !(modifies instruction.op register)) = true) :
     final.registers register = initial.registers register := by
   obtain ⟨choices, steps, rfl⟩ := reached
   apply execute_preserves
@@ -255,119 +255,96 @@ theorem Reaches.preserves_register (reached : Reaches program initial final) (re
   have := (List.all_eq_true.mp unchanged) instruction member
   simpa using this
 
-private structure MemoryInvariant (before after : Memory) : Prop where
-  readable : after.readable = before.readable
-  writable : after.writable = before.writable
-  unwritable : before.SameOutside after (before.writable · = true)
+/-- Memory changes only at writable addresses: stores check write permission. -/
+private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
+  before.SameOutside after (image.writable · = true)
 
-private theorem MemoryInvariant.refl (memory : Memory) : MemoryInvariant memory memory :=
-  ⟨rfl, rfl, Memory.SameOutside.refl _ _⟩
+private theorem WritesWithin.storeBytes (memory : Memory) (start stop : BitVec 64)
+    (bytes : BitVec 64 → Fin 256) (allowed : permits image.writable start stop = true) :
+    WritesWithin image memory (memory.storeBytes start stop bytes) :=
+  (Memory.SameOutside.refl _ _).storeBytes bytes ((permits_iff _ _ _).mp allowed).2
 
-private theorem MemoryInvariant.trans (first : MemoryInvariant before middle) (second : MemoryInvariant middle after) :
-    MemoryInvariant before after := by
-  refine ⟨second.readable.trans first.readable, second.writable.trans first.writable,
-    first.unwritable.trans ?_⟩
-  rw [← first.writable]
-  exact second.unwritable
-
-private theorem MemoryInvariant.storeBytes (memory : Memory) (start stop : BitVec 64)
-    (bytes : BitVec 64 → Fin 256) (allowed : permits memory.writable start stop = true) :
-    MemoryInvariant memory (memory.storeBytes start stop bytes) :=
-  ⟨rfl, rfl, (Memory.SameOutside.refl _ _).storeBytes bytes ((permits_iff _ _ _).mp allowed).2⟩
-
-private theorem MemoryInvariant.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
+private theorem WritesWithin.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64)
-    (allowed : permits state.memory.writable address (address + BitVec.ofNat 64 width.bytes) = true) :
-    MemoryInvariant state.memory (state.writeMemory address width value).memory :=
-  MemoryInvariant.storeBytes state.memory _ _ _ allowed
+    (allowed : permits image.writable address (address + BitVec.ofNat 64 width.bytes) = true) :
+    WritesWithin image state.memory (state.writeMemory address width value).memory :=
+  WritesWithin.storeBytes state.memory _ _ _ allowed
 
-private theorem MemoryInvariant.writeOperand (state : MachineState) (destination : Operand) (value : BitVec 64)
-    (allowed : state.canWrite destination = true) :
-    MemoryInvariant state.memory (state.writeOperand destination value).memory := by
-  cases destination <;> try exact MemoryInvariant.refl _
-  case memory width address => exact MemoryInvariant.writeMemory state _ width value allowed
+private theorem WritesWithin.writeOperand (state : MachineState) (destination : Operand) (value : BitVec 64)
+    (allowed : state.canWrite image destination = true) :
+    WritesWithin image state.memory (state.writeOperand destination value).memory := by
+  cases destination <;> try exact Memory.SameOutside.refl _ _
+  case memory width address => exact WritesWithin.writeMemory state _ width value allowed
 
 /-- The memory effect of one decoded operation, including faulting paths. -/
-private theorem op_memory_invariant (operation : Op) (state : MachineState) (nextPC : BitVec 64) (flags : FlagValues) :
-    MemoryInvariant state.memory (stepOp operation nextPC state flags).memory := by
+private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC : BitVec 64) (flags : FlagValues) :
+    WritesWithin image state.memory (stepOp image operation nextPC state flags).memory := by
   cases operation with
   | binary operation destination source =>
     simp only [stepOp, MachineState.binary]
     split
     · split
-      · apply MemoryInvariant.writeOperand
+      · apply WritesWithin.writeOperand
         simp_all [Bool.and_eq_true]
-      · exact MemoryInvariant.refl _
-    · exact MemoryInvariant.refl _
+      · exact Memory.SameOutside.refl _ _
+    · exact Memory.SameOutside.refl _ _
   | mov destination source | not destination | setcc condition destination =>
     simp only [stepOp]
     split
-    · apply MemoryInvariant.writeOperand
+    · apply WritesWithin.writeOperand
       simp_all [Bool.and_eq_true]
-    · exact MemoryInvariant.refl _
+    · exact Memory.SameOutside.refl _ _
   | shift operation destination count =>
     simp only [stepOp]
     split
-    · split <;> apply MemoryInvariant.writeOperand <;>
+    · split <;> apply WritesWithin.writeOperand <;>
         cases destination <;> simp_all [validShift, MachineState.canWrite]
-    · exact MemoryInvariant.refl _
+    · exact Memory.SameOutside.refl _ _
   | imul destination source immediate | cmovcc condition destination source =>
     simp only [stepOp]
     split
-    · apply MemoryInvariant.writeOperand
+    · apply WritesWithin.writeOperand
       cases destination <;> simp_all [validImul, validConditionalMove, MachineState.canWrite]
-    · exact MemoryInvariant.refl _
+    · exact Memory.SameOutside.refl _ _
   | storeXmm kind destination source =>
     simp only [stepOp]
     split
-    · exact MemoryInvariant.storeBytes state.memory _ _ _ (by assumption)
-    · exact MemoryInvariant.refl _
+    · exact WritesWithin.storeBytes state.memory _ _ _ (by assumption)
+    · exact Memory.SameOutside.refl _ _
   | push source | call target =>
     simp only [stepOp]
     split
-    · apply MemoryInvariant.writeMemory
+    · apply WritesWithin.writeMemory
       assumption
-    · exact MemoryInvariant.refl _
+    · exact Memory.SameOutside.refl _ _
   | _ =>
     simp only [stepOp]
     first
-    | exact MemoryInvariant.refl _
-    | (split <;> exact MemoryInvariant.refl _)
+    | exact Memory.SameOutside.refl _ _
+    | (split <;> exact Memory.SameOutside.refl _ _)
 
-private theorem step_memory_invariant (program : Program) (state : MachineState) (flags : FlagValues) :
-    MemoryInvariant state.memory (step program state flags).memory := by
+private theorem step_writes_within (image : Image) (state : MachineState) (flags : FlagValues) :
+    WritesWithin image state.memory (step image state flags).memory := by
   unfold step
   split
   · split
-    · exact op_memory_invariant _ _ _ _
-    · exact MemoryInvariant.refl _
-  · exact MemoryInvariant.refl _
+    · exact op_writes_within _ _ _ _
+    · exact Memory.SameOutside.refl _ _
+  · exact Memory.SameOutside.refl _ _
 
-private theorem execute_memory_invariant (program : Program) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
-    MemoryInvariant state.memory (execute program steps state choices).memory := by
+private theorem execute_writes_within (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
+    WritesWithin image state.memory (execute image steps state choices).memory := by
   induction steps generalizing state choices with
-  | zero => exact MemoryInvariant.refl _
+  | zero => exact Memory.SameOutside.refl _ _
   | succ steps ih =>
-    exact (step_memory_invariant program state (choices 0)).trans
-      (ih (step program state (choices 0)) (choices.drop 1))
+    exact (step_writes_within image state (choices 0)).trans
+      (ih (step image state (choices 0)) (choices.drop 1))
 
-/-- Execution preserves the readable permission map, including when it faults. -/
-theorem Reaches.preserves_readable (reached : Reaches program initial final) :
-    final.memory.readable = initial.memory.readable := by
+/-- Execution changes memory only where the image allows writes, including when it
+faults. Read-only data and unmapped addresses are unchanged. -/
+theorem Reaches.preserves_unwritable (reached : Reaches image initial final) :
+    initial.memory.SameOutside final.memory (image.writable · = true) := by
   obtain ⟨choices, steps, rfl⟩ := reached
-  exact (execute_memory_invariant program steps initial choices).readable
-
-/-- Execution preserves the writable permission map, including when it faults. -/
-theorem Reaches.preserves_writable (reached : Reaches program initial final) :
-    final.memory.writable = initial.memory.writable := by
-  obtain ⟨choices, steps, rfl⟩ := reached
-  exact (execute_memory_invariant program steps initial choices).writable
-
-/-- Execution changes memory only where it was writable, including when it faults.
-Read-only data and unmapped addresses are unchanged. -/
-theorem Reaches.preserves_unwritable (reached : Reaches program initial final) :
-    initial.memory.SameOutside final.memory (initial.memory.writable · = true) := by
-  obtain ⟨choices, steps, rfl⟩ := reached
-  exact (execute_memory_invariant program steps initial choices).unwritable
+  exact execute_writes_within image steps initial choices
 
 end Rivet

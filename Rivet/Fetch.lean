@@ -1,5 +1,5 @@
 module
-public import Rivet.Syntax
+public import Rivet.Memory
 public meta import Lean
 -- The lookup routine is public but not exposed; its helpers are private.
 public section
@@ -40,6 +40,18 @@ private meta def firstMatch (list : Expr) (pc : Nat) (limit : Nat := 0) : MetaM 
     visited := visited + 1
   return none
 
+/-- The program an image carries: `image.program` reduced to the program itself when
+the image unfolds to a literal, such as `{ program := p, … }` or `Image.ofRegions p rs`. -/
+private meta def programOf (program : Expr) : MetaM Expr := do
+  let program ← instantiateMVars program
+  let image? := if program.isAppOfArity ``Image.program 1 then some program.appArg!
+    else match program with
+      | .proj ``Image 0 image => some image
+      | _ => none
+  let some image := image? | return program
+  let image ← whnfD image
+  return if image.isAppOfArity ``Image.mk 3 then image.getArg! 0 else program
+
 /-- For a concrete program and an address `address` with value `pc`, the instruction
 `Program.fetch` returns and a proof `program.fetch address = some instruction`,
 checked by the kernel.
@@ -47,7 +59,12 @@ checked by the kernel.
 A generated program has a fact `program.from_<pc> : program.FetchesFrom suffix pc`
 whose suffix starts with that instruction; the proof then evaluates only that one
 entry, in time independent of the program size. Otherwise the list is searched. -/
-meta def prove (program address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
+meta def prove (original address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
+  let program ← programOf original
+  -- State the result about the caller's program, so it matches their goal syntactically.
+  let restate (instruction proof : Expr) : MetaM (Expr × Expr) := do
+    let fetched ← mkAppM ``Program.fetch #[original, address]
+    return (instruction, ← mkExpectedTypeHint proof (← mkEq fetched (← mkAppM ``Option.some #[instruction])))
   if let some name := program.constName? then
     let stepName := name ++ Name.mkSimple s!"from_{hex pc}"
     if (← getEnv).contains stepName then
@@ -56,11 +73,11 @@ meta def prove (program address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr
       let some instruction ← firstMatch (suffixFetch.appFn!.appArg!) pc (limit := 1) | return none
       let result ← mkAppM ``Option.some #[instruction]
       let head ← mkExpectedTypeHint (← mkEqRefl result) (← mkEq suffixFetch result)
-      return some (instruction, ← mkEqTrans same head)
+      return some (← restate instruction (← mkEqTrans same head))
   let some instruction ← firstMatch program pc | return none
   let result ← mkAppM ``Option.some #[instruction]
   let fetched ← mkAppM ``Program.fetch #[program, address]
-  return some (instruction, ← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetched result))
+  return some (← restate instruction (← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetched result)))
 
 end Fetch
 

@@ -22,7 +22,7 @@ open Lean Meta Elab Tactic
 
 namespace Step
 
-/-- The program and current state of an `Ensures P (· = s) Q` goal. -/
+/-- The image and current state of an `Ensures image (· = s) Q` goal. -/
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   unless type.isAppOfArity ``Ensures 3 do
@@ -201,7 +201,7 @@ end Step
 
 /--
 `rivet_step` executes the instruction at the current address of an
-`Ensures program (· = s) Q` goal, using that instruction's contract.
+`Ensures image (· = s) Q` goal, using that instruction's contract.
 
 It needs a hypothesis `s.status = .running pc`, where `pc` is a numeral or a
 definition that unfolds to one, and continues
@@ -234,7 +234,8 @@ syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")?
 
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
-  let (program, old) ← goalParts (← getMainGoal)
+  let (image, old) ← goalParts (← getMainGoal)
+  let program := mkApp (mkConst ``Image.program) image
   let (address, pc, location) ← findPc old
   let (instruction, instructionProof) ← fetch program address pc
   let operation := instruction.getArg! 2
@@ -251,7 +252,7 @@ open Step in
   let pending := (← getGoals).filter (· != mainGoal)
   let contract : Expr ← do
     let (name, operands) ← contractFor operation
-    let (proof, sides) ← instantiate name (#[program, address] ++ operands ++ #[old])
+    let (proof, sides) ← instantiate name (#[image, address] ++ operands ++ #[old])
     for side in sides do
       -- Location and instruction evidence are known; no context search is needed.
       match ← side.getTag with
@@ -276,7 +277,7 @@ open Step in
       withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
         let precondition ← withLocalDeclD `state stateType fun state => do
           mkLambdaFVars #[state] (← mkEq state successor)
-        let target := mkApp3 (mkConst ``Ensures) program precondition postcondition
+        let target := mkApp3 (mkConst ``Ensures) image precondition postcondition
         let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
         let continuation ← mkLambdaFVars #[successor, equation] goal
         mainGoal.assign (← mkAppM ``Ensures.bind #[contract, continuation])

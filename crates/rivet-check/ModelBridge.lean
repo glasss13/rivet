@@ -92,9 +92,11 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let contents := fun (address : BitVec 64) =>
     let value := request.memory[(address - base).toNat]?.getD 0
     (⟨value % 256, Nat.mod_lt _ (by decide)⟩ : Fin 256)
-  let memory := Memory.ofRegions [
+  let regions : List MemoryRegion := [
     { start := base, stop := writable, contents, readable := true, writable := false },
     { start := writable, stop := limit, contents, readable := true, writable := true }]
+  let image := Image.ofRegions program regions
+  let memory := Memory.ofRegions regions
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
@@ -111,7 +113,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     if !current.status.isRunning || current.status == .running (BitVec.ofNat 64 request.stopAddress) then break
     let some undefinedFlags := request.nativeFlags[index]?
       | throw "missing native flag observation"
-    current := step program current undefinedFlags
+    current := step image current undefinedFlags
     observations := observations.push (snapshot request.memoryBase request.memory.size current)
   unless observations.size == request.nativeFlags.size + 1 do
     throw "unused native flag observations"
