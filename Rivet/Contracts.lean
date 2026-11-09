@@ -262,7 +262,7 @@ private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
 private theorem WritesWithin.storeBytes (memory : Memory) (start stop : BitVec 64)
     (bytes : BitVec 64 → Fin 256) (allowed : permits image.writable start stop = true) :
     WritesWithin image memory (memory.storeBytes start stop bytes) :=
-  (Memory.SameOutside.refl _ _).storeBytes bytes (permits_iff.mp allowed).2
+  Memory.SameOutside.refl.storeBytes (permits_iff.mp allowed).2
 
 private theorem WritesWithin.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64)
@@ -273,7 +273,7 @@ private theorem WritesWithin.writeMemory (state : MachineState) (address : BitVe
 private theorem WritesWithin.writeOperand (state : MachineState) (destination : Operand) (value : BitVec 64)
     (allowed : state.canWrite image destination = true) :
     WritesWithin image state.memory (state.writeOperand destination value).memory := by
-  cases destination <;> try exact Memory.SameOutside.refl _ _
+  cases destination <;> try exact Memory.SameOutside.refl
   case memory width address => exact WritesWithin.writeMemory state _ width value allowed
 
 /-- The memory effect of one decoded operation, including faulting paths. -/
@@ -286,42 +286,42 @@ private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC
     · split
       · apply WritesWithin.writeOperand
         simp_all [Bool.and_eq_true]
-      · exact Memory.SameOutside.refl _ _
-    · exact Memory.SameOutside.refl _ _
+      · exact Memory.SameOutside.refl
+    · exact Memory.SameOutside.refl
   | mov destination source | not destination | setcc condition destination =>
     simp only [stepOp]
     split
     · apply WritesWithin.writeOperand
       simp_all [Bool.and_eq_true]
-    · exact Memory.SameOutside.refl _ _
+    · exact Memory.SameOutside.refl
   | shift operation destination count =>
     simp only [stepOp]
     split
     · split <;> apply WritesWithin.writeOperand <;>
         cases destination <;> simp_all [validShift, MachineState.canWrite]
-    · exact Memory.SameOutside.refl _ _
+    · exact Memory.SameOutside.refl
   | imul destination source immediate | cmovcc condition destination source =>
     simp only [stepOp]
     split
     · apply WritesWithin.writeOperand
       cases destination <;> simp_all [validImul, validConditionalMove, MachineState.canWrite]
-    · exact Memory.SameOutside.refl _ _
+    · exact Memory.SameOutside.refl
   | storeXmm kind destination source =>
     simp only [stepOp]
     split
     · exact WritesWithin.storeBytes state.memory _ _ _ (by assumption)
-    · exact Memory.SameOutside.refl _ _
+    · exact Memory.SameOutside.refl
   | push source | call target =>
     simp only [stepOp]
     split
     · apply WritesWithin.writeMemory
       assumption
-    · exact Memory.SameOutside.refl _ _
+    · exact Memory.SameOutside.refl
   | _ =>
     simp only [stepOp]
     first
-    | exact Memory.SameOutside.refl _ _
-    | (split <;> exact Memory.SameOutside.refl _ _)
+    | exact Memory.SameOutside.refl
+    | (split <;> exact Memory.SameOutside.refl)
 
 private theorem step_writes_within (image : Image) (state : MachineState) (flags : FlagValues) :
     WritesWithin image state.memory (step image state flags).memory := by
@@ -329,13 +329,13 @@ private theorem step_writes_within (image : Image) (state : MachineState) (flags
   split
   · split
     · exact op_writes_within _ _ _ _
-    · exact Memory.SameOutside.refl _ _
-  · exact Memory.SameOutside.refl _ _
+    · exact Memory.SameOutside.refl
+  · exact Memory.SameOutside.refl
 
 private theorem execute_writes_within (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
     WritesWithin image state.memory (execute image steps state choices).memory := by
   induction steps generalizing state choices with
-  | zero => exact Memory.SameOutside.refl _ _
+  | zero => exact Memory.SameOutside.refl
   | succ steps ih =>
     exact (step_writes_within image state (choices 0)).trans
       (ih (step image state (choices 0)) (choices.drop 1))
