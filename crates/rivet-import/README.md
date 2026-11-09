@@ -2,7 +2,8 @@
 
 `rivet-import` reads all defined function symbols from a linked x86-64 ELF executable,
 decodes their code with iced-x86, and writes a Lean module containing `entry : BitVec 64`,
-`program : Rivet.Program`, and `regions : List Rivet.MemoryRegion`. Addresses,
+`program : Rivet.Program`, `regions : List Rivet.Region`, the bytes of each loadable
+segment, and `Loaded`, the memory the loader leaves. Addresses,
 instruction encodings, and initial segment data come from the binary. No assembly
 text is parsed along the way.
 
@@ -71,38 +72,35 @@ with unsupported instructions also cause import to fail; link only the code you
 need (for example, using function sections and linker garbage collection).
 Errors report the instruction address, and translation errors leave the output file untouched.
 
-Each loadable segment becomes a `MemoryRegion` with `start`, `stop`, `contents`,
-`readable`, and `writable`, covering `[start, stop)`. `contents` maps absolute
-addresses to `Fin 256` values. Addresses are emitted as `BitVec 64` literals (`0x401000#64`).
-Imported contents use a `ByteArray` and return zero past its end, so BSS does not
-expand the generated source. Handwritten regions can use symbolic byte functions.
+Each loadable segment is emitted three ways:
 
-Construct the complete layout, then build the image (the program with its
-permissions) and the machine state's initial bytes from it:
+- in `regions : List Rivet.Region`, its `[start, stop)` addresses and its
+  `readable` and `writable` flags;
+- as `segment_<address> : Rivet.Memory`, its bytes at their absolute addresses.
+  These use a `ByteArray` and return zero past its end, so BSS does not expand the
+  generated source;
+- in `Loaded (memory : Rivet.Memory) : Prop`, which says that for every segment,
+  `memory address = segment_<address> address` at each address in it: what the
+  loader guarantees. It is a structure with one field per segment, named after
+  the segment, so `loaded.segment_<address> a lower upper` gives the byte at `a`.
+
+Addresses are emitted as `BitVec 64` literals (`0x401000#64`). Build the image
+from the segments plus the caller's regions, and assume `Loaded` of the initial
+memory; the stack and buffers hold arbitrary bytes:
 
 ```lean
-def layout (stack input output : Rivet.MemoryRegion) : List Rivet.MemoryRegion :=
-  Example.regions ++ [stack, input, output]
+def image (stack input output : Rivet.Region) : Rivet.Image :=
+  { program := Example.program, regions := Example.regions ++ [stack, input, output] }
 
-def image (stack input output : Rivet.MemoryRegion) : Rivet.Image :=
-  Rivet.Image.ofRegions Example.program (layout stack input output)
-
-def initial (registers : Rivet.Reg → BitVec 64)
-    (stack input output : Rivet.MemoryRegion) : Rivet.MachineState := {
-  memory := Rivet.Memory.ofRegions (layout stack input output)
-  registers
-  zeroFlag := false
-  status := .running Example.entry
-  readHistory := [] }
+theorem answer (stack input output : Rivet.Region) (initial : Rivet.MachineState)
+    (loaded : Example.Loaded initial.memory) … :
+    Rivet.Ensures (image stack input output) (· = initial) …
 ```
 
 `MachineState.memory` is a flat `Memory`: a byte at every address. Permissions are
-fixed for a run and live in the `Image`: `Image.ofRegions` takes them from a layout,
-and `Memory.ofRegions` takes the bytes. Addresses outside every region are
-inaccessible and read zero. A byte in overlapping regions
-comes from the first region containing it, so buffers that alias should share a
-region; proofs about region contents assume the regions are pairwise disjoint.
-Stores change only bytes. Low-level store helpers rely on
+fixed for a run and live in the `Image`: an address is readable (or writable) when
+some region containing it is, and addresses outside every region are inaccessible.
+Regions carry no bytes. Stores change only bytes. Low-level store helpers rely on
 instruction semantics to check write permissions.
 
 These are the ELF-declared byte ranges and read/write flags, not an exact Linux

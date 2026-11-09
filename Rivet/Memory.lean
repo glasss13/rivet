@@ -13,28 +13,23 @@ not wrap. Side conditions in these terms close by `bv_omega`. -/
 
 /-- Every address in `[start, stop)` takes its byte from `bytes`; the rest keep
 theirs. Instructions check permissions before storing. -/
-def Memory.storeBytes (memory : Memory) (start stop : BitVec 64) (bytes : BitVec 64 → Fin 256) : Memory :=
+def Memory.storeBytes (memory : Memory) (start stop : BitVec 64) (bytes : Memory) : Memory :=
   fun address => if start ≤ address ∧ address < stop then bytes address else memory address
 
-theorem Memory.read_storeBytes (memory : Memory) (start stop : BitVec 64) (bytes : BitVec 64 → Fin 256)
-    (address : BitVec 64) :
-    (memory.storeBytes start stop bytes) address =
-      if start ≤ address ∧ address < stop then bytes address else memory address := rfl
-
-theorem Memory.read_storeBytes_outside (memory : Memory) (start stop : BitVec 64) (bytes : BitVec 64 → Fin 256)
-    (address : BitVec 64) (outside : address < start ∨ stop ≤ address) :
+theorem Memory.read_storeBytes_outside {memory : Memory} {start stop : BitVec 64} {bytes : Memory}
+    {address : BitVec 64} (outside : address < start ∨ stop ≤ address) :
     (memory.storeBytes start stop bytes) address = memory address := by
   have away : ¬ (start ≤ address ∧ address < stop) := by bv_omega
-  simp only [Memory.read_storeBytes, away, ↓reduceIte]
+  simp only [Memory.storeBytes, away, ↓reduceIte]
 
 /-- The little-endian bytes of a value of any width, laid out from `address`:
 byte `i` of the value is at `address + i`. Scalar and vector stores write these. -/
-def littleEndianAt (value : BitVec n) (address : BitVec 64) : BitVec 64 → Fin 256 :=
+def littleEndianAt (value : BitVec n) (address : BitVec 64) : Memory :=
   fun other => ⟨(value.toNat / 256^(other - address).toNat) % 256, Nat.mod_lt _ (by decide)⟩
 
 /-- Read `size` little-endian bytes starting at `address`, for scalar, vector, and
 return-address reads. This raw read does not check permissions. -/
-def readBytes (memory : BitVec 64 → Fin 256) (address : BitVec 64) (size : Nat) : BitVec (8 * size) :=
+def readBytes (memory : Memory) (address : BitVec 64) (size : Nat) : BitVec (8 * size) :=
   BitVec.ofNat (8 * size) ((List.range size).foldr
     (fun offset value => (memory (address + BitVec.ofNat 64 offset)).val + 256 * value) 0)
 
@@ -42,7 +37,7 @@ def readBytes (memory : BitVec 64 → Fin 256) (address : BitVec 64) (size : Nat
 def permits (permission : BitVec 64 → Bool) (start stop : BitVec 64) : Bool :=
   start ≤ stop && (List.range (stop - start).toNat).all (fun offset => permission (start + BitVec.ofNat 64 offset))
 
-theorem permits_iff (permission : BitVec 64 → Bool) (start stop : BitVec 64) :
+theorem permits_iff {permission : BitVec 64 → Bool} {start stop : BitVec 64} :
     permits permission start stop = true ↔
       start ≤ stop ∧ ∀ address, start ≤ address → address < stop → permission address = true := by
   simp only [permits, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range]
@@ -58,7 +53,7 @@ theorem permits_iff (permission : BitVec 64 → Bool) (start stop : BitVec 64) :
 /-- A permitted access does not wrap. -/
 theorem permits_valid {permission : BitVec 64 → Bool} {start stop : BitVec 64}
     (allowed : permits permission start stop = true) : start ≤ stop :=
-  ((permits_iff _ _ _).mp allowed).1
+  (permits_iff.mp allowed).1
 
 /-- A permission over a range holds over every subrange. -/
 theorem permits_within {permission : BitVec 64 → Bool} {start stop first last : BitVec 64}
@@ -74,7 +69,7 @@ A footprint is a set of addresses, `BitVec 64 → Prop`, such as
 `fun x => output ≤ x ∧ x < outputEnd`. A read of `size` bytes from `address`
 covers `[address, address + size)`; lemmas about it ask that this not wrap,
 `address ≤ address + size`, which the read's own permission provides
-(`permits_valid`), and that `size < 2^64`. -/
+(`permits_valid`), and that `size < 2^64`, proved by `decide` unless given. -/
 
 private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
     (same : ∀ offset < size, first offset = second offset) :
@@ -92,7 +87,7 @@ private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
         inductionHypothesis (fun other member => bounded other (List.mem_cons_of_mem _ member))]
   exact each _ (fun offset member => List.mem_range.mp member)
 
-private theorem readBytes_congr {first second : BitVec 64 → Fin 256} {address : BitVec 64} {size : Nat}
+private theorem readBytes_offsets_congr {first second : Memory} {address : BitVec 64} {size : Nat}
     (same : ∀ offset < size, first (address + BitVec.ofNat 64 offset) = second (address + BitVec.ofNat 64 offset)) :
     readBytes first address size = readBytes second address size := by
   unfold readBytes
@@ -104,29 +99,39 @@ private theorem covered {address : BitVec 64} {size offset : Nat}
     address ≤ address + BitVec.ofNat 64 offset ∧ address + BitVec.ofNat 64 offset < address + BitVec.ofNat 64 size := by
   bv_omega
 
+/-- Memories that agree on the addresses a read covers give the same read. -/
+theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Nat}
+    (agree : ∀ other, address ≤ other → other < address + BitVec.ofNat 64 size → first other = second other)
+    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
+    readBytes first address size = readBytes second address size := by
+  apply readBytes_offsets_congr
+  intro offset bound
+  have ⟨above, below⟩ := covered fits small bound
+  exact agree _ above below
+
 /-- A read inside a store sees the stored bytes. -/
-theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : BitVec 64 → Fin 256)
+theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : Memory)
     {start stop address : BitVec 64} {size : Nat}
     (lower : start ≤ address) (upper : address + BitVec.ofNat 64 size ≤ stop)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
+    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
     readBytes (memory.storeBytes start stop bytes) address size = readBytes bytes address size := by
-  apply readBytes_congr
+  apply readBytes_offsets_congr
   intro offset bound
   have ⟨above, below⟩ := covered fits small bound
   have inside : start ≤ address + BitVec.ofNat 64 offset ∧ address + BitVec.ofNat 64 offset < stop := by
     bv_omega
-  simp only [Memory.read_storeBytes, inside, and_self, ↓reduceIte]
+  simp only [Memory.storeBytes, inside, and_self, ↓reduceIte]
 
 /-- A read outside a store sees the bytes from before it. -/
-theorem Memory.readBytes_storeBytes_disjoint (memory : Memory) (bytes : BitVec 64 → Fin 256)
+theorem Memory.readBytes_storeBytes_disjoint (memory : Memory) (bytes : Memory)
     {start stop address : BitVec 64} {size : Nat}
     (away : address + BitVec.ofNat 64 size ≤ start ∨ stop ≤ address)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
+    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
     readBytes (memory.storeBytes start stop bytes) address size = readBytes memory address size := by
-  apply readBytes_congr
+  apply readBytes_offsets_congr
   intro offset bound
   have ⟨above, below⟩ := covered fits small bound
-  exact Memory.read_storeBytes_outside _ _ _ _ _ (by bv_omega)
+  exact Memory.read_storeBytes_outside (by bv_omega)
 
 private theorem foldr_littleEndian (value offset size : Nat) :
     (List.range size).foldr (fun index rest => value / 256^(offset + index) % 256 + 256 * rest) 0 =
@@ -167,7 +172,7 @@ theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (o
 def Memory.SameOutside (before after : Memory) (footprint : BitVec 64 → Prop) : Prop :=
   ∀ address, ¬ footprint address → after address = before address
 
-theorem Memory.SameOutside.refl (memory : Memory) (footprint : BitVec 64 → Prop) :
+theorem Memory.SameOutside.refl {memory : Memory} {footprint : BitVec 64 → Prop} :
     memory.SameOutside memory footprint :=
   fun _ _ => rfl
 
@@ -184,175 +189,52 @@ theorem Memory.SameOutside.mono {before after : Memory} {footprint larger : BitV
 
 /-- A store inside the footprint keeps the agreement. -/
 theorem Memory.SameOutside.storeBytes {before after : Memory} {footprint : BitVec 64 → Prop}
-    (agree : before.SameOutside after footprint) {start stop : BitVec 64} (bytes : BitVec 64 → Fin 256)
+    (agree : before.SameOutside after footprint) {start stop : BitVec 64} {bytes : Memory}
     (inside : ∀ address, start ≤ address → address < stop → footprint address) :
     before.SameOutside (after.storeBytes start stop bytes) footprint := by
   intro address outside
   have away : ¬ (start ≤ address ∧ address < stop) := fun ⟨lower, upper⟩ => outside (inside address lower upper)
-  simp only [Memory.read_storeBytes, away, ↓reduceIte]
+  simp only [Memory.storeBytes, away, ↓reduceIte]
   exact agree address outside
 
 /-- The frame law: a read outside the footprint sees the original bytes. -/
 theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : BitVec 64 → Prop}
     (agree : before.SameOutside after footprint) {address : BitVec 64} {size : Nat}
     (away : ∀ other, address ≤ other → other < address + BitVec.ofNat 64 size → ¬ footprint other)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
+    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
     Rivet.readBytes after address size = Rivet.readBytes before address size := by
-  apply readBytes_congr
+  apply readBytes_offsets_congr
   intro offset bound
   have ⟨above, below⟩ := covered fits small bound
   exact agree _ (away _ above below)
 
-/-! ## Building memory from regions -/
+/-! ## The image -/
 
-/-- The addresses `[start, stop)` with their contents, concrete or symbolic. The
-importer emits each loadable segment of a binary as a region. -/
-structure MemoryRegion where
+/-- Addresses `[start, stop)` and what the program may do with them. A region
+carries no bytes: what memory holds there is a fact about memory. -/
+structure Region where
   start : BitVec 64
   stop : BitVec 64
-  contents : BitVec 64 → Fin 256 := fun _ => 0
   readable : Bool
   writable : Bool
 
-def MemoryRegion.contains (region : MemoryRegion) (address : BitVec 64) : Bool :=
-  region.start ≤ address && address < region.stop
-
-/-- Two regions share no address. -/
-def MemoryRegion.Disjoint (first second : MemoryRegion) : Prop :=
-  first.stop ≤ first.start ∨ second.stop ≤ second.start ∨
-    first.stop ≤ second.start ∨ second.stop ≤ first.start
-
-/-- The bytes a layout starts with: each address's byte comes from the first region
-containing it, and addresses outside every region read zero. -/
-def Memory.ofRegions (regions : List MemoryRegion) : Memory := fun address =>
-  match regions.find? (·.contains address) with
-  | some region => region.contents address
-  | none => 0
-
-/-- What the loader fixes for a run: the code, and which addresses may be read or
-written. Neither changes during execution; only memory's bytes do. -/
+/-- What the loader fixes for a run: the code, and the regions of the address space
+with their permissions. Neither changes during execution; only memory's bytes do. -/
 structure Image where
   program : Program
-  readable : BitVec 64 → Bool := fun _ => false
-  writable : BitVec 64 → Bool := fun _ => false
+  regions : List Region
 
-/-- An image whose permissions come from a layout: an address has a permission if a
-region containing it grants one. Addresses outside every region have none. -/
-def Image.ofRegions (program : Program) (regions : List MemoryRegion) : Image where
-  program
-  readable address := regions.any fun region => region.contains address && region.readable
-  writable address := regions.any fun region => region.contains address && region.writable
+/-! A permission is a fact about regions. For an image whose regions are listed,
+`simp [Image.writable]` (with the image's definition) turns `image.writable a`
+into "`a` lies in one of the writable regions", a disjunction of bounds that
+`bv_omega` decides from facts in context; `permits_iff` does the same for a range. -/
 
-/-! The lemmas below take `member : region ∈ regions` and read the region's fields
-from it. State the region when proving membership:
+/-- An address is readable when some region containing it is readable. -/
+def Image.readable (image : Image) (address : BitVec 64) : Bool :=
+  image.regions.any fun region => region.readable && region.start ≤ address && address < region.stop
 
-    have input : ({ start := base, stop := limit, contents := bytes,
-                    readable := true, writable := false } : MemoryRegion) ∈ regions := by
-      simp [regions]
-    have readable : permits (Image.ofRegions program regions).readable base limit = true :=
-      Image.permits_readable_ofRegions input valid -/
-
-private theorem permits_ofRegions (regions : List MemoryRegion) (field : MemoryRegion → Bool)
-    {region : MemoryRegion} (member : region ∈ regions) (allowed : field region = true)
-    (valid : region.start ≤ region.stop) :
-    permits (fun other => regions.any fun region => region.contains other && field region)
-      region.start region.stop = true := by
-  rw [permits_iff]
-  refine ⟨valid, fun address lower upper => List.any_eq_true.mpr ⟨region, member, ?_⟩⟩
-  simp [MemoryRegion.contains, allowed, lower, upper]
-
-/-- A readable region is readable throughout; use `permits_within` for parts of it. -/
-theorem Image.permits_readable_ofRegions {program : Program} {regions : List MemoryRegion} {start stop : BitVec 64}
-    {contents : BitVec 64 → Fin 256} {writable : Bool}
-    (member : ⟨start, stop, contents, true, writable⟩ ∈ regions) (valid : start ≤ stop) :
-    permits (Image.ofRegions program regions).readable start stop = true :=
-  permits_ofRegions regions MemoryRegion.readable member rfl valid
-
-/-- A writable region is writable throughout; use `permits_within` for parts of it. -/
-theorem Image.permits_writable_ofRegions {program : Program} {regions : List MemoryRegion} {start stop : BitVec 64}
-    {contents : BitVec 64 → Fin 256} {readable : Bool}
-    (member : ⟨start, stop, contents, readable, true⟩ ∈ regions) (valid : start ≤ stop) :
-    permits (Image.ofRegions program regions).writable start stop = true :=
-  permits_ofRegions regions MemoryRegion.writable member rfl valid
-
-private theorem find_region {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
-    {region : MemoryRegion} (member : region ∈ regions) {address : BitVec 64}
-    (contains : region.contains address = true) :
-    regions.find? (·.contains address) = some region := by
-  induction regions with
-  | nil => cases member
-  | cons head rest inductionHypothesis =>
-    rw [List.pairwise_cons] at disjoint
-    by_cases here : head.contains address = true
-    · simp only [List.find?_cons, here]
-      rcases List.mem_cons.mp member with equal | later
-      · rw [equal]
-      · have apart := disjoint.1 region later
-        simp only [MemoryRegion.Disjoint] at apart
-        simp only [MemoryRegion.contains, Bool.and_eq_true, decide_eq_true_eq] at here contains
-        bv_omega
-    · simp only [List.find?_cons, Bool.not_eq_true] at here ⊢
-      rw [here]
-      rcases List.mem_cons.mp member with equal | later
-      · rw [equal] at contains; simp [contains] at here
-      · exact inductionHypothesis disjoint.2 later
-
-private theorem any_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
-    (field : MemoryRegion → Bool) {region : MemoryRegion} (member : region ∈ regions) {address : BitVec 64}
-    (contains : region.contains address = true) :
-    (regions.any fun other => other.contains address && field other) = field region := by
-  have unique : ∀ other ∈ regions, other.contains address = true → other = region := fun other inside hit =>
-    Option.some.inj ((find_region disjoint inside hit).symm.trans (find_region disjoint member contains))
-  cases granted : field region
-  · apply List.any_eq_false.mpr
-    intro other inside both
-    simp only [Bool.and_eq_true] at both
-    rw [unique other inside both.1, granted] at both
-    simp at both
-  · exact List.any_eq_true.mpr ⟨region, member, by simp [contains, granted]⟩
-
-private theorem contains_inside {start stop address : BitVec 64} {contents : BitVec 64 → Fin 256}
-    {readable writable : Bool} (lower : start ≤ address) (upper : address < stop) :
-    (⟨start, stop, contents, readable, writable⟩ : MemoryRegion).contains address = true := by
-  simp [MemoryRegion.contains, lower, upper]
-
-/-- Inside a region of a disjoint layout, memory holds the region's contents. -/
-theorem Memory.read_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
-    {start stop : BitVec 64} {contents : BitVec 64 → Fin 256} {readable writable : Bool}
-    (member : ⟨start, stop, contents, readable, writable⟩ ∈ regions) {address : BitVec 64}
-    (lower : start ≤ address) (upper : address < stop) :
-    (Memory.ofRegions regions) address = contents address := by
-  have found := find_region disjoint member (contains_inside (contents := contents) (readable := readable)
-    (writable := writable) lower upper)
-  simp only [Memory.ofRegions, found]
-
-/-- Inside a region of a disjoint layout, an address is readable exactly when the region is. -/
-theorem Image.readable_ofRegions {program : Program} {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
-    {start stop : BitVec 64} {contents : BitVec 64 → Fin 256} {readable writable : Bool}
-    (member : ⟨start, stop, contents, readable, writable⟩ ∈ regions) {address : BitVec 64}
-    (lower : start ≤ address) (upper : address < stop) :
-    (Image.ofRegions program regions).readable address = readable :=
-  any_ofRegions disjoint MemoryRegion.readable member (contains_inside lower upper)
-
-/-- Inside a region of a disjoint layout, an address is writable exactly when the region is;
-so read-only data is unwritable. -/
-theorem Image.writable_ofRegions {program : Program} {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
-    {start stop : BitVec 64} {contents : BitVec 64 → Fin 256} {readable writable : Bool}
-    (member : ⟨start, stop, contents, readable, writable⟩ ∈ regions) {address : BitVec 64}
-    (lower : start ≤ address) (upper : address < stop) :
-    (Image.ofRegions program regions).writable address = writable :=
-  any_ofRegions disjoint MemoryRegion.writable member (contains_inside lower upper)
-
-/-- A read inside a region of a disjoint layout sees the region's contents. -/
-theorem Memory.readBytes_ofRegions {regions : List MemoryRegion} (disjoint : regions.Pairwise MemoryRegion.Disjoint)
-    {start stop : BitVec 64} {contents : BitVec 64 → Fin 256} {readable writable : Bool}
-    (member : ⟨start, stop, contents, readable, writable⟩ ∈ regions) {address : BitVec 64} {size : Nat}
-    (lower : start ≤ address) (upper : address + BitVec.ofNat 64 size ≤ stop)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) :
-    readBytes (Memory.ofRegions regions) address size = readBytes contents address size := by
-  apply readBytes_congr
-  intro offset bound
-  have ⟨above, below⟩ := covered fits small bound
-  exact Memory.read_ofRegions disjoint member (by bv_omega) (by bv_omega)
+/-- An address is writable when some region containing it is writable. -/
+def Image.writable (image : Image) (address : BitVec 64) : Bool :=
+  image.regions.any fun region => region.writable && region.start ≤ address && address < region.stop
 
 end Rivet

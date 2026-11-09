@@ -88,15 +88,13 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let base := BitVec.ofNat 64 request.memoryBase
   let writable := BitVec.ofNat 64 request.writableBase
   let limit := BitVec.ofNat 64 (request.memoryBase + request.memory.size)
-  -- The byte at an absolute address, from the request's memory image.
-  let contents := fun (address : BitVec 64) =>
+  -- The byte at an absolute address, from the request's memory image; zero outside it.
+  let memory : Memory := fun address =>
     let value := request.memory[(address - base).toNat]?.getD 0
-    (⟨value % 256, Nat.mod_lt _ (by decide)⟩ : Fin 256)
-  let regions : List MemoryRegion := [
-    { start := base, stop := writable, contents, readable := true, writable := false },
-    { start := writable, stop := limit, contents, readable := true, writable := true }]
-  let image := Image.ofRegions program regions
-  let memory := Memory.ofRegions regions
+    ⟨value % 256, Nat.mod_lt _ (by decide)⟩
+  let image : Image := { program, regions := [
+    { start := base, stop := writable, readable := true, writable := false },
+    { start := writable, stop := limit, readable := true, writable := true }] }
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
