@@ -81,13 +81,13 @@ def MachineState.writeOperand (state : MachineState) (operand : Operand) (value 
   | .memory width address => state.writeMemory (address.evaluate state.registers) width value
   | .immediate _ => state
 
-def MachineState.canRead (state : MachineState) : Operand → Bool
-  | .memory width address => permits state.memory.readable (address.evaluate state.registers)
+def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
+  | .memory width address => permits image.readable (address.evaluate state.registers)
       (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
   | _ => true
 
-def MachineState.canWrite (state : MachineState) : Operand → Bool
-  | .memory width address => permits state.memory.writable (address.evaluate state.registers)
+def MachineState.canWrite (state : MachineState) (image : Image) : Operand → Bool
+  | .memory width address => permits image.writable (address.evaluate state.registers)
       (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
   | .immediate _ => false
   | _ => true
@@ -118,9 +118,9 @@ private def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec wi
   | _ => false
 
 /-- Read both operands from the initial state; commit flags, memory, and history only on success. -/
-private def MachineState.binary (state : MachineState) (operation : BinaryOp) (destination source : Operand) (nextAddress : BitVec 64) : MachineState :=
-  if validBinary operation destination source && state.canRead destination && state.canRead source &&
-      (!operation.writes || state.canWrite destination) then
+private def MachineState.binary (state : MachineState) (image : Image) (operation : BinaryOp) (destination source : Operand) (nextAddress : BitVec 64) : MachineState :=
+  if validBinary operation destination source && state.canRead image destination && state.canRead image source &&
+      (!operation.writes || state.canWrite image destination) then
     let width := destination.width.getD .qword
     let left := (state.readOperand destination).setWidth width.bits
     let right := (state.readOperand source).setWidth width.bits
@@ -143,7 +143,7 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
   | .above => !state.carryFlag && !state.zeroFlag
   | .sign => state.signFlag
 
-private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
+private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
   | .nop => next nextAddress state
   | .movd destination source =>
@@ -161,7 +161,7 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
     else { state with status := .fault }
   | .loadXmm _ destination source =>
     let address := source.evaluate state.registers
-    if permits state.memory.readable address (address + 16#64) then
+    if permits image.readable address (address + 16#64) then
       let value := readBytes state.memory address 16
       next nextAddress { state with
         xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register
@@ -169,11 +169,11 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
     else { state with status := .fault }
   | .storeXmm _ destination source =>
     let address := destination.evaluate state.registers
-    if permits state.memory.writable address (address + 16#64) then
+    if permits image.writable address (address + 16#64) then
       let value := state.xmmRegisters source
       next nextAddress { state with memory := state.memory.storeBytes address (address + 16#64) (littleEndianAt value address) }
     else { state with status := .fault }
-  | .binary operation destination source => state.binary operation destination source nextAddress
+  | .binary operation destination source => state.binary image operation destination source nextAddress
   | .shift operation destination count =>
     if validShift destination count then
       let width := (destination.width.getD .qword).bits
@@ -192,7 +192,7 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
           signFlag := result.msb }
     else { state with status := .fault }
   | .imul destination source immediate =>
-    if validImul destination source immediate && state.canRead source then
+    if validImul destination source immediate && state.canRead image source then
       let width := (destination.width.getD .qword).bits
       let sourceValue := (state.readOperand source).setWidth width
       let multiplier := match immediate with
@@ -208,23 +208,23 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
     else { state with status := .fault }
   | .lea destination address => next nextAddress (state.write destination (address.evaluate state.registers))
   | .movzx destination source =>
-    if (source.width == some .byte || source.width == some .word) && state.canRead source then
+    if (source.width == some .byte || source.width == some .word) && state.canRead image source then
       next nextAddress { state.write destination.parent (state.readOperand source) with
         readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .movsxd destination source =>
-    if source.width == some .dword && state.canRead source then
+    if source.width == some .dword && state.canRead image source then
       next nextAddress { state.write destination ((state.readOperand source).setWidth 32 |>.signExtend 64) with
         readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .mov destination source =>
-    if validMove destination source && state.canRead source && state.canWrite destination then
+    if validMove destination source && state.canRead image source && state.canWrite image destination then
       -- Read and address calculation use the pre-instruction registers, including aliases.
       let result := state.writeOperand destination (state.readOperand source)
       next nextAddress { result with readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .not destination =>
-    if state.canRead destination && state.canWrite destination then
+    if state.canRead image destination && state.canWrite image destination then
       next nextAddress { state.writeOperand destination (~~~(state.readOperand destination)) with
         readHistory := (state.recordRead destination).readHistory }
     else { state with status := .fault }
@@ -238,25 +238,25 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
   | .jcc condition target =>
     if condition.holds state then { state with status := .running target } else next nextAddress state
   | .setcc condition destination =>
-    if destination.width == some .byte && state.canWrite destination then
+    if destination.width == some .byte && state.canWrite image destination then
       next nextAddress (state.writeOperand destination (if condition.holds state then 1 else 0))
     else { state with status := .fault }
   | .cmovcc condition destination source =>
     -- Memory sources are read even when the condition is false. Writing the old
     -- destination through its operand also clears the upper half of r32.
-    if validConditionalMove destination source && state.canRead source then
+    if validConditionalMove destination source && state.canRead image source then
       let value := if condition.holds state then state.readOperand source else state.readOperand destination
       next nextAddress { state.writeOperand destination value with readHistory := (state.recordRead source).readHistory }
     else { state with status := .fault }
   | .push source =>
     let pointer := state.registers .rsp - 8#64
-    if permits state.memory.writable pointer (pointer + 8#64) then
+    if permits image.writable pointer (pointer + 8#64) then
       -- PUSH RSP stores the original pointer, before decrementing it.
       next nextAddress ((state.writeMemory pointer .qword (state.registers source)).write .rsp pointer)
     else { state with status := .fault }
   | .pop destination =>
     let address := state.registers .rsp
-    if permits state.memory.readable address (address + 8#64) then
+    if permits image.readable address (address + 8#64) then
       -- Write the destination last: POP RSP replaces the incremented pointer.
       let result := (state.write .rsp (state.registers .rsp + 8#64)).write destination
         (readBytes state.memory address 8)
@@ -264,13 +264,13 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
     else { state with status := .fault }
   | .call target =>
     let pointer := state.registers .rsp - 8#64
-    if permits state.memory.writable pointer (pointer + 8#64) then
+    if permits image.writable pointer (pointer + 8#64) then
       { (state.writeMemory pointer .qword nextAddress).write .rsp pointer with
         status := .running target }
     else { state with status := .fault }
   | .ret =>
     let address := state.registers .rsp
-    if permits state.memory.readable address (address + 8#64) then
+    if permits image.readable address (address + 8#64) then
       { state.write .rsp (state.registers .rsp + 8#64) with
         status := .running (readBytes state.memory address 8)
         readHistory := state.readHistory ++ [⟨address,8⟩] }
@@ -278,33 +278,30 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
 
 /-- Execute one fetched instruction. Instruction contracts provide its proof interface;
 the interpreter implementation is hidden from normal imports. -/
-@[no_expose] def step (program : Program) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
+@[no_expose] def step (image : Image) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match state.status with
-  | .running address => match program.fetch address with
-    | some instruction => stepOp instruction.op (address + BitVec.ofNat 64 instruction.length) state undefinedFlags
+  | .running address => match image.program.fetch address with
+    | some instruction => stepOp image instruction.op (address + BitVec.ofNat 64 instruction.length) state undefinedFlags
     | none => { state with status := .fault }
   | _ => state
 
-def execute (program : Program) (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
+def execute (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
   match steps with
   | 0 => state
-  | remainingSteps+1 => execute program remainingSteps (step program state (choices 0)) (choices.drop 1)
+  | remainingSteps+1 => execute image remainingSteps (step image state (choices 0)) (choices.drop 1)
 
 /-- The little-endian address stored in the current stack return slot. -/
 def MachineState.returnAddress (state : MachineState) : BitVec 64 :=
   readBytes state.memory (state.registers .rsp) 8
 
-def MachineState.ValidReturnSlot (state : MachineState) : Prop :=
-  permits state.memory.readable (state.registers .rsp) (state.registers .rsp + 8#64) = true
-
-theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState)
+theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
     {choices : FlagChoices} :
-    execute program (firstSteps + secondSteps) state choices =
-      execute program secondSteps (execute program firstSteps state choices) (choices.drop firstSteps) := by
+    execute image (firstSteps + secondSteps) state choices =
+      execute image secondSteps (execute image firstSteps state choices) (choices.drop firstSteps) := by
   induction firstSteps generalizing state choices with
   | zero => simp [execute]
   | succ firstSteps inductionHypothesis =>
     simpa [Nat.succ_add, execute, Nat.add_comm] using
-      inductionHypothesis (step program state (choices 0)) (choices := choices.drop 1)
+      inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
 end Rivet

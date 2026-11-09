@@ -77,31 +77,39 @@ addresses to `Fin 256` values. Addresses are emitted as `BitVec 64` literals (`0
 Imported contents use a `ByteArray` and return zero past its end, so BSS does not
 expand the generated source. Handwritten regions can use symbolic byte functions.
 
-Construct the complete memory layout before constructing the machine state:
+Construct the complete layout, then build the image (the program with its
+permissions) and the machine state's initial bytes from it:
 
 ```lean
+def layout (stack input output : Rivet.MemoryRegion) : List Rivet.MemoryRegion :=
+  Example.regions ++ [stack, input, output]
+
+def image (stack input output : Rivet.MemoryRegion) : Rivet.Image :=
+  Rivet.Image.ofRegions Example.program (layout stack input output)
+
 def initial (registers : Rivet.Reg → BitVec 64)
     (stack input output : Rivet.MemoryRegion) : Rivet.MachineState := {
-  memory := Rivet.Memory.ofRegions (Example.regions ++ [stack, input, output])
+  memory := Rivet.Memory.ofRegions (layout stack input output)
   registers
   zeroFlag := false
   status := .running Example.entry
   readHistory := [] }
 ```
 
-`MachineState.memory` is a flat `Memory`: a byte, a read permission, and a write
-permission at every address. `Memory.ofRegions` builds one from a layout. Addresses
-outside every region are inaccessible and read zero. A byte in overlapping regions
+`MachineState.memory` is a flat `Memory`: a byte at every address. Permissions are
+fixed for a run and live in the `Image`: `Image.ofRegions` takes them from a layout,
+and `Memory.ofRegions` takes the bytes. Addresses outside every region are
+inaccessible and read zero. A byte in overlapping regions
 comes from the first region containing it, so buffers that alias should share a
 region; proofs about region contents assume the regions are pairwise disjoint.
-Stores change bytes without changing permissions. Low-level store helpers rely on
+Stores change only bytes. Low-level store helpers rely on
 instruction semantics to check write permissions.
 
 These are the ELF-declared byte ranges and read/write flags, not an exact Linux
 page map. Page rounding, shared boundary pages, dynamic loading, process startup,
 and OS permission adjustments are not modeled. Executable flags still determine
-which segments can supply decoded instructions; the state has no executable
-permission field. CALL/RET transfer control normally; completion is specified
+which segments can supply decoded instructions; the image has no executable
+permission map. CALL/RET transfer control normally; completion is specified
 by the proof's postcondition.
 
 The importer and iced-x86 are trusted to translate the bytes correctly. Lean
