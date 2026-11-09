@@ -149,17 +149,17 @@ theorem Reaches.not_fault (reached : Reaches program initial final)
   exact notFaulted faulted
 
 -- Execution proofs are implementation details of the reachability guarantees.
-@[simp] private theorem writeMemory_registers (state : MachineState) (address : Nat) (width : Width)
+@[simp] private theorem writeMemory_registers (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64) : (state.writeMemory address width value).registers = state.registers := rfl
 
-@[simp] private theorem writeMemory_readHistory (state : MachineState) (address : Nat) (width : Width)
+@[simp] private theorem writeMemory_readHistory (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64) : (state.writeMemory address width value).readHistory = state.readHistory := rfl
 
 @[simp] private theorem writeOperand_readHistory (state : MachineState) (operand : Operand)
     (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write]
 
-private theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : Nat} (unchanged : modifies operation register = false) :
+private theorem op_preserves (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : BitVec 64} (unchanged : modifies operation register = false) :
     (stepOp operation nextAddress state undefinedFlags).registers register = state.registers register := by
   cases operation with
   | binary operation destination source =>
@@ -270,18 +270,16 @@ private theorem MemoryInvariant.trans (first : MemoryInvariant before middle) (s
   rw [← first.writable]
   exact second.unwritable
 
-private theorem MemoryInvariant.storeBytes (memory : Memory) (address size : Nat) (bytes : Nat → Fin 256)
-    (allowed : permits memory.writable address size = true) :
-    MemoryInvariant memory (memory.storeBytes address size bytes) := by
-  refine ⟨rfl, rfl, (Memory.SameOutside.refl _ _).storeBytes bytes fun other lower upper => ?_⟩
-  have permitted := (permits_iff _ _ _).mp allowed |>.2 (other - address) (by omega)
-  rwa [Nat.add_sub_of_le lower] at permitted
+private theorem MemoryInvariant.storeBytes (memory : Memory) (start stop : BitVec 64)
+    (bytes : BitVec 64 → Fin 256) (allowed : permits memory.writable start stop = true) :
+    MemoryInvariant memory (memory.storeBytes start stop bytes) :=
+  ⟨rfl, rfl, (Memory.SameOutside.refl _ _).storeBytes bytes ((permits_iff _ _ _).mp allowed).2⟩
 
-private theorem MemoryInvariant.writeMemory (state : MachineState) (address : Nat) (width : Width)
-    (value : BitVec 64) (allowed : permits state.memory.writable address width.bytes = true) :
-    MemoryInvariant state.memory (state.writeMemory address width value).memory := by
-  exact MemoryInvariant.storeBytes state.memory address width.bytes
-    (fun offset => ⟨value.toNat / 256^offset % 256, Nat.mod_lt _ (by decide)⟩) allowed
+private theorem MemoryInvariant.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
+    (value : BitVec 64)
+    (allowed : permits state.memory.writable address (address + BitVec.ofNat 64 width.bytes) = true) :
+    MemoryInvariant state.memory (state.writeMemory address width value).memory :=
+  MemoryInvariant.storeBytes state.memory _ _ _ allowed
 
 private theorem MemoryInvariant.writeOperand (state : MachineState) (destination : Operand) (value : BitVec 64)
     (allowed : state.canWrite destination = true) :
@@ -290,7 +288,7 @@ private theorem MemoryInvariant.writeOperand (state : MachineState) (destination
   case memory width address => exact MemoryInvariant.writeMemory state _ width value allowed
 
 /-- The memory effect of one decoded operation, including faulting paths. -/
-private theorem op_memory_invariant (operation : Op) (state : MachineState) (nextPC : Nat) (flags : FlagValues) :
+private theorem op_memory_invariant (operation : Op) (state : MachineState) (nextPC : BitVec 64) (flags : FlagValues) :
     MemoryInvariant state.memory (stepOp operation nextPC state flags).memory := by
   cases operation with
   | binary operation destination source =>
@@ -322,8 +320,7 @@ private theorem op_memory_invariant (operation : Op) (state : MachineState) (nex
   | storeXmm kind destination source =>
     simp only [stepOp]
     split
-    · exact MemoryInvariant.storeBytes state.memory (destination.evaluate state.registers).toNat 16
-        (fun offset => ⟨(state.xmmRegisters source).toNat / 256^offset % 256, Nat.mod_lt _ (by decide)⟩) (by assumption)
+    · exact MemoryInvariant.storeBytes state.memory _ _ _ (by assumption)
     · exact MemoryInvariant.refl _
   | push source | call target =>
     simp only [stepOp]

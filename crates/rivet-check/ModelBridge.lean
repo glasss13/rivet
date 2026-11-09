@@ -6,6 +6,15 @@ meta import JsonDeriving
 @[expose] public section
 open Rivet Json
 
+-- Addresses travel as JSON numbers, as before.
+instance : FromJson (BitVec 64) where
+  fromJson? json := do
+    let value : Nat ← fromJson? json
+    unless value < 2^64 do throw "address exceeds 64 bits"
+    return BitVec.ofNat 64 value
+instance : ToJson (BitVec 64) where
+  toJson value := toJson value.toNat
+
 deriving instance FromJson for Reg
 deriving instance FromJson for Reg8
 deriving instance FromJson for Reg32
@@ -60,7 +69,7 @@ def snapshot (memoryBase memorySize : Nat) (state : MachineState) : SnapshotOutp
   zeroFlag := state.zeroFlag
   carryFlag := state.carryFlag
   status := state.status
-  memory := (Array.range memorySize).map (fun offset => (state.memory (memoryBase + offset)).val) }
+  memory := (Array.range memorySize).map (fun offset => (state.memory (BitVec.ofNat 64 (memoryBase + offset))).val) }
 
 def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   unless request.registers.size == 16 && request.steps ≤ 64 do
@@ -76,15 +85,16 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   unless request.memoryBase ≤ request.writableBase &&
       request.writableBase ≤ request.memoryBase + request.memory.size do
     throw "writable base outside memory range"
-  let contents := fun offset =>
-    let value := request.memory[offset]?.getD 0
+  let base := BitVec.ofNat 64 request.memoryBase
+  let writable := BitVec.ofNat 64 request.writableBase
+  let limit := BitVec.ofNat 64 (request.memoryBase + request.memory.size)
+  -- The byte at an absolute address, from the request's memory image.
+  let contents := fun (address : BitVec 64) =>
+    let value := request.memory[(address - base).toNat]?.getD 0
     (⟨value % 256, Nat.mod_lt _ (by decide)⟩ : Fin 256)
   let memory := Memory.ofRegions [
-    { address := request.memoryBase, size := request.writableBase - request.memoryBase,
-      contents, readable := true, writable := false },
-    { address := request.writableBase, size := request.memoryBase + request.memory.size - request.writableBase,
-      contents := fun offset => contents (request.writableBase - request.memoryBase + offset),
-      readable := true, writable := true }]
+    { start := base, stop := writable, contents, readable := true, writable := false },
+    { start := writable, stop := limit, contents, readable := true, writable := true }]
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
@@ -98,7 +108,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]
   for index in [:request.steps] do
-    if !current.status.isRunning || current.status == .running request.stopAddress then break
+    if !current.status.isRunning || current.status == .running (BitVec.ofNat 64 request.stopAddress) then break
     let some undefinedFlags := request.nativeFlags[index]?
       | throw "missing native flag observation"
     current := step program current undefinedFlags

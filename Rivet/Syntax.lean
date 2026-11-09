@@ -2,7 +2,6 @@ module
 public import Std
 @[expose] public section
 namespace Rivet
-def word : Nat := 2^64
 inductive Reg where
   | rax | rbx | rcx | rdx | rsi | rdi | rbp | rsp
   | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15
@@ -187,65 +186,63 @@ inductive Op where
   | not (destination : Operand)
   | inc (destination : Reg)
   | dec (destination : Reg)
-  | jmp (target : Nat)
-  | jcc (condition : Condition) (target : Nat)
+  | jmp (target : BitVec 64)
+  | jcc (condition : Condition) (target : BitVec 64)
   | setcc (condition : Condition) (destination : Operand)
   | cmovcc (condition : Condition) (destination source : Operand)
   | push (source : Reg)
   | pop (destination : Reg)
-  | call (target : Nat)
+  | call (target : BitVec 64)
   | ret
   deriving DecidableEq
 /-- Whether an instruction can write a register, including implicit RSP updates. -/
 def modifies (operation : Op) (register : Reg) : Bool :=
-  let destinationRegister : Operand → Option Reg
-    | .reg8 register => some register.parent | .reg16 register => some register.parent
-    | .reg32 register => some register.parent | .reg64 register => some register
-    | _ => none
-  match operation, register with
-  | .movzx destination _, register => destination.parent == register
-  | .binary .cmp _ _, _ | .binary .test _ _, _ => false
-  | .binary _ destination _, register | .shift _ destination _, register | .imul destination _ _, register
-  | .not destination, register | .mov destination _, register | .setcc _ destination, register
-  | .cmovcc _ destination _, register => destinationRegister destination == some register
-  | .lea destination _, register | .movsxd destination _, register
-  | .inc destination, register | .dec destination, register => destination == register
-  | .pop destination, register => register == .rsp || destination == register
-  | .push _, register | .call _, register | .ret, register => register == .rsp
-  | _, _ => false
+  let writes : Operand → Bool
+    | .reg8 destination | .reg16 destination | .reg32 destination => destination.parent == register
+    | .reg64 destination => destination == register
+    | .memory .. | .immediate _ => false
+  match operation with
+  | .binary operation destination _ => operation != .cmp && operation != .test && writes destination
+  | .shift _ destination _ | .imul destination _ _ | .not destination | .mov destination _
+  | .setcc _ destination | .cmovcc _ destination _ => writes destination
+  | .movzx destination _ => destination.parent == register
+  | .lea destination _ | .movsxd destination _ | .inc destination | .dec destination => destination == register
+  | .pop destination => register == .rsp || destination == register
+  | .push _ | .call _ | .ret => register == .rsp
+  | .nop | .movd .. | .pshufd .. | .loadXmm .. | .storeXmm .. | .jmp _ | .jcc .. => false
 
 structure Instruction where
-  address : Nat
+  address : BitVec 64
   length : Nat
   op : Op
   deriving DecidableEq
 abbrev Program := List Instruction
 
-/-- Fetch at an exact byte address. Invalid addresses or x86 instruction lengths do not execute. -/
-def Program.fetch (program : Program) (address : Nat) : Option Instruction :=
-  program.find? fun instruction => instruction.address == address && address < word &&
+/-- Fetch at an exact byte address. Invalid x86 instruction lengths do not execute. -/
+def Program.fetch (program : Program) (address : BitVec 64) : Option Instruction :=
+  program.find? fun instruction => instruction.address == address &&
     0 < instruction.length && instruction.length ≤ 15
 
 /-- The instruction at `address` has `length` and `operation`. Execution continues at
-`(address + length) % word` unless the operation transfers control. -/
-abbrev InstructionAt (program : Program) (address length : Nat) (operation : Op) : Prop :=
+`address + length` unless the operation transfers control. -/
+abbrev InstructionAt (program : Program) (address : BitVec 64) (length : Nat) (operation : Op) : Prop :=
   program.fetch address = some ⟨address, length, operation⟩
 
 /-- At and above `address`, `program` fetches as `suffix` does. Generated programs
 state this once per instruction, so any instruction is found in constant time. -/
-def Program.FetchesFrom (program suffix : Program) (address : Nat) : Prop :=
+def Program.FetchesFrom (program suffix : Program) (address : BitVec 64) : Prop :=
   ∀ other, address ≤ other → program.fetch other = suffix.fetch other
 
 /-- Above a suffix's first instruction, the rest of the suffix takes over. -/
-theorem Program.FetchesFrom.skip {program rest : Program} {instruction : Instruction} {next : Nat}
+theorem Program.FetchesFrom.skip {program rest : Program} {instruction : Instruction} {next : BitVec 64}
     (previous : program.FetchesFrom (instruction :: rest) instruction.address)
     (increasing : instruction.address < next) : program.FetchesFrom rest next := by
   intro other bound
-  have differs : (instruction.address == other) = false := by simp; omega
-  rw [previous other (by omega)]
+  have differs : (instruction.address == other) = false := by simp; bv_omega
+  rw [previous other (by bv_omega)]
   simp [Program.fetch, differs]
 structure Access where
-  address : Nat
+  address : BitVec 64
   size : Nat
   deriving DecidableEq
 end Rivet
