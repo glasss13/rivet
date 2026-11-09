@@ -15,10 +15,10 @@ pub struct Function<'a> {
 pub struct Image<'a> {
     pub entry: u64,
     pub functions: Vec<Function<'a>>,
-    pub regions: Vec<MemoryRegion<'a>>,
+    pub segments: Vec<Segment<'a>>,
 }
 
-pub struct MemoryRegion<'a> {
+pub struct Segment<'a> {
     pub address: u64,
     pub size: u64,
     pub bytes: &'a [u8],
@@ -49,7 +49,7 @@ pub fn image<'a>(bytes: &'a [u8], entry_name: &str) -> Result<Image<'a>> {
             .any(|header| matches!(header.sh_type(endian), SHT_REL | SHT_RELA | SHT_RELR)),
         "relocation records are not supported; link the executable without --emit-relocs"
     );
-    let mut regions = Vec::new();
+    let mut segments = Vec::new();
     for header in file.elf_program_headers() {
         if header.p_type(endian) != PT_LOAD {
             continue;
@@ -72,7 +72,7 @@ pub fn image<'a>(bytes: &'a [u8], entry_name: &str) -> Result<Image<'a>> {
             .data(endian, bytes)
             .map_err(|()| anyhow::anyhow!("segment data outside ELF file"))?;
         if size != 0 {
-            regions.push(MemoryRegion {
+            segments.push(Segment {
                 address,
                 size,
                 bytes: data,
@@ -81,8 +81,8 @@ pub fn image<'a>(bytes: &'a [u8], entry_name: &str) -> Result<Image<'a>> {
             });
         }
     }
-    regions.sort_by_key(|region| region.address);
-    for pair in regions.windows(2) {
+    segments.sort_by_key(|segment| segment.address);
+    for pair in segments.windows(2) {
         ensure!(
             pair[0].address + pair[0].size <= pair[1].address,
             "overlapping loadable segments at {:#x} and {:#x}",
@@ -152,6 +152,6 @@ pub fn image<'a>(bytes: &'a [u8], entry_name: &str) -> Result<Image<'a>> {
     Ok(Image {
         entry,
         functions,
-        regions,
+        segments,
     })
 }

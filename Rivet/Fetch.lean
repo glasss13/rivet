@@ -41,7 +41,7 @@ private meta def firstMatch (list : Expr) (pc : Nat) (limit : Nat := 0) : MetaM 
   return none
 
 /-- The program an image carries: `image.program` reduced to the program itself when
-the image unfolds to a literal, such as `{ program := p, … }` or `Image.ofRegions p rs`. -/
+the image unfolds to a literal, such as `{ program := p, regions := rs }`. -/
 private meta def programOf (program : Expr) : MetaM Expr := do
   let program ← instantiateMVars program
   let image? := if program.isAppOfArity ``Image.program 1 then some program.appArg!
@@ -50,7 +50,7 @@ private meta def programOf (program : Expr) : MetaM Expr := do
       | _ => none
   let some image := image? | return program
   let image ← whnfD image
-  return if image.isAppOfArity ``Image.mk 3 then image.getArg! 0 else program
+  return if image.isAppOfArity ``Image.mk 2 then image.getArg! 0 else program
 
 /-- For a concrete program and an address `address` with value `pc`, the instruction
 `Program.fetch` returns and a proof `program.fetch address = some instruction`,
