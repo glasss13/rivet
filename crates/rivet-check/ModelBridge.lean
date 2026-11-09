@@ -79,7 +79,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let contents := fun offset =>
     let value := request.memory[offset]?.getD 0
     (⟨value % 256, Nat.mod_lt _ (by decide)⟩ : Fin 256)
-  let memory ← Memory.ofRegions [
+  let memory := Memory.ofRegions [
     { address := request.memoryBase, size := request.writableBase - request.memoryBase,
       contents, readable := true, writable := false },
     { address := request.writableBase, size := request.memoryBase + request.memory.size - request.writableBase,

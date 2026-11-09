@@ -168,8 +168,7 @@ private def stepOp (operation : Op) (nextAddress : Nat) (state : MachineState) (
     let address := (destination.evaluate state.registers).toNat
     if permits state.memory.writable address 16 then
       let value := state.xmmRegisters source
-      next nextAddress { state with memory := state.memory.storeBytes address 16 (fun offset =>
-        ⟨(value.toNat / 256^offset) % 256, Nat.mod_lt _ (by decide)⟩) }
+      next nextAddress { state with memory := state.memory.storeBytes address 16 (littleEndianBytes value) }
     else { state with status := .fault }
   | .binary operation destination source => state.binary operation destination source nextAddress
   | .shift operation destination count =>
