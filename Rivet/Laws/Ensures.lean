@@ -4,7 +4,7 @@ public import Rivet.Laws.Memory
 public import Rivet.Laws.Program
 public import Rivet.Laws.Operands
 import all Rivet.Interpreter.Machine
--- Laws of execution: block contracts (`Ensures`), reachability, and what execution preserves.
+-- Laws of execution: block contracts (`Ensures`) and what execution preserves.
 @[expose] public section
 namespace Rivet
 
@@ -17,70 +17,33 @@ namespace Rivet
   funext index
   simp [drop, Nat.add_assoc]
 
-theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
+private theorem execute_zero (image : Image) (state : MachineState) (choices : FlagChoices) :
+    execute image 0 state choices = state := by
+  rw [execute]
+
+private theorem execute_succ (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
+    execute image (steps + 1) state choices =
+      execute image steps (step image state (choices 0)) (choices.drop 1) := by
+  rw [execute]
+
+private theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
     {choices : FlagChoices} :
     execute image (firstSteps + secondSteps) state choices =
       execute image secondSteps (execute image firstSteps state choices) (choices.drop firstSteps) := by
   induction firstSteps generalizing state choices with
-  | zero => simp [execute]
+  | zero => simp [execute_zero]
   | succ firstSteps inductionHypothesis =>
-    simpa [Nat.succ_add, execute, Nat.add_comm] using
+    simpa [Nat.succ_add, execute_succ, Nat.add_comm] using
       inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
-/-- Some finite execution reaches the final state. This alone does not guarantee
-termination or correctness for every choice of undefined flags. -/
-def Reaches (image : Image) (initial final : MachineState) : Prop :=
-  ∃ (choices : FlagChoices) (steps : Nat), execute image steps initial choices = final
-
-/-- Use a finite prefix of one supply, then continue with another. -/
-private def appendChoices (choices : FlagChoices) (count : Nat) (rest : FlagChoices) : FlagChoices :=
-  fun index => if index < count then choices index else rest (index - count)
-
-@[simp] private theorem drop_appendChoices (choices rest : FlagChoices) (count : Nat) :
-    (appendChoices choices count rest).drop count = rest := by
-  funext index
-  simp [FlagChoices.drop, appendChoices, Nat.not_lt_of_ge (Nat.le_add_right count index)]
-
-/-- Bounded execution only depends on the corresponding finite prefix of choices. -/
-private theorem execute_congr_choices (image : Image) (steps : Nat) (state : MachineState)
-    (first second : FlagChoices) (agree : ∀ index < steps, first index = second index) :
-    execute image steps state first = execute image steps state second := by
-  induction steps generalizing state first second with
-  | zero => rfl
-  | succ steps inductionHypothesis =>
-    simp only [execute, agree 0 (Nat.zero_lt_succ _)]
-    apply inductionHypothesis
-    intro index bound
-    exact agree (1 + index) (by omega)
-
-@[simp] private theorem execute_appendChoices (image : Image) (steps : Nat) (state : MachineState)
-    (choices rest : FlagChoices) :
-    execute image steps state (appendChoices choices steps rest) = execute image steps state choices := by
-  apply execute_congr_choices
-  intro index bound
-  simp [appendChoices, bound]
-
-theorem Reaches.trans (first : Reaches image initial intermediate)
-    (second : Reaches image intermediate final) : Reaches image initial final := by
-  obtain ⟨choices, earlier, rfl⟩ := first
-  obtain ⟨rest, later, rfl⟩ := second
-  exact ⟨appendChoices choices earlier rest, earlier + later, by simp [execute_add]⟩
-
-/-- For every choice supply, a block eventually satisfies its postcondition.
-The witness may depend on the supply; no instruction budget is required of callers. -/
+/-- `Ensures image precondition postcondition` means: for every initial state satisfying
+`precondition` and every supply of undefined-flag values, some finite number of interpreter
+steps from that state reaches a state satisfying `postcondition`. Zero steps is allowed. The
+number of steps may depend on the initial state and the supply, and no step count is exposed. -/
 structure Ensures (image : Image) (precondition postcondition : MachineState → Prop) : Prop where
   private mk ::
   private allChoices : ∀ initial, precondition initial → ∀ choices : FlagChoices,
     ∃ final, (∃ steps, execute image steps initial choices = final) ∧ postcondition final
-
-/-- Obtain one reachable result. The contract itself guarantees the postcondition
-for every choice supply; this theorem does not expose that implementation detail. -/
-theorem Ensures.run (contract : Ensures image precondition postcondition)
-    (initial : MachineState) (assumption : precondition initial) :
-    ∃ final, Reaches image initial final ∧ postcondition final := by
-  let choices : FlagChoices := fun _ => ⟨false, false⟩
-  obtain ⟨final, reached, result⟩ := contract.allChoices initial assumption choices
-  exact ⟨final, ⟨choices, reached⟩, result⟩
 
 /-- Prove a contract separately for each initial state satisfying the precondition. -/
 theorem Ensures.intro
@@ -95,20 +58,11 @@ private theorem Ensures.of_step
     Ensures image precondition postcondition := by
   constructor
   intro initial assumption choices
-  exact ⟨step image initial (choices 0), ⟨1, rfl⟩, transition initial assumption (choices 0)⟩
-
-/-- Retain reachability alongside a block's result, for deriving facts about the
-initial/final state pair without opening the execution witness. -/
-theorem Ensures.with_reachability (contract : Ensures image (· = initial) postcondition) :
-    Ensures image (· = initial) (fun final => Reaches image initial final ∧ postcondition final) := by
-  constructor
-  intro actual equal choices
-  subst actual
-  obtain ⟨final, reached, result⟩ := contract.allChoices initial rfl choices
-  exact ⟨final, reached, ⟨choices, reached⟩, result⟩
+  exact ⟨step image initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
+    transition initial assumption (choices 0)⟩
 
 theorem Ensures.refl : Ensures image predicate predicate :=
-  ⟨fun initial assumption _ => ⟨initial, ⟨0, rfl⟩, assumption⟩⟩
+  ⟨fun initial assumption choices => ⟨initial, ⟨0, execute_zero image initial choices⟩, assumption⟩⟩
 
 theorem Ensures.seq (first : Ensures image precondition intermediate)
     (second : Ensures image intermediate postcondition) : Ensures image precondition postcondition := by
@@ -145,33 +99,12 @@ theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : Mac
   induction bound : measure initial using Nat.strongRecOn generalizing initial choices with
   | ind bound inductionHypothesis =>
     by_cases done : finished initial
-    · exact ⟨initial, ⟨0, rfl⟩, assumption, done⟩
+    · exact ⟨initial, ⟨0, execute_zero image initial choices⟩, assumption, done⟩
     · obtain ⟨middle, ⟨earlier, rfl⟩, holds, decreases⟩ := (body initial assumption done).allChoices initial rfl choices
       obtain ⟨final, ⟨later, reached⟩, result⟩ := inductionHypothesis _ (by omega) _ holds (choices.drop earlier) rfl
       exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
-/-- A stopped state remains unchanged under any further bounded execution. -/
-theorem execute_stopped (image : Image) (steps : Nat) (state : MachineState) {choices : FlagChoices} (stopped : state.status.isRunning = false) :
-    execute image steps state choices = state := by
-  have stepUnchanged (undefinedFlags : FlagValues) : step image state undefinedFlags = state := by
-    cases status : state.status <;> simp_all [step, ExecutionStatus.isRunning]
-  induction steps generalizing choices with
-  | zero => rfl
-  | succ steps inductionHypothesis => simpa [execute, stepUnchanged] using inductionHypothesis (choices := choices.drop 1)
-
-theorem Reaches.stopped (reached : Reaches image initial final)
-    (stopped : initial.status.isRunning = false) : final = initial := by
-  obtain ⟨choices, steps, rfl⟩ := reached
-  exact execute_stopped _ _ _ stopped
-
-theorem Reaches.not_fault (reached : Reaches image initial final)
-    (notFaulted : final.status ≠ .fault) : initial.status ≠ .fault := by
-  intro faulted
-  have equal := reached.stopped (by simp [faulted, ExecutionStatus.isRunning])
-  subst final
-  exact notFaulted faulted
-
--- Execution proofs are implementation details of the reachability guarantees.
+-- Execution proofs are implementation details of `Ensures.preserves_unwritable`.
 /-- Memory changes only at writable addresses: stores check write permission. -/
 private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
   before.SameOutside after (image.writable · = true)
@@ -258,16 +191,21 @@ private theorem step_writes_within (image : Image) (state : MachineState) (flags
 private theorem execute_writes_within (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
     WritesWithin image state.memory (execute image steps state choices).memory := by
   induction steps generalizing state choices with
-  | zero => exact Memory.SameOutside.refl
+  | zero => rw [execute_zero]; exact Memory.SameOutside.refl
   | succ steps ih =>
+    rw [execute_succ]
     exact (step_writes_within image state (choices 0)).trans
       (ih (step image state (choices 0)) (choices.drop 1))
 
 /-- Execution changes memory only where the image allows writes, including when it
-faults. Read-only data and unmapped addresses are unchanged. -/
-theorem Reaches.preserves_unwritable (reached : Reaches image initial final) :
-    initial.memory.SameOutside final.memory (image.writable · = true) := by
-  obtain ⟨choices, steps, rfl⟩ := reached
-  exact execute_writes_within image steps initial choices
+faults: read-only data and unmapped addresses keep their bytes. -/
+theorem Ensures.preserves_unwritable (contract : Ensures image (· = initial) postcondition) :
+    Ensures image (· = initial) (fun final =>
+      postcondition final ∧ initial.memory.SameOutside final.memory (image.writable · = true)) := by
+  constructor
+  intro actual equal choices
+  subst actual
+  obtain ⟨final, ⟨steps, reached⟩, result⟩ := contract.allChoices initial rfl choices
+  exact ⟨final, ⟨steps, reached⟩, result, reached ▸ execute_writes_within image steps initial choices⟩
 
 end Rivet
