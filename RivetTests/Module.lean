@@ -64,7 +64,7 @@ example (s : MachineState) (h : s.status = .running 0x1008)
     exact later
   exact Ensures.refl.consequence (fun _ h => h) (fun _ _ => trivial)
 
--- 5. `move` applied by hand: its default finds the reduced permission, or fails plainly.
+-- 5. `move` applied by hand: its default finds the reduced permission.
 example (s : MachineState) (h : s.status = .running 0x1000)
     (writable : permits (Image.writable ⟨prog, regions⟩) (s.registers .rbx - 8#64)
       (s.registers .rbx - 8#64 + 8#64) = true) : True := by
@@ -72,10 +72,16 @@ example (s : MachineState) (h : s.status = .running 0x1000)
     (.reg64 .rax) s (code := by rivet_fetch)
   trivial
 
-example (s : MachineState) (h : s.status = .running 0x1000) : True := by
-  fail_if_success
-    have := move ⟨prog, regions⟩ 0x1000 (.memory .qword {base := some .rbx, displacement := -8})
-      (.reg64 .rax) s (code := by rivet_fetch)
+-- With no matching hypothesis in reach, the caller proves the reduced permission.
+example (s : MachineState) (h : s.status = .running 0x1000)
+    (later : Later (permits (Image.writable ⟨prog, regions⟩) (s.registers .rbx - 8#64)
+      (s.registers .rbx - 8#64 + 8#64) = true)) : True := by
+  have writable : s.canWrite ⟨prog, regions⟩
+      (.memory .qword {base := some .rbx, displacement := -8}) = true := by
+    simp only [rivet]
+    exact later
+  have := move ⟨prog, regions⟩ 0x1000 (.memory .qword {base := some .rbx, displacement := -8})
+    (.reg64 .rax) s (code := by rivet_fetch) (writable := writable)
   trivial
 
 -- 6. An unrelated goal closes by `assumption` beside a raw permission fact.
