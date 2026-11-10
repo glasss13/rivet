@@ -106,64 +106,109 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
 private meta def fields : List Name :=
   [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `memory, `status]
 
-/-- Facts `state.field = …` about a state. -/
-private meta def factsAbout (state : FVarId) : MetaM (Array LocalDecl) := do
-  let mut facts := #[]
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | continue
-    if lhs.isApp && lhs.getAppNumArgs == 1 && lhs.appArg! == .fvar state &&
-        (lhs.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false then
-      facts := facts.push decl
-  return facts
+/-- Notes (the facts `t.field = …` a step records) are named under a hygiene module of
+their own: they display as `h✝` like any inaccessible hypothesis, but a path condition or
+a hypothesis of yours with the same shape (`t.carryFlag = true`) is never taken for one. -/
+private meta def noteModule : Name := `Rivet.Step.note
 
-/-- Unnamed (inaccessible) states that have facts: the states a step leaves behind. -/
-private meta def temporaryStates : MetaM (Array FVarId) := do
+/-- A fresh inaccessible name for a note. -/
+private meta def noteName : CoreM Name := do
+  return { extractMacroScopes (← mkFreshUserName `h) with ctx := noteModule }.review
+
+private meta def isNote (decl : LocalDecl) : Bool :=
+  !decl.isImplementationDetail && decl.userName.hasMacroScopes &&
+    (extractMacroScopes decl.userName).ctx == noteModule
+
+/-- The state a note `state.field = …` is about. -/
+private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
+  unless isNote decl do return none
+  let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | return none
+  unless lhs.isApp && lhs.getAppNumArgs == 1 &&
+      (lhs.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false do return none
+  let .fvar state := lhs.appArg! | return none
+  return some state
+
+/-- The notes about any of `states`. -/
+private meta def notesAbout (states : Array FVarId) : MetaM (Array LocalDecl) := do
+  let mut found := #[]
+  for decl in ← getLCtx do
+    if let some state ← noteState? decl then
+      if states.contains state then found := found.push decl
+  return found
+
+/-- The states `rivet_step` introduced: those with notes. The block's start has none. -/
+private meta def introducedStates : MetaM (Array FVarId) := do
   let mut states := #[]
   for decl in ← getLCtx do
-    if decl.isImplementationDetail || !decl.userName.hasMacroScopes then continue
-    unless (← instantiateMVars decl.type).isConstOf ``MachineState do continue
-    unless (← factsAbout decl.fvarId).isEmpty do states := states.push decl.fvarId
+    if let some state ← noteState? decl then
+      unless states.contains state do states := states.push state
   return states
 
-/-- Rewrite hypotheses that mention unnamed states with those states' facts, in one
-pass that follows the whole chain back to named states. With `clear`, then clear the
-unnamed states and their facts. A new fact (`rivet_fact_*`) that still mentions one,
-through an untracked field, is dropped; a state anything else still mentions is kept.
-`only?` restricts the rewrite to the given hypotheses, which are never used as
-rewrite rules themselves (a path condition `s.carryFlag = true` has a fact's shape).
-`extra` adds the facts of further states as rewrite rules, without clearing them. -/
-private meta def compact (clear : Bool) (only? : Option (Array Name) := none)
-    (extra : Array FVarId := #[]) : TacticM Unit := withMainContext do
-  let states ← temporaryStates
-  if states.isEmpty && extra.isEmpty then return
-  let isTarget (decl : LocalDecl) : Bool := (only?.map (·.contains decl.userName)).getD false
-  let mut facts : Array LocalDecl := #[]
-  for state in states ++ extra do
-    facts := facts ++ (← factsAbout state).filter (!isTarget ·)
-  let factIds := facts.map (·.fvarId)
-  let mentions (type : Expr) : Bool := (states ++ extra).any (type.containsFVar ·)
-  let mut targets : Array Ident := #[]
+/-- Rewrite the hypotheses `targets` with `facts`, in one `simp +contextual` pass that
+follows chains of facts to their end; `+contextual` merges the nested `if`s of a rewritten
+register file into one branch per written register. -/
+private meta def rewriteAt (facts : Array LocalDecl) (targets : Array FVarId) : TacticM Unit :=
+    withMainContext do
+  if facts.isEmpty || targets.isEmpty then return
+  let lemmas ← facts.mapM fun decl => do
+    let term ← Term.exprToSyntax (.fvar decl.fvarId)
+    `(Lean.Parser.Tactic.simpLemma| $term:term)
+  let stx ← `(tactic| simp +contextual only [$lemmas,*, Condition.holds, reduceCtorEq,
+      ↓reduceIte, eq_self_iff_true, Bool.not_eq_true', Bool.or_eq_true, decide_eq_true_eq])
+  let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
+  try
+    let (result?, _) ← simpGoal (← getMainGoal) ctx simprocs (simplifyTarget := false)
+      (fvarIdsToSimp := targets)
+    replaceMainGoal (match result? with | some (_, goal) => [goal] | none => [])
+  catch _ => pure ()
+
+/-- Clear `states` and their notes from `goal`. A state that the goal or a hypothesis
+other than its notes still mentions stays, with its notes, and so do the states those
+notes mention. -/
+private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVarId :=
+    goal.withContext do
+  if states.isEmpty then return goal
+  let mut uses : Array Expr := #[← instantiateMVars (← goal.getType)]
+  let mut notes : Array (FVarId × LocalDecl) := #[]
   for decl in ← getLCtx do
-    if decl.isImplementationDetail || decl.userName.hasMacroScopes then continue
-    if states.contains decl.fvarId || factIds.contains decl.fvarId then continue
-    if let some names := only? then unless names.contains decl.userName do continue
-    if mentions (← instantiateMVars decl.type) then targets := targets.push (mkIdent decl.userName)
-  if !targets.isEmpty then
-    let lemmas ← facts.mapM fun decl => do
-      let term ← Term.exprToSyntax (.fvar decl.fvarId)
-      `(Lean.Parser.Tactic.simpLemma| $term:term)
-    let locations : Array (TSyntax `term) := targets.map (⟨·.raw⟩)
-    evalTactic (← `(tactic| try simp +contextual only [$lemmas,*, Condition.holds, reduceCtorEq,
-        ↓reduceIte, eq_self_iff_true, Bool.not_eq_true', Bool.or_eq_true, decide_eq_true_eq] at $locations*))
-  unless clear do return
-  let mut goal ← getMainGoal
+    if decl.isImplementationDetail || states.contains decl.fvarId then continue
+    match ← noteState? decl with
+    | some state => if states.contains state then notes := notes.push (state, decl)
+                    else uses := uses.push (← instantiateMVars decl.type)
+    | none => uses := uses.push (← instantiateMVars decl.type)
+  let mut kept : Array FVarId := #[]
+  let mut grown := true
+  while grown do
+    grown := false
+    for state in states do
+      if kept.contains state || !uses.any (·.containsFVar state) then continue
+      kept := kept.push state
+      grown := true
+      for (subject, decl) in notes do
+        if subject == state then uses := uses.push (← instantiateMVars decl.type)
+  let goal ← goal.tryClearMany ((notes.filter (!kept.contains ·.1)).map (·.2.fvarId))
+  goal.tryClearMany (states.filter (!kept.contains ·))
+
+/-- Name a checkpoint. The new state's facts (`rivet_fact_*`), the path conditions, and
+your hypotheses are rewritten with the notes of every state introduced before it, named or
+not, so that they are stated in terms of the block's start; then those states and their
+notes are cleared. A new fact that still mentions one (through an untracked field) is
+dropped; a state anything else still mentions stays, with its notes. -/
+private meta def checkpoint : TacticM Unit := withMainContext do
+  let states ← introducedStates
+  if states.isEmpty then return
+  let mentions (type : Expr) : Bool := states.any (type.containsFVar ·)
+  let mut targets := #[]
+  for decl in ← getLCtx do
+    if decl.isImplementationDetail || isNote decl || states.contains decl.fvarId then continue
+    if mentions (← instantiateMVars decl.type) then targets := targets.push decl.fvarId
+  rewriteAt (← notesAbout states) targets
+  let some goal := (← getGoals).head? | return
+  let mut goal := goal
   for decl in ← goal.withContext getLCtx do
     if decl.isImplementationDetail || !decl.userName.toString.startsWith "rivet_fact_" then continue
     if mentions (← instantiateMVars decl.type) then goal ← goal.tryClear decl.fvarId
-  goal ← goal.tryClearMany factIds
-  goal ← goal.tryClearMany states
-  replaceMainGoal [goal]
+  replaceMainGoal [← dropStates goal states]
 
 /-- Whether `tactic` closes `goal`; if not, nothing changes. -/
 private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
@@ -178,34 +223,33 @@ private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Boo
     saved.restore
     return false
 
-/-- State a side condition over named states: rewrite it with the facts of the unnamed
-states only, so the rewrite stops at the most recent named state and costs as many
-steps as were taken since it. If no unnamed state remains, clear them and their facts
-from this goal's context. Returns `none` if the rewrite closes the goal, and otherwise
-the goal and whether the rewrite applied. -/
-private meta def overNamed (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
-  let states ← temporaryStates
-  let mentions (type : Expr) : Bool := states.any (type.containsFVar ·)
-  unless mentions (← instantiateMVars (← goal.getType)) do return some (goal, false)
-  let mut facts : Array LocalDecl := #[]
-  for state in states do facts := facts ++ (← factsAbout state)
-  let lemmas ← facts.mapM fun decl => do
-    let term ← Term.exprToSyntax (.fvar decl.fvarId)
-    `(Lean.Parser.Tactic.simpLemma| $term:term)
-  setGoals [goal]
-  evalTactic (← `(tactic| try simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, eq_self_iff_true]))
-  let [rewritten] ← getGoals | return none
-  if mentions (← instantiateMVars (← rewritten.getType)) then return some (rewritten, true)
-  let cleared ← (← rewritten.tryClearMany (facts.map (·.fvarId))).tryClearMany states
-  return some (cleared, true)
+/-- State a side condition over the block's start: rewrite it with the notes of every
+state the tactic introduced, named or not, then clear those states and their notes from
+this goal's context unless something still mentions them. The rewrite costs as many steps
+as were taken since the last checkpoint, plus one. Returns `none` if the rewrite closes
+the goal, and otherwise the goal and whether the rewrite applied. -/
+private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
+  let states ← introducedStates
+  if states.isEmpty then return some (goal, false)
+  let mut goal := goal
+  let rewritten := states.any ((← instantiateMVars (← goal.getType)).containsFVar ·)
+  if rewritten then
+    let lemmas ← (← notesAbout states).mapM fun decl => do
+      let term ← Term.exprToSyntax (.fvar decl.fvarId)
+      `(Lean.Parser.Tactic.simpLemma| $term:term)
+    setGoals [goal]
+    evalTactic (← `(tactic| try simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, eq_self_iff_true]))
+    let [next] ← getGoals | return none
+    goal := next
+  return some (← dropStates goal states, rewritten)
 
 /-- Try to prove one side condition. It is first reduced by the `rivet` simp set,
 which closes register and immediate accesses and states memory accesses as `permits`
 over register reads. Cheap checks (`rfl` and `decide` for syntax-only conditions, a
-syntactic hypothesis match) run next. Then it is stated over named states (`overNamed`),
-the hypothesis match is tried again, and the caller's discharger if given, otherwise
-`simp [*, rivet]`. Nothing here unfolds a closed definition. Returns the goal as
-stated over named states, under its parameter's tag, if it stays open. -/
+syntactic hypothesis match) run next. Then it is stated over the block's start
+(`overStart`), the hypothesis match is tried again, and the caller's discharger if given,
+otherwise `simp [*, rivet]`. Nothing here unfolds a closed definition. Returns the goal as
+stated over the start, under its parameter's tag, if it stays open. -/
 private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (Option MVarId) := do
   let tag ← goal.getTag
   setGoals [goal]
@@ -213,7 +257,7 @@ private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (
   let [reduced] ← getGoals | return none
   if ← closes (← `(tactic| first | rfl | decide +kernel | with_reducible assumption)) reduced then
     return none
-  let some (named, rewritten) ← overNamed reduced | return none
+  let some (named, rewritten) ← overStart reduced | return none
   named.setTag tag
   if rewritten then
     if ← closes (← `(tactic| with_reducible assumption)) named then return none
@@ -236,9 +280,12 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
 
 * **States.** An unnamed successor is inaccessible (`s✝`), and its facts refer to
   the state before it, so each step is cheap. `rivet_step as t` names the
-  successor as a checkpoint: its facts are rewritten in terms of the previous named
-  state (following the whole chain at once), and the unnamed states in between
-  are cleared. Name states where you want readable facts, such as loop heads.
+  successor as a checkpoint: its facts, the path conditions, and your hypotheses are
+  rewritten in terms of the block's start (the state with no recorded facts, such as
+  the `s` the proof began with), through every earlier state, named or not, and those
+  states and their facts are cleared. A state one of your hypotheses still mentions
+  stays. After a checkpoint the context holds your hypotheses, the start, and `t`
+  with its facts. Name states where you want readable facts, such as loop heads.
 * **Facts** are inaccessible (`h✝`). Use them with `simp [*]` or `assumption`, or
   retrieve one by statement, e.g. `‹t.memory = _›`. Between checkpoints, prefer
   `simp [*]` to `simp_all`, which rewrites every fact with every other.
@@ -247,10 +294,10 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   register and immediate accesses close, and a memory access becomes
   `permits image.writable a 8#64 = true` with `a` over register reads and a literal size.
   Then `rfl` and `decide` (for syntax-only conditions) and a syntactic hypothesis
-  match are tried. A condition still open is stated over named states, as path
-  conditions are: it is rewritten with the facts of the unnamed states back to the
-  most recent named state, and the unnamed states are dropped from that goal. The
-  match is tried again, then the fallback discharger, `simp [*, rivet]`.
+  match are tried. A condition still open is stated over the block's start: it is
+  rewritten with the facts of every state the tactic introduced, named or not, and
+  those states and their facts are dropped from that goal. The match is tried again,
+  then the fallback discharger, `simp [*, rivet]`.
   `rivet_step (disch := tac)` replaces the fallback and runs on that goal, so it
   only names the region and proves the bounds:
   `(disch := (apply permits_inside frame <;> bv_omega))`.
@@ -373,20 +420,28 @@ open Step in
   let mut finished := #[]
   for (branch, index) in (← getGoals).zipIdx do
     setGoals [branch]
-    -- Path conditions are stated in terms of named states right away; other facts
-    -- refer to the previous state until a state is named.
+    -- Path conditions are stated in terms of named states right away (the facts of the
+    -- unnamed states, and of `old` if it is named); other facts refer to the previous
+    -- state until a state is named.
     if isBranch then
-      let oldNamed := !(← old.fvarId!.getUserName).hasMacroScopes
-      compact (clear := false) (only? := some #[`rivet_fact_path])
-        (extra := if oldNamed then #[old.fvarId!] else #[])
-    if named?.isSome then compact (clear := true)
-    let mut goal ← getMainGoal
+      withMainContext do
+        let oldNamed := !(← old.fvarId!.getUserName).hasMacroScopes
+        let mut states ← (← introducedStates).filterM fun state =>
+          return (← state.getUserName).hasMacroScopes
+        if oldNamed then states := states.push old.fvarId!
+        if let some path := (← getLCtx).findFromUserName? `rivet_fact_path then
+          rewriteAt (← notesAbout states) #[path.fvarId]
+    if named?.isSome then checkpoint
+    -- A path condition that rewrites to `False` closes the goal.
+    let some goal := (← getGoals).head? | continue
+    let mut goal := goal
     let lctx ← goal.withContext getLCtx
     if let some decl := lctx.findFromUserName? `rivet_next then
       goal ← goal.rename decl.fvarId finalName
     for fact in internal do
       if let some decl := lctx.findFromUserName? fact then
-        goal ← goal.rename decl.fvarId (← mkFreshUserName `h)
+        let name ← if fact == `rivet_fact_path then mkFreshUserName `h else noteName
+        goal ← goal.rename decl.fvarId name
     if isBranch then goal.setTag (if index == 0 then `taken else `fallthrough)
     finished := finished.push goal
   setGoals (finished.toList ++ unsolved.toList ++ pending)
