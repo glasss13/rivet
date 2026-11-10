@@ -298,13 +298,21 @@ open Step in
     internal := internal.push fact
   evalTactic (← `(tactic| clear $equation))
   let locations : Array (TSyntax `term) := internal.map (⟨mkIdent ·⟩)
-  evalTactic (← `(tactic| try simp only [MachineState.writeOperand,
-      MachineState.readOperand, MachineState.recordRead, MachineState.write,
+  -- Operand reads and writes go through the `rivet` set's proved equations, never by
+  -- unfolding: unfolding computes shift arithmetic on symbolic registers in unary.
+  -- They run first, so a register alias is already its parent (`.rax`) when
+  -- `MachineState.write` becomes an `if`: its decidability instance keeps whatever
+  -- register it was built with, and simp does not rewrite instances.
+  evalTactic (← `(tactic| try simp only [rivet] at $locations*))
+  evalTactic (← `(tactic| try simp only [MachineState.write,
       MachineState.writeMemory, Operand.width, Width.bits, Width.bytes,
       BitVec.setWidth_eq, List.append_assoc, List.cons_append, List.nil_append,
       -- The successor `address + length` reduces to a literal.
       BitVec.reduceOfNat, BitVec.reduceAdd,
-      -- Addresses as point reads of registers (`r .rbx - 8#64`), never the whole register file.
+      -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).
+      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte,
+      -- Operand equations, register parents, and addresses as point reads of registers
+      -- (`r .rbx - 8#64`), never the whole register file.
       rivet] at $locations*))
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   let isBranch := operation.isAppOfArity ``Op.jcc 2 && tracked.contains `status

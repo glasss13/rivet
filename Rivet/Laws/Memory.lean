@@ -142,6 +142,27 @@ theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (o
     readBytes (littleEndianAt value address) address size = value.extractLsb' 0 (8 * size) := by
   simpa using readBytes_littleEndianAt_add value address 0 size (by omega)
 
+/-- A one-byte read is the byte at that address. Not a simp lemma: it would turn a byte
+read of a store into a point read before the store laws apply. -/
+theorem readBytes_one (memory : Memory) (address : BitVec 64) :
+    readBytes memory address 1 = BitVec.ofNat 8 (memory address).val := by
+  simp [readBytes]
+
+/-- The byte a stored value puts at `address + offset` is the value's byte `offset`. -/
+theorem littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset : Nat)
+    (small : offset < 2^64 := by decide) :
+    (littleEndianAt value address (address + BitVec.ofNat 64 offset)).val =
+      (value.extractLsb' (8 * offset) 8).toNat := by
+  have distance : (address + BitVec.ofNat 64 offset - address).toNat = offset := by
+    bv_omega
+  simp only [littleEndianAt, distance, BitVec.extractLsb'_toNat, Nat.shiftRight_eq_div_pow,
+    Nat.pow_mul]
+
+/-- The byte a stored value puts at its own address is the value's lowest byte. -/
+@[simp] theorem littleEndianAt_self (value : BitVec n) (address : BitVec 64) :
+    (littleEndianAt value address address).val = (value.extractLsb' 0 8).toNat := by
+  simpa using littleEndianAt_add value address 0
+
 /-- `after` holds the same bytes as `before` at every address outside `footprint`. -/
 def Memory.SameOutside (before after : Memory) (footprint : BitVec 64 → Prop) : Prop :=
   ∀ address, ¬ footprint address → after address = before address

@@ -55,7 +55,9 @@ def MachineState.writeMemory (state : MachineState) (address : BitVec 64) (width
   let stop := address + BitVec.ofNat 64 width.bytes
   { state with memory := state.memory.storeBytes address stop (littleEndianAt value address) }
 
-def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
+/-- The value of an operand, zero-extended to 64 bits. Closed: the `rivet` simp set
+states it per operand form. -/
+@[no_expose, irreducible] def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
   | .reg8 register => ((state.registers register.parent).setWidth 8).setWidth 64
   | .reg16 register => ((state.registers register.parent).setWidth 16).setWidth 64
   | .reg32 register => ((state.registers register.parent).setWidth 32).setWidth 64
@@ -63,7 +65,9 @@ def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
   | .memory width address => (readBytes state.memory (address.evaluate state.registers) width.bytes).setWidth 64
   | .immediate value => BitVec.ofInt 64 value
 
-def MachineState.writeOperand (state : MachineState) (operand : Operand) (value : BitVec 64) : MachineState :=
+/-- Write an operand with x86 partial-register rules. Closed: the `rivet` simp set
+states it per operand form. -/
+@[no_expose, irreducible] def MachineState.writeOperand (state : MachineState) (operand : Operand) (value : BitVec 64) : MachineState :=
   match operand with
   | .reg8 register => state.write register.parent
       ((state.registers register.parent &&& ~~~(255#64)) ||| ((value.setWidth 8).setWidth 64))
@@ -87,7 +91,9 @@ def MachineState.writeOperand (state : MachineState) (operand : Operand) (value 
   | .immediate _ => false
   | _ => true
 
-def MachineState.recordRead (state : MachineState) : Operand → MachineState
+/-- Append a memory operand's access to the read history. Closed: the `rivet` simp set
+states it per operand form. -/
+@[no_expose, irreducible] def MachineState.recordRead (state : MachineState) : Operand → MachineState
   | .memory width address => { state with readHistory := state.readHistory ++
       [⟨address.evaluate state.registers, width.bytes⟩] }
   | _ => state

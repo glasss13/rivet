@@ -18,13 +18,15 @@ def Memory.storeBytes (memory : Memory) (start stop : BitVec 64) (bytes : Memory
   fun address => if start ≤ address ∧ address < stop then bytes address else memory address
 
 /-- The little-endian bytes of a value of any width, laid out from `address`:
-byte `i` of the value is at `address + i`. Scalar and vector stores write these. -/
-def littleEndianAt (value : BitVec n) (address : BitVec 64) : Memory :=
+byte `i` of the value is at `address + i`. Scalar and vector stores write these.
+Closed: reason about it through `littleEndianAt_add` and `readBytes_littleEndianAt_add`. -/
+@[no_expose, irreducible] def littleEndianAt (value : BitVec n) (address : BitVec 64) : Memory :=
   fun other => ⟨(value.toNat / 256^(other - address).toNat) % 256, Nat.mod_lt _ (by decide)⟩
 
 /-- Read `size` little-endian bytes starting at `address`, for scalar, vector, and
-return-address reads. This raw read does not check permissions. -/
-def readBytes (memory : Memory) (address : BitVec 64) (size : Nat) : BitVec (8 * size) :=
+return-address reads. This raw read does not check permissions. Closed: reason about
+it through the laws in `Rivet.Laws.Memory`, never by computation. -/
+@[no_expose, irreducible] def readBytes (memory : Memory) (address : BitVec 64) (size : Nat) : BitVec (8 * size) :=
   BitVec.ofNat (8 * size) ((List.range size).foldr
     (fun offset value => (memory (address + BitVec.ofNat 64 offset)).val + 256 * value) 0)
 

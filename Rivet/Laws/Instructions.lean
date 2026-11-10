@@ -9,17 +9,20 @@ namespace Rivet
 
 -- Normalize known operand constructors without expanding unknown operands.
 -- These equations already exist; only their simplification attributes are new.
--- Permission checks are closed; their equations are in `Rivet.Laws.Operands`.
+-- Permission checks and operand reads and writes are closed; their equations are
+-- in `Rivet.Laws.Operands`.
 attribute [simp] Operand.width.eq_1 Operand.width.eq_2 Operand.width.eq_3
   Operand.width.eq_4 Operand.width.eq_5 Operand.width.eq_6
-  MachineState.readOperand.eq_1 MachineState.readOperand.eq_2 MachineState.readOperand.eq_3
-  MachineState.readOperand.eq_4 MachineState.readOperand.eq_5 MachineState.readOperand.eq_6
-  MachineState.writeOperand.eq_1 MachineState.writeOperand.eq_2 MachineState.writeOperand.eq_3
-  MachineState.writeOperand.eq_4 MachineState.writeOperand.eq_5 MachineState.writeOperand.eq_6
-  MachineState.recordRead.eq_1 MachineState.recordRead.eq_2
 
 @[simp] private theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
     (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
+  cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
+
+private theorem MachineState.writeOperand_flags (state : MachineState) (operand : Operand)
+    (value : BitVec 64) :
+    (state.writeOperand operand value).carryFlag = state.carryFlag ∧
+      (state.writeOperand operand value).zeroFlag = state.zeroFlag ∧
+      (state.writeOperand operand value).signFlag = state.signFlag := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
 
 @[simp] private theorem MachineState.write_readHistory (state : MachineState) (register : Reg)
@@ -496,13 +499,12 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     let result : BitVec width.bits := match operation with
       | .shl => BitVec.shiftLeft value amount
       | .shr => BitVec.ushiftRight value amount
-    let updated := initial.writeOperand destination (result.setWidth 64)
-    Ensures image (· = initial) (· = if amount == 0 then
-      { updated with status := .running (address + BitVec.ofNat 64 length) }
-    else { updated with
+    Ensures image (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length)
-      carryFlag := value.getLsbD (match operation with | .shl => width.bits - amount | .shr => amount - 1)
-      zeroFlag := result == 0, signFlag := result.msb }) := by
+      carryFlag := if amount = 0 then initial.carryFlag else
+        value.getLsbD (match operation with | .shl => width.bits - amount | .shr => amount - 1)
+      zeroFlag := if amount = 0 then initial.zeroFlag else result == 0
+      signFlag := if amount = 0 then initial.signFlag else result.msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -517,7 +519,7 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
   rw [hasWidth]
   simp only [Option.getD_some]
   cases operation <;> split <;>
-    simp only [zero] <;> simp_all [next]
+    simp only [zero] <;> simp_all [next, MachineState.writeOperand_flags]
 
 /-- NOT complements a supported register or memory destination without changing
 flags; memory destinations require read/write permission and record the read. -/
