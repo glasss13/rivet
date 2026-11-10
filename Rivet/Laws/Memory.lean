@@ -13,15 +13,16 @@ theorem Memory.read_storeBytes_outside {memory : Memory} {base length : BitVec 6
 
 theorem permits_iff {permission : BitVec 64 → Bool} {base length : BitVec 64} :
     permits permission base length = true ↔
-      ∀ address, address - base < length → permission address = true := by
-  simp only [permits, List.all_eq_true, List.mem_range]
+      base ≤ base + length ∧ ∀ address, address - base < length → permission address = true := by
+  simp only [permits, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range]
   constructor
-  · intro each address inside
+  · intro ⟨valid, each⟩
+    refine ⟨valid, fun address inside => ?_⟩
     have same : base + BitVec.ofNat 64 (address - base).toNat = address := by bv_omega
     rw [← same]
     exact each _ (by bv_omega)
-  · intro each offset bound
-    exact each _ (by bv_omega)
+  · intro ⟨valid, each⟩
+    exact ⟨valid, fun offset bound => each _ (by bv_omega)⟩
 
 /-- A permission over a range holds over every range inside it. -/
 theorem permits_inside {permission : BitVec 64 → Bool} {base length first size : BitVec 64}
@@ -29,7 +30,7 @@ theorem permits_inside {permission : BitVec 64 → Bool} {base length first size
     (fits : size ≤ length) (inside : first - base ≤ length - size) :
     permits permission first size = true := by
   rw [permits_iff] at whole ⊢
-  exact fun address within => whole address (by bv_omega)
+  exact ⟨by bv_omega, fun address within => whole.2 address (by bv_omega)⟩
 
 /-! ## Reasoning about memory
 

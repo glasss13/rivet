@@ -31,10 +31,12 @@ it through the laws in `Rivet.Laws.Memory`, never by computation. -/
   BitVec.ofNat (8 * size) ((List.range size).foldr
     (fun offset value => (memory (address + BitVec.ofNat 64 offset)).val + 256 * value) 0)
 
-/-- Every address in the range at `base` of `length` bytes has the permission.
-Closed: reason about it through `permits_iff`, never by computation. -/
+/-- The range at `base` of `length` bytes does not wrap, `base ≤ base + length`, and
+every address in it has the permission. Closed: reason about it through `permits_iff`,
+never by computation. -/
 @[no_expose, irreducible] def permits (permission : BitVec 64 → Bool) (base length : BitVec 64) : Bool :=
-  (List.range length.toNat).all (fun offset => permission (base + BitVec.ofNat 64 offset))
+  base ≤ base + length &&
+    (List.range length.toNat).all (fun offset => permission (base + BitVec.ofNat 64 offset))
 
 /-! ## The image -/
 

@@ -116,7 +116,7 @@ private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
 private theorem WritesWithin.storeBytes (memory : Memory) (base length : BitVec 64)
     (bytes : BitVec 64 → Fin 256) (allowed : permits image.writable base length = true) :
     WritesWithin image memory (memory.storeBytes base length bytes) :=
-  Memory.SameOutside.refl.storeBytes (permits_iff.mp allowed)
+  Memory.SameOutside.refl.storeBytes (permits_iff.mp allowed).2
 
 private theorem WritesWithin.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64)
