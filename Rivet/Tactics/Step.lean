@@ -11,7 +11,6 @@ open Lean Meta Elab Tactic
 
 namespace Step
 
-/-- The image and current state of an `Ensures image (· = s) Q` goal. -/
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   unless type.isAppOfArity ``Ensures 3 do
@@ -22,8 +21,6 @@ private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
 
-/-- The address in the hypothesis `state.status = .running address`, its value, and
-the hypothesis. The address is a literal or a definition that unfolds to one. -/
 private meta def findPc (state : Expr) : MetaM (Expr × Nat × Expr) := do
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
@@ -35,16 +32,11 @@ private meta def findPc (state : Expr) : MetaM (Expr × Nat × Expr) := do
     if let some pc ← Fetch.addressValue? address then return (address, pc, .fvar decl.fvarId)
   throwError "rivet_step: no hypothesis `{state}.status = .running <address>`"
 
-/-- The instruction at `pc` (as `Instruction.mk address length operation`) and a proof
-that `Program.fetch` returns it, from the shared lookup `Fetch.prove`: constant time
-in the program size for generated programs. -/
 private meta def fetch (program address : Expr) (pc : Nat) : MetaM (Expr × Expr) := do
   let some found ← Fetch.prove program address pc
     | throwError "rivet_step: no instruction at address {pc}"
   return found
 
-/-- The instruction contract for an operation, and the operands it takes
-between `program address` and `initial`. -/
 private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := do
   let args := operation.getAppArgs
   let some ctor := operation.getAppFn.constName?
@@ -70,9 +62,6 @@ private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := 
     | _ => throwError "rivet_step: unsupported operation {operation}"
   return (name, if ctor == ``Op.binary then args.extract 1 3 else args)
 
-/-- Apply a contract to its explicit arguments. Optional parameters take their
-defaults. Every side condition (an auto-parameter, or a remaining explicit
-hypothesis) becomes a goal named after its parameter. -/
 private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr × Array MVarId) := do
   let mut proof ← mkConstWithFreshMVarLevels name
   let mut type ← inferType proof
@@ -102,16 +91,11 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     type := body.instantiate1 argument
   return (proof, sides)
 
-/-- Every `MachineState` field, in declaration order. -/
 private meta def fields : List Name :=
   [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `memory, `status]
 
-/-- Notes (the facts `t.field = …` a step records) are named under a hygiene module of
-their own: they display as `h✝` like any inaccessible hypothesis, but a path condition or
-a hypothesis of yours with the same shape (`t.carryFlag = true`) is never taken for one. -/
 private meta def noteModule : Name := `Rivet.Step.note
 
-/-- A fresh inaccessible name for a note. -/
 private meta def noteName : CoreM Name := do
   return { extractMacroScopes (← mkFreshUserName `h) with ctx := noteModule }.review
 
@@ -119,7 +103,6 @@ private meta def isNote (decl : LocalDecl) : Bool :=
   !decl.isImplementationDetail && decl.userName.hasMacroScopes &&
     (extractMacroScopes decl.userName).ctx == noteModule
 
-/-- The state a note `state.field = …` is about. -/
 private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
   unless isNote decl do return none
   let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | return none
@@ -128,7 +111,6 @@ private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
   let .fvar state := lhs.appArg! | return none
   return some state
 
-/-- The notes about any of `states`. -/
 private meta def notesAbout (states : Array FVarId) : MetaM (Array LocalDecl) := do
   let mut found := #[]
   for decl in ← getLCtx do
@@ -136,7 +118,6 @@ private meta def notesAbout (states : Array FVarId) : MetaM (Array LocalDecl) :=
       if states.contains state then found := found.push decl
   return found
 
-/-- The states `rivet_step` introduced: those with notes. The block's start has none. -/
 private meta def introducedStates : MetaM (Array FVarId) := do
   let mut states := #[]
   for decl in ← getLCtx do
@@ -144,9 +125,6 @@ private meta def introducedStates : MetaM (Array FVarId) := do
       unless states.contains state do states := states.push state
   return states
 
-/-- Rewrite the hypotheses `targets` with `facts`, in one `simp +contextual` pass that
-follows chains of facts to their end; `+contextual` merges the nested `if`s of a rewritten
-register file into one branch per written register. -/
 private meta def rewriteAt (facts : Array LocalDecl) (targets : Array FVarId) : TacticM Unit :=
     withMainContext do
   if facts.isEmpty || targets.isEmpty then return
@@ -162,9 +140,6 @@ private meta def rewriteAt (facts : Array LocalDecl) (targets : Array FVarId) : 
     replaceMainGoal (match result? with | some (_, goal) => [goal] | none => [])
   catch _ => pure ()
 
-/-- Clear `states` and their notes from `goal`. A state that the goal or a hypothesis
-other than its notes still mentions stays, with its notes, and so do the states those
-notes mention. -/
 private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVarId :=
     goal.withContext do
   if states.isEmpty then return goal
@@ -189,11 +164,6 @@ private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVar
   let goal ← goal.tryClearMany ((notes.filter (!kept.contains ·.1)).map (·.2.fvarId))
   goal.tryClearMany (states.filter (!kept.contains ·))
 
-/-- Name a checkpoint. The new state's facts (`rivet_fact_*`), the path conditions, and
-your hypotheses are rewritten with the notes of every state introduced before it, named or
-not, so that they are stated in terms of the block's start; then those states and their
-notes are cleared. A new fact that still mentions one (through an untracked field) is
-dropped; a state anything else still mentions stays, with its notes. -/
 private meta def checkpoint : TacticM Unit := withMainContext do
   let states ← introducedStates
   if states.isEmpty then return
@@ -210,7 +180,6 @@ private meta def checkpoint : TacticM Unit := withMainContext do
     if mentions (← instantiateMVars decl.type) then goal ← goal.tryClear decl.fvarId
   replaceMainGoal [← dropStates goal states]
 
-/-- Whether `tactic` closes `goal`; if not, nothing changes. -/
 private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
   let saved ← saveState
   try
@@ -223,11 +192,6 @@ private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Boo
     saved.restore
     return false
 
-/-- State a side condition over the block's start: rewrite it with the notes of every
-state the tactic introduced, named or not, then clear those states and their notes from
-this goal's context unless something still mentions them. The rewrite costs as many steps
-as were taken since the last checkpoint, plus one. Returns `none` if the rewrite closes
-the goal, and otherwise the goal and whether the rewrite applied. -/
 private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
   let states ← introducedStates
   if states.isEmpty then return some (goal, false)
@@ -243,13 +207,6 @@ private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) :
     goal := next
   return some (← dropStates goal states, rewritten)
 
-/-- Try to prove one side condition. It is first reduced by the `rivet` simp set,
-which closes register and immediate accesses and states memory accesses as `permits`
-over register reads. Cheap checks (`rfl` and `decide` for syntax-only conditions, a
-syntactic hypothesis match) run next. Then it is stated over the block's start
-(`overStart`), the hypothesis match is tried again, and the caller's discharger if given,
-otherwise `simp [*, rivet]`. Nothing here unfolds a closed definition. Returns the goal as
-stated over the start, under its parameter's tag, if it stays open. -/
 private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (Option MVarId) := do
   let tag ← goal.getTag
   setGoals [goal]
@@ -269,48 +226,6 @@ private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (
 
 end Step
 
-/--
-`rivet_step` executes the instruction at the current address of an
-`Ensures image (· = s) Q` goal, using that instruction's contract.
-
-It needs a hypothesis `s.status = .running pc`, where `pc` is a numeral or a
-definition that unfolds to one, and continues
-with a fresh successor state plus one fact per field: `t.registers = …`,
-`t.memory = …`, `t.status = .running next`, and so on.
-
-* **States.** An unnamed successor is inaccessible (`s✝`), and its facts refer to
-  the state before it, so each step is cheap. `rivet_step as t` names the
-  successor as a checkpoint: its facts, the path conditions, and your hypotheses are
-  rewritten in terms of the block's start (the state with no recorded facts, such as
-  the `s` the proof began with), through every earlier state, named or not, and those
-  states and their facts are cleared. A state one of your hypotheses still mentions
-  stays. After a checkpoint the context holds your hypotheses, the start, and `t`
-  with its facts. Name states where you want readable facts, such as loop heads.
-* **Facts** are inaccessible (`h✝`). Use them with `simp [*]` or `assumption`, or
-  retrieve one by statement, e.g. `‹t.memory = _›`. Between checkpoints, prefer
-  `simp [*]` to `simp_all`, which rewrites every fact with every other.
-* **Side conditions.** The location and instruction evidence are supplied
-  directly. Every other side condition is first reduced by the `rivet` simp set:
-  register and immediate accesses close, and a memory access becomes
-  `permits image.writable a 8#64 = true` with `a` over register reads and a literal size.
-  Then `rfl` and `decide` (for syntax-only conditions) and a syntactic hypothesis
-  match are tried. A condition still open is stated over the block's start: it is
-  rewritten with the facts of every state the tactic introduced, named or not, and
-  those states and their facts are dropped from that goal. The match is tried again,
-  then the fallback discharger, `simp [*, rivet]`.
-  `rivet_step (disch := tac)` replaces the fallback and runs on that goal, so it
-  only names the region and proves the bounds:
-  `(disch := (apply permits_inside frame <;> bv_omega))`.
-  Conditions left unproved remain, in that form, as goals tagged with the contract's
-  parameter name (`case writable`, `case readable`, …).
-* **Lookup** uses `Fetch.prove`, as `rivet_fetch` does: constant time in the
-  program size for programs generated as suffix chains (as by `rivet-import`);
-  otherwise the list is searched.
-* **Conditional jumps** produce goals tagged `taken` and `fallthrough`, each with
-  its path condition as a hypothesis, stated in terms of named states.
-* `rivet_step tracking [status, registers, memory]` records only those fields
-  (default: all). Later facts that depend on an untracked field are dropped.
--/
 syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")?
   (" as " ident)? (" tracking " "[" ident,* "]")? : tactic
 

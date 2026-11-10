@@ -36,24 +36,16 @@ private theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (stat
     simpa [Nat.succ_add, execute_succ, Nat.add_comm] using
       inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
-/-- `Ensures image precondition postcondition` means: for every initial state satisfying
-`precondition` and every supply of undefined-flag values, some finite number of interpreter
-steps from that state reaches a state satisfying `postcondition`. Zero steps is allowed. The
-number of steps may depend on the initial state and the supply, and no step count is exposed.
-A faulted state never changes, so a postcondition that requires a running status also rules
-out a fault at every earlier step. -/
 structure Ensures (image : Image) (precondition postcondition : MachineState → Prop) : Prop where
   private mk ::
   private allChoices : ∀ initial, precondition initial → ∀ choices : FlagChoices,
     ∃ final, (∃ steps, execute image steps initial choices = final) ∧ postcondition final
 
-/-- Prove a contract separately for each initial state satisfying the precondition. -/
 theorem Ensures.intro
     (body : ∀ initial, precondition initial → Ensures image (· = initial) postcondition) :
     Ensures image precondition postcondition :=
   ⟨fun initial assumption => (body initial assumption).allChoices initial rfl⟩
 
-/-- Internal bridge from one interpreter step to an instruction contract. -/
 private theorem Ensures.of_step
     (transition : ∀ initial, precondition initial → ∀ undefinedFlags,
       postcondition (step image initial undefinedFlags)) :
@@ -63,7 +55,6 @@ private theorem Ensures.of_step
   exact ⟨step image initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
     transition initial assumption (choices 0)⟩
 
-/-- Stop here: zero steps, when the postcondition already holds of the current state. -/
 theorem Ensures.done {state : MachineState} (holds : postcondition state) :
     Ensures image (· = state) postcondition :=
   ⟨fun initial equal choices => ⟨initial, ⟨0, execute_zero image initial choices⟩, equal ▸ holds⟩⟩
@@ -76,9 +67,6 @@ theorem Ensures.seq (first : Ensures image precondition intermediate)
   obtain ⟨final, ⟨later, reached⟩, result⟩ := second.allChoices _ holds (choices.drop earlier)
   exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
-/-- Continue from each state the first contract can reach, as a named state.
-For an exact-state contract (`· = e`), the continuation receives a fresh state
-`t` with `t = e` rather than the expression `e` itself. -/
 theorem Ensures.bind (first : Ensures image precondition intermediate)
     (continuation : ∀ state, intermediate state → Ensures image (· = state) postcondition) :
     Ensures image precondition postcondition :=
@@ -93,7 +81,6 @@ theorem Ensures.consequence (contract : Ensures image precondition postcondition
   obtain ⟨final, reached, result⟩ := contract.allChoices initial (strengthenPrecondition _ assumption) choices
   exact ⟨final, reached, weakenPostcondition _ result⟩
 
-/-- Iterate blocks while a natural-valued measure decreases. No instruction counts enter the rule. -/
 theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : MachineState → Nat)
     (body : ∀ initial, invariant initial → ¬ finished initial →
       Ensures image (· = initial) (fun final => invariant final ∧ measure final < measure initial)) :
@@ -109,7 +96,6 @@ theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : Mac
       exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
 -- Execution proofs are implementation details of `Ensures.preserves_unwritable`.
-/-- Memory changes only at writable addresses: stores check write permission. -/
 private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
   before.SameOutside after (image.writable · = true)
 
@@ -136,7 +122,6 @@ private theorem WritesWithin.writeOperand (state : MachineState) (destination : 
     rw [MachineState.canWrite_memory] at allowed
     exact WritesWithin.writeMemory state _ width value allowed
 
-/-- The memory effect of one decoded operation, including faulting paths. -/
 private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC : BitVec 64) (flags : FlagValues) :
     WritesWithin image state.memory (stepOp image operation nextPC state flags).memory := by
   cases operation with
@@ -201,8 +186,6 @@ private theorem execute_writes_within (image : Image) (steps : Nat) (state : Mac
     exact (step_writes_within image state (choices 0)).trans
       (ih (step image state (choices 0)) (choices.drop 1))
 
-/-- Execution changes memory only where the image allows writes, including when it
-faults: read-only data and unmapped addresses keep their bytes. -/
 theorem Ensures.preserves_unwritable (contract : Ensures image (· = initial) postcondition) :
     Ensures image (· = initial) (fun final =>
       postcondition final ∧ initial.memory.SameOutside final.memory (image.writable · = true)) := by
