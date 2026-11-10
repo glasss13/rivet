@@ -245,7 +245,7 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
 * **Side conditions.** The location and instruction evidence are supplied
   directly. Every other side condition is first reduced by the `rivet` simp set:
   register and immediate accesses close, and a memory access becomes
-  `permits image.writable a (a + 8#64) = true` with `a` over register reads.
+  `permits image.writable a 8#64 = true` with `a` over register reads and a literal size.
   Then `rfl` and `decide` (for syntax-only conditions) and a syntactic hypothesis
   match are tried. A condition still open is stated over named states, as path
   conditions are: it is rewritten with the facts of the unnamed states back to the
@@ -253,7 +253,7 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   match is tried again, then the fallback discharger, `simp [*, rivet]`.
   `rivet_step (disch := tac)` replaces the fallback and runs on that goal, so it
   only names the region and proves the bounds:
-  `(disch := (apply permits_within frame <;> bv_omega))`.
+  `(disch := (apply permits_inside frame <;> bv_omega))`.
   Conditions left unproved remain, in that form, as goals tagged with the contract's
   parameter name (`case writable`, `case readable`, …).
 * **Lookup** uses `Fetch.prove`, as `rivet_fetch` does: constant time in the

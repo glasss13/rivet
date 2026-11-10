@@ -8,14 +8,15 @@ namespace Rivet
 they never change during execution, so they belong to the `Image`. -/
 abbrev Memory := BitVec 64 → Fin 256
 
-/-! A range of memory is a pair of addresses `[start, stop)`: the addresses `x`
-with `start ≤ x ∧ x < stop`, compared unsigned. A range with `start ≤ stop` does
-not wrap. Side conditions in these terms close by `bv_omega`. -/
+/-! A range of memory is a base address and a word length: the addresses `x` with
+`x - base < length`, compared unsigned. These are `base, base + 1, …, base + length - 1`,
+computed mod 2^64 as the CPU computes them, so a range may run past the top of the
+address space onto the low addresses. -/
 
-/-- Every address in `[start, stop)` takes its byte from `bytes`; the rest keep
-theirs. Instructions check permissions before storing. -/
-def Memory.storeBytes (memory : Memory) (start stop : BitVec 64) (bytes : Memory) : Memory :=
-  fun address => if start ≤ address ∧ address < stop then bytes address else memory address
+/-- Every address in the range at `base` of `length` bytes takes its byte from `bytes`;
+the rest keep theirs. Instructions check permissions before storing. -/
+def Memory.storeBytes (memory : Memory) (base length : BitVec 64) (bytes : Memory) : Memory :=
+  fun address => if address - base < length then bytes address else memory address
 
 /-- The little-endian bytes of a value of any width, laid out from `address`:
 byte `i` of the value is at `address + i`. Scalar and vector stores write these.
@@ -30,18 +31,20 @@ it through the laws in `Rivet.Laws.Memory`, never by computation. -/
   BitVec.ofNat (8 * size) ((List.range size).foldr
     (fun offset value => (memory (address + BitVec.ofNat 64 offset)).val + 256 * value) 0)
 
-/-- An access to `[start, stop)` must not wrap, and needs permission at every address.
-Closed: reason about it through `permits_iff`, never by computation. -/
-@[no_expose, irreducible] def permits (permission : BitVec 64 → Bool) (start stop : BitVec 64) : Bool :=
-  start ≤ stop && (List.range (stop - start).toNat).all (fun offset => permission (start + BitVec.ofNat 64 offset))
+/-- The range at `base` of `length` bytes does not wrap, `base ≤ base + length`, and
+every address in it has the permission. Closed: reason about it through `permits_iff`,
+never by computation. -/
+@[no_expose, irreducible] def permits (permission : BitVec 64 → Bool) (base length : BitVec 64) : Bool :=
+  base ≤ base + length &&
+    (List.range length.toNat).all (fun offset => permission (base + BitVec.ofNat 64 offset))
 
 /-! ## The image -/
 
-/-- Addresses `[start, stop)` and what the program may do with them. A region
-carries no bytes: what memory holds there is a fact about memory. -/
+/-- The range at `base` of `length` bytes and what the program may do with it. A
+region carries no bytes: what memory holds there is a fact about memory. -/
 structure Region where
-  start : BitVec 64
-  stop : BitVec 64
+  base : BitVec 64
+  length : BitVec 64
   readable : Bool
   writable : Bool
 
@@ -53,15 +56,16 @@ structure Image where
 
 /-! A permission is a fact about regions. For an image whose regions are listed,
 `simp [Image.writable]` (with the image's definition) turns `image.writable a`
-into "`a` lies in one of the writable regions", a disjunction of bounds that
-`bv_omega` decides from facts in context; `permits_iff` does the same for a range. -/
+into "`a` lies in one of the writable regions", a disjunction of conditions
+`a - base < length` that `bv_omega` decides from facts in context; `permits_iff`
+does the same for a range. -/
 
 /-- An address is readable when some region containing it is readable. -/
 def Image.readable (image : Image) (address : BitVec 64) : Bool :=
-  image.regions.any fun region => region.readable && region.start ≤ address && address < region.stop
+  image.regions.any fun region => region.readable && address - region.base < region.length
 
 /-- An address is writable when some region containing it is writable. -/
 def Image.writable (image : Image) (address : BitVec 64) : Bool :=
-  image.regions.any fun region => region.writable && region.start ≤ address && address < region.stop
+  image.regions.any fun region => region.writable && address - region.base < region.length
 
 end Rivet

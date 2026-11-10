@@ -51,8 +51,7 @@ private def next (nextAddress : BitVec 64) (state : MachineState) : MachineState
 /-- Write a whole value after its complete range has passed permission checks. -/
 def MachineState.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64) : MachineState :=
-  let stop := address + BitVec.ofNat 64 width.bytes
-  { state with memory := state.memory.storeBytes address stop (littleEndianAt value address) }
+  { state with memory := state.memory.storeBytes address (BitVec.ofNat 64 width.bytes) (littleEndianAt value address) }
 
 /-- The value of an operand, zero-extended to 64 bits. Closed: the `rivet` simp set
 states it per operand form. -/
@@ -80,13 +79,13 @@ states it per operand form. -/
 /-- Read permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
 @[no_expose, irreducible] def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.readable (address.evaluate state.registers)
-      (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
+      (BitVec.ofNat 64 width.bytes)
   | _ => true
 
 /-- Write permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
 @[no_expose, irreducible] def MachineState.canWrite (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.writable (address.evaluate state.registers)
-      (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
+      (BitVec.ofNat 64 width.bytes)
   | .immediate _ => false
   | _ => true
 
@@ -153,16 +152,16 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     else { state with status := .fault }
   | .loadXmm _ destination source =>
     let address := source.evaluate state.registers
-    if permits image.readable address (address + 16#64) then
+    if permits image.readable address 16#64 then
       let value := readBytes state.memory address 16
       next nextAddress { state with
         xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register }
     else { state with status := .fault }
   | .storeXmm _ destination source =>
     let address := destination.evaluate state.registers
-    if permits image.writable address (address + 16#64) then
+    if permits image.writable address 16#64 then
       let value := state.xmmRegisters source
-      next nextAddress { state with memory := state.memory.storeBytes address (address + 16#64) (littleEndianAt value address) }
+      next nextAddress { state with memory := state.memory.storeBytes address 16#64 (littleEndianAt value address) }
     else { state with status := .fault }
   | .binary operation destination source => state.binary image operation destination source nextAddress
   | .shift operation destination count =>
@@ -236,13 +235,13 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     else { state with status := .fault }
   | .push source =>
     let pointer := state.registers .rsp - 8#64
-    if permits image.writable pointer (pointer + 8#64) then
+    if permits image.writable pointer 8#64 then
       -- PUSH RSP stores the original pointer, before decrementing it.
       next nextAddress ((state.writeMemory pointer .qword (state.registers source)).write .rsp pointer)
     else { state with status := .fault }
   | .pop destination =>
     let address := state.registers .rsp
-    if permits image.readable address (address + 8#64) then
+    if permits image.readable address 8#64 then
       -- Write the destination last: POP RSP replaces the incremented pointer.
       let result := (state.write .rsp (state.registers .rsp + 8#64)).write destination
         (readBytes state.memory address 8)
@@ -250,13 +249,13 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     else { state with status := .fault }
   | .call target =>
     let pointer := state.registers .rsp - 8#64
-    if permits image.writable pointer (pointer + 8#64) then
+    if permits image.writable pointer 8#64 then
       { (state.writeMemory pointer .qword nextAddress).write .rsp pointer with
         status := .running target }
     else { state with status := .fault }
   | .ret =>
     let address := state.registers .rsp
-    if permits image.readable address (address + 8#64) then
+    if permits image.readable address 8#64 then
       { state.write .rsp (state.registers .rsp + 8#64) with
         status := .running (readBytes state.memory address 8) }
     else { state with status := .fault }

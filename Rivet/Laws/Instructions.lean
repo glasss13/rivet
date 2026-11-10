@@ -101,8 +101,8 @@ theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.loadXmm operation destination source))
-    (readable : permits image.readable (source.evaluate initial.registers)
-      (source.evaluate initial.registers + 16#64) = true := by simp only [rivet, *]) :
+    (readable : permits image.readable (source.evaluate initial.registers) 16#64 = true :=
+      by simp only [rivet, *]) :
     let pointer := source.evaluate initial.registers
     let value := readBytes initial.memory pointer 16
     Ensures image (· = initial) (· = { initial with
@@ -121,11 +121,11 @@ theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.storeXmm operation destination source))
-    (writable : permits image.writable (destination.evaluate initial.registers)
-      (destination.evaluate initial.registers + 16#64) = true := by simp only [rivet, *]) :
+    (writable : permits image.writable (destination.evaluate initial.registers) 16#64 = true :=
+      by simp only [rivet, *]) :
     let pointer := destination.evaluate initial.registers
     Ensures image (· = initial) (· = { initial with
-      memory := initial.memory.storeBytes pointer (pointer + 16#64) (littleEndianAt (initial.xmmRegisters source) pointer)
+      memory := initial.memory.storeBytes pointer 16#64 (littleEndianAt (initial.xmmRegisters source) pointer)
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
@@ -632,7 +632,7 @@ theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : Mac
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.push source))
-    (writable : permits image.writable (initial.registers .rsp - 8#64) (initial.registers .rsp) = true :=
+    (writable : permits image.writable (initial.registers .rsp - 8#64) 8#64 = true :=
       by simp only [rivet, *]) :
     Ensures image (· = initial) (· = {
       (initial.writeMemory (initial.registers .rsp - 8#64) .qword (initial.registers source)).write
@@ -641,7 +641,7 @@ theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : Mac
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp only [stepOp, BitVec.sub_add_cancel, writable, ite_true]
+  simp only [stepOp, writable, ite_true]
   simp [next, MachineState.write, MachineState.writeMemory, location]
 
 /-- POP reads the old stack slot, increments RSP, then writes the destination.
@@ -651,7 +651,7 @@ theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial :
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.pop destination))
-    (readable : permits image.readable (initial.registers .rsp) (initial.registers .rsp + 8#64) = true :=
+    (readable : permits image.readable (initial.registers .rsp) 8#64 = true :=
       by simp only [rivet, *]) :
     Ensures image (· = initial) (· = {
       (initial.write .rsp (initial.registers .rsp + 8#64)).write destination
@@ -667,7 +667,7 @@ theorem call (image : Image) (address target : BitVec 64) (initial : MachineStat
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.call target))
-    (writable : permits image.writable (initial.registers .rsp - 8#64) (initial.registers .rsp) = true :=
+    (writable : permits image.writable (initial.registers .rsp - 8#64) 8#64 = true :=
       by simp only [rivet, *]) :
     Ensures image (· = initial) (· = {
       (initial.writeMemory (initial.registers .rsp - 8#64) .qword
@@ -677,14 +677,14 @@ theorem call (image : Image) (address target : BitVec 64) (initial : MachineStat
   intro actual equal undefinedFlags
   subst actual
   rw [one code location undefinedFlags]
-  simp only [stepOp, BitVec.sub_add_cancel]
+  simp only [stepOp]
   rw [ite_eq_left writable]
 
 theorem return_ (image : Image) (address : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length .ret)
-    (readable : permits image.readable (initial.registers .rsp) (initial.registers .rsp + 8#64) = true :=
+    (readable : permits image.readable (initial.registers .rsp) 8#64 = true :=
       by simp only [rivet, *]) :
     Ensures image (· = initial) (· = { initial.write .rsp (initial.registers .rsp + 8#64) with
       status := .running initial.returnAddress }) := by
