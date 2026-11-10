@@ -74,15 +74,21 @@ Errors report the instruction address, and translation errors leave the output f
 
 Each loadable segment is emitted three ways:
 
-- in `regions : List Rivet.Region`, its `[start, stop)` addresses and its
-  `readable` and `writable` flags;
+- in `regions : List Rivet.Region`, its `base` address, its `length` in bytes, and
+  its `readable` and `writable` flags;
 - as `segment_<address> : Rivet.Memory`, its bytes at their absolute addresses.
   These use a `ByteArray` and return zero past its end, so BSS does not expand the
   generated source;
 - in `Loaded (memory : Rivet.Memory) : Prop`, which says that for every segment,
-  `memory address = segment_<address> address` at each address in it: what the
-  loader guarantees. It is a structure with one field per segment, named after
-  the segment, so `loaded.segment_<address> a lower upper` gives the byte at `a`.
+  `memory address = segment_<address> address` at each address in it, those with
+  `address - base < length`: what the loader guarantees. It is a structure with one
+  field per segment, named after the segment, so `loaded.segment_<address> a inside`
+  gives the byte at `a`:
+
+  ```lean
+  structure Loaded (memory : Rivet.Memory) : Prop where
+    segment_402000 : ∀ address, address - 0x402000#64 < 0x40#64 → memory address = segment_402000 address
+  ```
 
 Addresses are emitted as `BitVec 64` literals (`0x401000#64`). Build the image
 from the segments plus the caller's regions, and assume `Loaded` of the initial

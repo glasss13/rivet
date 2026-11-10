@@ -5,45 +5,38 @@ import all Rivet.Interpreter.Memory
 @[expose] public section
 namespace Rivet
 
-theorem Memory.read_storeBytes_outside {memory : Memory} {start stop : BitVec 64} {bytes : Memory}
-    {address : BitVec 64} (outside : address < start ∨ stop ≤ address) :
-    (memory.storeBytes start stop bytes) address = memory address := by
-  have away : ¬ (start ≤ address ∧ address < stop) := by bv_omega
+theorem Memory.read_storeBytes_outside {memory : Memory} {base length : BitVec 64} {bytes : Memory}
+    {address : BitVec 64} (outside : length ≤ address - base) :
+    (memory.storeBytes base length bytes) address = memory address := by
+  have away : ¬ address - base < length := by bv_omega
   simp only [Memory.storeBytes, away, ↓reduceIte]
 
-theorem permits_iff {permission : BitVec 64 → Bool} {start stop : BitVec 64} :
-    permits permission start stop = true ↔
-      start ≤ stop ∧ ∀ address, start ≤ address → address < stop → permission address = true := by
-  simp only [permits, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range]
+theorem permits_iff {permission : BitVec 64 → Bool} {base length : BitVec 64} :
+    permits permission base length = true ↔
+      ∀ address, address - base < length → permission address = true := by
+  simp only [permits, List.all_eq_true, List.mem_range]
   constructor
-  · intro ⟨valid, each⟩
-    refine ⟨valid, fun address lower upper => ?_⟩
-    have same : start + BitVec.ofNat 64 (address - start).toNat = address := by bv_omega
+  · intro each address inside
+    have same : base + BitVec.ofNat 64 (address - base).toNat = address := by bv_omega
     rw [← same]
     exact each _ (by bv_omega)
-  · intro ⟨valid, each⟩
-    exact ⟨valid, fun offset bound => each _ (by bv_omega) (by bv_omega)⟩
+  · intro each offset bound
+    exact each _ (by bv_omega)
 
-/-- A permitted access does not wrap. -/
-theorem permits_valid {permission : BitVec 64 → Bool} {start stop : BitVec 64}
-    (allowed : permits permission start stop = true) : start ≤ stop :=
-  (permits_iff.mp allowed).1
-
-/-- A permission over a range holds over every subrange. -/
-theorem permits_within {permission : BitVec 64 → Bool} {start stop first last : BitVec 64}
-    (whole : permits permission start stop = true)
-    (lower : start ≤ first) (valid : first ≤ last) (upper : last ≤ stop) :
-    permits permission first last = true := by
+/-- A permission over a range holds over every range inside it. -/
+theorem permits_inside {permission : BitVec 64 → Bool} {base length first size : BitVec 64}
+    (whole : permits permission base length = true)
+    (fits : size ≤ length) (inside : first - base ≤ length - size) :
+    permits permission first size = true := by
   rw [permits_iff] at whole ⊢
-  exact ⟨valid, fun address below above => whole.2 address (by bv_omega) (by bv_omega)⟩
+  exact fun address within => whole address (by bv_omega)
 
 /-! ## Reasoning about memory
 
 A footprint is a set of addresses, `BitVec 64 → Prop`, such as
-`fun x => output ≤ x ∧ x < outputEnd`. A read of `size` bytes from `address`
-covers `[address, address + size)`; lemmas about it ask that this not wrap,
-`address ≤ address + size`, which the read's own permission provides
-(`permits_valid`), and that `size < 2^64`, proved by `decide` unless given. -/
+`fun x => x - output < length`. A read of `size` bytes from `address` covers the
+addresses `x` with `x - address < BitVec.ofNat 64 size`; lemmas about it ask that
+`size < 2^64`, proved by `decide` unless given. -/
 
 private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
     (same : ∀ offset < size, first offset = second offset) :
@@ -67,44 +60,44 @@ private theorem readBytes_offsets_congr {first second : Memory} {address : BitVe
   unfold readBytes
   rw [foldr_bytes (fun offset bound => congrArg Fin.val (same offset bound))]
 
-/-- The addresses a non-wrapping read covers. -/
+/-- The addresses a read covers. -/
 private theorem covered {address : BitVec 64} {size offset : Nat}
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64) (bound : offset < size) :
-    address ≤ address + BitVec.ofNat 64 offset ∧ address + BitVec.ofNat 64 offset < address + BitVec.ofNat 64 size := by
+    (small : size < 2^64) (bound : offset < size) :
+    address + BitVec.ofNat 64 offset - address < BitVec.ofNat 64 size := by
   bv_omega
 
 /-- Memories that agree on the addresses a read covers give the same read. -/
 theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Nat}
-    (agree : ∀ other, address ≤ other → other < address + BitVec.ofNat 64 size → first other = second other)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
+    (agree : ∀ other, other - address < BitVec.ofNat 64 size → first other = second other)
+    (small : size < 2^64 := by decide) :
     readBytes first address size = readBytes second address size := by
   apply readBytes_offsets_congr
   intro offset bound
-  have ⟨above, below⟩ := covered fits small bound
-  exact agree _ above below
+  exact agree _ (covered small bound)
 
 /-- A read inside a store sees the stored bytes. -/
 theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : Memory)
-    {start stop address : BitVec 64} {size : Nat}
-    (lower : start ≤ address) (upper : address + BitVec.ofNat 64 size ≤ stop)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
-    readBytes (memory.storeBytes start stop bytes) address size = readBytes bytes address size := by
+    {base length address : BitVec 64} {size : Nat}
+    (fits : BitVec.ofNat 64 size ≤ length) (inside : address - base ≤ length - BitVec.ofNat 64 size)
+    (small : size < 2^64 := by decide) :
+    readBytes (memory.storeBytes base length bytes) address size = readBytes bytes address size := by
   apply readBytes_offsets_congr
   intro offset bound
-  have ⟨above, below⟩ := covered fits small bound
-  have inside : start ≤ address + BitVec.ofNat 64 offset ∧ address + BitVec.ofNat 64 offset < stop := by
-    bv_omega
-  simp only [Memory.storeBytes, inside, and_self, ↓reduceIte]
+  have within := covered (address := address) small bound
+  have stored : address + BitVec.ofNat 64 offset - base < length := by bv_omega
+  simp only [Memory.storeBytes, stored, ↓reduceIte]
 
-/-- A read outside a store sees the bytes from before it. -/
+/-- Two ranges are disjoint exactly when each one's length is at most the distance
+from its base to the other's base. A read disjoint from a store sees the bytes from
+before it. -/
 theorem Memory.readBytes_storeBytes_disjoint (memory : Memory) (bytes : Memory)
-    {start stop address : BitVec 64} {size : Nat}
-    (away : address + BitVec.ofNat 64 size ≤ start ∨ stop ≤ address)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
-    readBytes (memory.storeBytes start stop bytes) address size = readBytes memory address size := by
+    {base length address : BitVec 64} {size : Nat}
+    (before : length ≤ address - base) (after : BitVec.ofNat 64 size ≤ base - address)
+    (small : size < 2^64 := by decide) :
+    readBytes (memory.storeBytes base length bytes) address size = readBytes memory address size := by
   apply readBytes_offsets_congr
   intro offset bound
-  have ⟨above, below⟩ := covered fits small bound
+  have within := covered (address := address) small bound
   exact Memory.read_storeBytes_outside (by bv_omega)
 
 private theorem foldr_littleEndian (value offset size : Nat) :
@@ -184,23 +177,22 @@ theorem Memory.SameOutside.mono {before after : Memory} {footprint larger : BitV
 
 /-- A store inside the footprint keeps the agreement. -/
 theorem Memory.SameOutside.storeBytes {before after : Memory} {footprint : BitVec 64 → Prop}
-    (agree : before.SameOutside after footprint) {start stop : BitVec 64} {bytes : Memory}
-    (inside : ∀ address, start ≤ address → address < stop → footprint address) :
-    before.SameOutside (after.storeBytes start stop bytes) footprint := by
+    (agree : before.SameOutside after footprint) {base length : BitVec 64} {bytes : Memory}
+    (inside : ∀ address, address - base < length → footprint address) :
+    before.SameOutside (after.storeBytes base length bytes) footprint := by
   intro address outside
-  have away : ¬ (start ≤ address ∧ address < stop) := fun ⟨lower, upper⟩ => outside (inside address lower upper)
+  have away : ¬ address - base < length := fun within => outside (inside address within)
   simp only [Memory.storeBytes, away, ↓reduceIte]
   exact agree address outside
 
 /-- The frame law: a read outside the footprint sees the original bytes. -/
 theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : BitVec 64 → Prop}
     (agree : before.SameOutside after footprint) {address : BitVec 64} {size : Nat}
-    (away : ∀ other, address ≤ other → other < address + BitVec.ofNat 64 size → ¬ footprint other)
-    (fits : address ≤ address + BitVec.ofNat 64 size) (small : size < 2^64 := by decide) :
+    (away : ∀ other, other - address < BitVec.ofNat 64 size → ¬ footprint other)
+    (small : size < 2^64 := by decide) :
     Rivet.readBytes after address size = Rivet.readBytes before address size := by
   apply readBytes_offsets_congr
   intro offset bound
-  have ⟨above, below⟩ := covered fits small bound
-  exact agree _ (away _ above below)
+  exact agree _ (away _ (covered small bound))
 
 end Rivet

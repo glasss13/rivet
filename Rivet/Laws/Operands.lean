@@ -25,7 +25,7 @@ default simp set and the `rivet` set. -/
 @[simp, rivet] theorem MachineState.canRead_memory (state : MachineState) (image : Image) (width : Width)
     (address : Address) :
     state.canRead image (.memory width address) = permits image.readable (address.evaluate state.registers)
-      (address.evaluate state.registers + BitVec.ofNat 64 width.bytes) := by simp [canRead]
+      (BitVec.ofNat 64 width.bytes) := by simp [canRead]
 
 @[simp, rivet] theorem MachineState.canWrite_reg8 (state : MachineState) (image : Image) (register : Reg8) :
     state.canWrite image (.reg8 register) = true := by simp [canWrite]
@@ -40,7 +40,7 @@ default simp set and the `rivet` set. -/
 @[simp, rivet] theorem MachineState.canWrite_memory (state : MachineState) (image : Image) (width : Width)
     (address : Address) :
     state.canWrite image (.memory width address) = permits image.writable (address.evaluate state.registers)
-      (address.evaluate state.registers + BitVec.ofNat 64 width.bytes) := by simp [canWrite]
+      (BitVec.ofNat 64 width.bytes) := by simp [canWrite]
 
 /-! ## Operand values
 
