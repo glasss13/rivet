@@ -1,5 +1,6 @@
 module
 public import Rivet.Laws.Instructions
+public import Rivet.Tactics.Fetch
 -- `rivet_step`: executes one instruction of an `Ensures` goal through its contract.
 public meta import Lean
 @[expose] public section

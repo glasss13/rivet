@@ -87,7 +87,8 @@ end Fetch
 `rivet_fetch` proves `InstructionAt program address length operation`, that is
 `program.fetch address = some ⟨address, length, operation⟩`, for a concrete program
 and address. An unknown `length` (or operation) is filled in from the program.
-It is the default proof of every instruction contract's `code` argument.
+It proves the `code` argument of an instruction contract applied by hand,
+as `(code := by rivet_fetch)`.
 
 For programs generated as suffix chains it takes time independent of the program
 size; for other concrete programs it searches the list. Otherwise it falls back to
