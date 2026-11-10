@@ -103,8 +103,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     zeroFlag := request.zeroFlag
     carryFlag := request.carryFlag
     memory
-    status := .running first.address
-    readHistory := [] }
+    status := .running first.address }
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]
   for index in [:request.steps] do

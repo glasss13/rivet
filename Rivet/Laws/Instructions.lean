@@ -25,9 +25,6 @@ private theorem MachineState.writeOperand_flags (state : MachineState) (operand 
       (state.writeOperand operand value).signFlag = state.signFlag := by
   cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
 
-@[simp] private theorem MachineState.write_readHistory (state : MachineState) (register : Reg)
-    (value : BitVec 64) : (state.write register value).readHistory = state.readHistory := rfl
-
 private theorem one (code : InstructionAt image.program address length instruction)
     (location : initial.status = .running address) (undefinedFlags : FlagValues) :
     step image initial undefinedFlags = stepOp image instruction (address + BitVec.ofNat 64 length) initial undefinedFlags := by
@@ -59,7 +56,7 @@ private theorem shuffle_value (original : BitVec 128) (order : Nat) :
   omega
 
 /-- MOVD copies the initial low dword of a GPR into XMM and zeroes the upper
-96 bits. Other XMM registers, GPRs, flags, memory, and history are preserved. -/
+96 bits. Other XMM registers, GPRs, flags, and memory are preserved. -/
 theorem movd (image : Image) (address : BitVec 64) (destination : Xmm) (source : Reg32)
     (initial : MachineState)
     {length : Nat}
@@ -97,8 +94,8 @@ theorem pshufd (image : Image) (address : BitVec 64) (destination source : Xmm) 
   rw [shuffle_value]
   simp [next, location]
 
-/-- An unaligned 128-bit load for either modeled XMM move kind. It records the
-16-byte access and changes only the destination XMM register and fallthrough PC. -/
+/-- An unaligned 128-bit load for either modeled XMM move kind. It changes only
+the destination XMM register and fallthrough PC. -/
 theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (destination : Xmm) (source : Address) (initial : MachineState)
     {length : Nat}
@@ -110,8 +107,7 @@ theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     let value := readBytes initial.memory pointer 16
     Ensures image (· = initial) (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
-      status := .running (address + BitVec.ofNat 64 length)
-      readHistory := initial.readHistory ++ [⟨pointer,16⟩] }) := by
+      status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -119,7 +115,7 @@ theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
   simp [stepOp, readable, next, location]
 
 /-- An unaligned little-endian 128-bit store for either modeled XMM move kind.
-Only write permission is required; registers, flags, and read history are preserved. -/
+Only write permission is required; registers and flags are preserved. -/
 theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (destination : Address) (source : Xmm) (initial : MachineState)
     {length : Nat}
@@ -138,7 +134,7 @@ theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
   simp only [stepOp, writable, ite_true, next, location]
 
 /-- LEA computes an effective address from the initial registers. It neither
-reads memory nor changes flags or read history. -/
+reads memory nor changes flags. -/
 theorem lea (image : Image) (address : BitVec 64) (destination : Reg) (source : Address)
     (initial : MachineState)
     {length : Nat}
@@ -153,7 +149,7 @@ theorem lea (image : Image) (address : BitVec 64) (destination : Reg) (source : 
   simp [stepOp, next, MachineState.write, location]
 
 /-- MOVZX zero-extends any modeled byte or word source into a 32-bit destination,
-clearing its parent register's upper half and recording only actual memory reads. -/
+clearing its parent register's upper half. -/
 theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -163,8 +159,7 @@ theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (sourc
       first | assumption | exact Or.inl rfl | exact Or.inr rfl)
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
     Ensures image (· = initial) (· = { initial.write destination.parent (initial.readOperand source) with
-      status := .running (address + BitVec.ofNat 64 length)
-      readHistory := (initial.recordRead source).readHistory }) := by
+      status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -174,7 +169,7 @@ theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (sourc
   simp [stepOp, encoded, readable, next, MachineState.write, location]
 
 /-- MOVSXD sign-extends any modeled dword source to 64 bits. Flags are preserved;
-memory sources require read permission and append their access to read history. -/
+memory sources require read permission. -/
 theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -183,8 +178,7 @@ theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source
     (valid : source.width = some .dword := by first | rfl | assumption)
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
     Ensures image (· = initial) (· = { initial.write destination ((initial.readOperand source).setWidth 32 |>.signExtend 64) with
-      status := .running (address + BitVec.ofNat 64 length)
-      readHistory := (initial.recordRead source).readHistory }) := by
+      status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -208,8 +202,7 @@ private theorem binary (operation : BinaryOp) (image : Image) (address : BitVec 
     let updated := if operation.writes then initial.writeOperand destination (result.setWidth 64) else initial
     Ensures image (· = initial) (· = { updated with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := operation.carry left right result initial.carryFlag, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := operation.carry left right result initial.carryFlag, signFlag := result.msb }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -248,8 +241,7 @@ theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
     let result := left + right
     Ensures image (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := result < left, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := result < left, signFlag := result.msb }) := by
   exact binary .add image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -275,8 +267,7 @@ theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
     let result := left - right
     Ensures image (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := left < right, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := left < right, signFlag := result.msb }) := by
   exact binary .sub image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -302,8 +293,7 @@ theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
     let result := left - right - (if initial.carryFlag then 1 else 0)
     Ensures image (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := left < right || (initial.carryFlag && left == right), signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := left < right || (initial.carryFlag && left == right), signFlag := result.msb }) := by
   exact binary .sbb image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -328,8 +318,7 @@ theorem compare (image : Image) (address : BitVec 64) (destination source : Oper
     let result := left - right
     Ensures image (· = initial) (· = { initial with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := left == right,
-      carryFlag := left < right, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := left < right, signFlag := result.msb }) := by
   simpa only [BinaryOp.writes, Bool.false_eq_true, ite_false, BinaryOp.result, BinaryOp.carry, sub_beq_zero] using
     binary .cmp image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
@@ -355,8 +344,7 @@ theorem test (image : Image) (address : BitVec 64) (destination source : Operand
     let result := left &&& right
     Ensures image (· = initial) (· = { initial with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := false, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := false, signFlag := result.msb }) := by
   exact binary .test image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
 
@@ -382,8 +370,7 @@ theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : 
     let result := left &&& right
     Ensures image (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := false, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := false, signFlag := result.msb }) := by
   exact binary .and image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -409,8 +396,7 @@ theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : O
     let result := left ||| right
     Ensures image (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := false, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := false, signFlag := result.msb }) := by
   exact binary .or image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -436,8 +422,7 @@ theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : 
     let result := left ^^^ right
     Ensures image (· = initial) (· = { initial.writeOperand destination (result.setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
-      carryFlag := false, signFlag := result.msb
-      readHistory := ((initial.recordRead destination).recordRead source).readHistory }) := by
+      carryFlag := false, signFlag := result.msb }) := by
   exact binary .xor image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -468,8 +453,7 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
     Ensures image (· = initial) (fun final => ∃ sign zero : Bool,
       final = { initial.writeOperand destination (result.setWidth 64) with
         status := .running (address + BitVec.ofNat 64 length)
-        carryFlag := result.toInt != product, signFlag := sign, zeroFlag := zero
-        readHistory := (initial.recordRead source).readHistory }) := by
+        carryFlag := result.toInt != product, signFlag := sign, zeroFlag := zero }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -522,7 +506,7 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     simp only [zero] <;> simp_all [next, MachineState.writeOperand_flags]
 
 /-- NOT complements a supported register or memory destination without changing
-flags; memory destinations require read/write permission and record the read. -/
+flags; memory destinations require read/write permission. -/
 theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -531,8 +515,7 @@ theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand
     (readable : initial.canRead image destination = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
     Ensures image (· = initial) (· = { initial.writeOperand destination (~~~(initial.readOperand destination)) with
-      status := .running (address + BitVec.ofNat 64 length)
-      readHistory := (initial.recordRead destination).readHistory }) := by
+      status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -569,8 +552,7 @@ theorem cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (de
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
     let value := if condition.holds initial then initial.readOperand source else initial.readOperand destination
     Ensures image (· = initial) (· = { initial.writeOperand destination value with
-      status := .running (address + BitVec.ofNat 64 length)
-      readHistory := (initial.recordRead source).readHistory }) := by
+      status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -629,7 +611,7 @@ theorem jump (image : Image) (address target : BitVec 64) (initial : MachineStat
   rfl
 
 /-- Jcc tests the initial flags, branching or falling through without changing
-registers, flags, memory, or read history. Covers every modeled condition. -/
+registers, flags, or memory. Covers every modeled condition. -/
 theorem branch (image : Image) (address : BitVec 64) (condition : Condition) (target : BitVec 64)
     (initial : MachineState)
     {length : Nat}
@@ -664,7 +646,7 @@ theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : Mac
 
 /-- POP reads the old stack slot, increments RSP, then writes the destination.
 For POP RSP the loaded value replaces the incremented pointer. Flags and memory
-are preserved, and the eight-byte read is recorded at the original pointer. -/
+are preserved. -/
 theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
@@ -674,8 +656,7 @@ theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial :
     Ensures image (· = initial) (· = {
       (initial.write .rsp (initial.registers .rsp + 8#64)).write destination
         (readBytes initial.memory (initial.registers .rsp) 8) with
-      status := .running (address + BitVec.ofNat 64 length)
-      readHistory := initial.readHistory ++ [⟨(initial.registers .rsp),8⟩] }) := by
+      status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -706,7 +687,7 @@ theorem return_ (image : Image) (address : BitVec 64) (initial : MachineState)
     (readable : permits image.readable (initial.registers .rsp) (initial.registers .rsp + 8#64) = true :=
       by simp only [rivet, *]) :
     Ensures image (· = initial) (· = { initial.write .rsp (initial.registers .rsp + 8#64) with
-      status := .running initial.returnAddress, readHistory := initial.readHistory ++ [⟨(initial.registers .rsp),8⟩] }) := by
+      status := .running initial.returnAddress }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
@@ -720,7 +701,7 @@ theorem move (image : Image) (address : BitVec 64) (destination source : Operand
     (readable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
     Ensures image (· = initial) (· = { initial.writeOperand destination (initial.readOperand source) with
-      status := .running (address + BitVec.ofNat 64 length), readHistory := (initial.recordRead source).readHistory }) := by
+      status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro actual equal undefinedFlags
   subst actual
