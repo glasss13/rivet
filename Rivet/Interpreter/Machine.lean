@@ -17,19 +17,15 @@ structure MachineState where
   memory : Memory
   status : ExecutionStatus
 
-/-- Candidate values for flags an instruction leaves undefined. Defined and preserved
-flags must not use these values. This is execution input, not architectural state. -/
 structure FlagValues where
   signFlag : Bool
   zeroFlag : Bool
 
-/-- One set of candidate bits per execution step, including repeated loop iterations. -/
 abbrev FlagChoices := Nat → FlagValues
 
 def FlagChoices.drop (choices : FlagChoices) (count : Nat) : FlagChoices :=
   fun index => choices (count + index)
 
-/-- Update one register; its width is enforced by the value's type. -/
 def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 64) : MachineState :=
   { state with registers := fun otherRegister =>
       if otherRegister = register then value else state.registers otherRegister }
@@ -42,19 +38,15 @@ private def next (nextAddress : BitVec 64) (state : MachineState) : MachineState
   { state with status := match state.status with
       | .running _ => .running nextAddress
       | stopped => stopped }
-/-- The effective address. Closed: the `rivet` simp set states it per address shape. -/
 @[no_expose, irreducible] def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
   (address.base.map registers).getD 0 +
     (address.index.map registers).getD 0 * BitVec.ofNat 64 address.scale.value +
     BitVec.ofInt 64 address.displacement
 
-/-- Write a whole value after its complete range has passed permission checks. -/
 def MachineState.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64) : MachineState :=
   { state with memory := state.memory.storeBytes address (BitVec.ofNat 64 width.bytes) (littleEndianAt value address) }
 
-/-- The value of an operand, zero-extended to 64 bits. Closed: the `rivet` simp set
-states it per operand form. -/
 @[no_expose, irreducible] def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
   | .reg8 register => ((state.registers register.parent).setWidth 8).setWidth 64
   | .reg16 register => ((state.registers register.parent).setWidth 16).setWidth 64
@@ -63,8 +55,6 @@ states it per operand form. -/
   | .memory width address => (readBytes state.memory (address.evaluate state.registers) width.bytes).setWidth 64
   | .immediate value => BitVec.ofInt 64 value
 
-/-- Write an operand with x86 partial-register rules. Closed: the `rivet` simp set
-states it per operand form. -/
 @[no_expose, irreducible] def MachineState.writeOperand (state : MachineState) (operand : Operand) (value : BitVec 64) : MachineState :=
   match operand with
   | .reg8 register => state.write register.parent
@@ -76,13 +66,11 @@ states it per operand form. -/
   | .memory width address => state.writeMemory (address.evaluate state.registers) width value
   | .immediate _ => state
 
-/-- Read permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
 @[no_expose, irreducible] def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.readable (address.evaluate state.registers)
       (BitVec.ofNat 64 width.bytes)
   | _ => true
 
-/-- Write permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
 @[no_expose, irreducible] def MachineState.canWrite (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.writable (address.evaluate state.registers)
       (BitVec.ofNat 64 width.bytes)
@@ -109,7 +97,6 @@ private def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec wi
   | .sbb => left < right || (carryIn && left == right)
   | _ => false
 
-/-- Read both operands from the initial state; commit flags and memory only on success. -/
 private def MachineState.binary (state : MachineState) (image : Image) (operation : BinaryOp) (destination source : Operand) (nextAddress : BitVec 64) : MachineState :=
   if validBinary operation destination source && state.canRead image destination && state.canRead image source &&
       (!operation.writes || state.canWrite image destination) then
@@ -260,8 +247,6 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
         status := .running (readBytes state.memory address 8) }
     else { state with status := .fault }
 
-/-- Execute one fetched instruction. Instruction contracts provide its proof interface;
-the interpreter implementation is hidden from normal imports. -/
 @[no_expose] def step (image : Image) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match state.status with
   | .running address => match image.program.fetch address with
@@ -269,14 +254,11 @@ the interpreter implementation is hidden from normal imports. -/
     | none => { state with status := .fault }
   | _ => state
 
-/-- Run a fixed number of interpreter steps, taking one set of undefined-flag candidates per
-step. Closed: `Ensures` and its laws are its proof interface. -/
 @[no_expose, irreducible] def execute (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
   match steps with
   | 0 => state
   | remainingSteps+1 => execute image remainingSteps (step image state (choices 0)) (choices.drop 1)
 
-/-- The little-endian address stored in the current stack return slot. -/
 def MachineState.returnAddress (state : MachineState) : BitVec 64 :=
   readBytes state.memory (state.registers .rsp) 8
 

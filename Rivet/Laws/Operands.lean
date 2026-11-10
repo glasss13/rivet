@@ -6,12 +6,6 @@ import all Rivet.Interpreter.Machine
 @[expose] public section
 namespace Rivet
 
-/-! ## Permission checks
-
-One equation per operand form. A memory operand needs `permits` over the bytes it
-covers; registers always pass; an immediate cannot be written. These are in the
-default simp set and the `rivet` set. -/
-
 @[simp, rivet] theorem MachineState.canRead_reg8 (state : MachineState) (image : Image) (register : Reg8) :
     state.canRead image (.reg8 register) = true := by simp [canRead]
 @[simp, rivet] theorem MachineState.canRead_reg16 (state : MachineState) (image : Image) (register : Reg16) :
@@ -41,13 +35,6 @@ default simp set and the `rivet` set. -/
     (address : Address) :
     state.canWrite image (.memory width address) = permits image.writable (address.evaluate state.registers)
       (BitVec.ofNat 64 width.bytes) := by simp [canWrite]
-
-/-! ## Operand values
-
-One equation per operand form for reading and writing. Narrow
-registers read the low bits of their parent; a 32-bit write clears the upper half,
-while 8- and 16-bit writes keep the remaining bits. In the default simp set and the
-`rivet` set. -/
 
 @[simp, rivet] theorem MachineState.readOperand_reg8 (state : MachineState) (register : Reg8) :
     state.readOperand (.reg8 register) = ((state.registers register.parent).setWidth 8).setWidth 64 := by
@@ -95,12 +82,6 @@ while 8- and 16-bit writes keep the remaining bits. In the default simp set and 
 -- Register aliases name their parent: `Reg32.edx.parent` is `.rdx`. Syntax only, so
 -- these stay open; they are in the `rivet` set but not the default simp set.
 attribute [rivet] Reg8.parent Reg16.parent Reg32.parent
-
-/-! ## Effective addresses
-
-One equation per address shape, as word arithmetic over the registers it names.
-Only in the `rivet` set. With the word lemmas below, a literal displacement ends as
-`r .rbx + 8#64` or `r .rbx - 8#64`, and a zero displacement disappears. -/
 
 @[rivet] theorem Address.evaluate_base (base : Reg) (scale : Scale) (displacement : Int)
     (registers : Reg → BitVec 64) :

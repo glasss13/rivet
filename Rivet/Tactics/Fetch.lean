@@ -12,8 +12,6 @@ namespace Fetch
 
 private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
 
-/-- The value of a closed address: a literal (`0x1000`, `0x1000#64`, `BitVec.ofNat 64 n`),
-or an expression over definitions such as `entry + 3#64`, evaluated by reduction. -/
 meta def addressValue? (address : Expr) : MetaM (Option Nat) := do
   let address ← instantiateMVars address
   if let some ⟨_, value⟩ ← getBitVecValue? address then return some value.toNat
@@ -23,9 +21,6 @@ meta def addressValue? (address : Expr) : MetaM (Option Nat) := do
     (evalNat value).run
   catch _ => return none
 
-/-- The first instruction of a concrete list that `Program.fetch` returns at `pc`,
-found by walking the list (at most `limit` entries). Mirrors `Program.fetch`: the
-address must equal `pc`, `pc` must be a 64-bit address, and the length 1 to 15. -/
 private meta def firstMatch (list : Expr) (pc : Nat) (limit : Nat := 0) : MetaM (Option Expr) := do
   let mut current := list
   let mut visited := 0
@@ -42,8 +37,6 @@ private meta def firstMatch (list : Expr) (pc : Nat) (limit : Nat := 0) : MetaM 
     visited := visited + 1
   return none
 
-/-- The program an image carries: `image.program` reduced to the program itself when
-the image unfolds to a literal, such as `{ program := p, regions := rs }`. -/
 private meta def programOf (program : Expr) : MetaM Expr := do
   let program ← instantiateMVars program
   let image? := if program.isAppOfArity ``Image.program 1 then some program.appArg!
@@ -54,13 +47,6 @@ private meta def programOf (program : Expr) : MetaM Expr := do
   let image ← whnfD image
   return if image.isAppOfArity ``Image.mk 2 then image.getArg! 0 else program
 
-/-- For a concrete program and an address `address` with value `pc`, the instruction
-`Program.fetch` returns and a proof `program.fetch address = some instruction`,
-checked by the kernel.
-
-A generated program has a fact `program.from_<pc> : program.FetchesFrom suffix pc`
-whose suffix starts with that instruction; the proof then evaluates only that one
-entry, in time independent of the program size. Otherwise the list is searched. -/
 meta def prove (original address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
   let program ← programOf original
   -- State the result about the caller's program, so it matches their goal syntactically.
@@ -83,17 +69,6 @@ meta def prove (original address : Expr) (pc : Nat) : MetaM (Option (Expr × Exp
 
 end Fetch
 
-/--
-`rivet_fetch` proves `InstructionAt program address length operation`, that is
-`program.fetch address = some ⟨address, length, operation⟩`, for a concrete program
-and address. An unknown `length` (or operation) is filled in from the program.
-It proves the `code` argument of an instruction contract applied by hand,
-as `(code := by rivet_fetch)`.
-
-For programs generated as suffix chains it takes time independent of the program
-size; for other concrete programs it searches the list. Otherwise it falls back to
-`assumption`, for abstract programs whose instructions are given as hypotheses.
--/
 syntax (name := rivetFetch) "rivet_fetch" : tactic
 
 @[tactic rivetFetch] meta def Fetch.evalRivetFetch : Tactic := fun _ => withMainContext do

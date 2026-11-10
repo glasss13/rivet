@@ -24,20 +24,12 @@ theorem permits_iff {permission : BitVec 64 → Bool} {base length : BitVec 64} 
   · intro ⟨valid, each⟩
     exact ⟨valid, fun offset bound => each _ (by bv_omega)⟩
 
-/-- A permission over a range holds over every range inside it. -/
 theorem permits_inside {permission : BitVec 64 → Bool} {base length first size : BitVec 64}
     (whole : permits permission base length = true)
     (fits : size ≤ length) (inside : first - base ≤ length - size) :
     permits permission first size = true := by
   rw [permits_iff] at whole ⊢
   exact ⟨by bv_omega, fun address within => whole.2 address (by bv_omega)⟩
-
-/-! ## Reasoning about memory
-
-A footprint is a set of addresses, `BitVec 64 → Prop`, such as
-`fun x => x - output < length`. A read of `size` bytes from `address` covers the
-addresses `x` with `x - address < BitVec.ofNat 64 size`; lemmas about it ask that
-`size < 2^64`, proved by `decide` unless given. -/
 
 private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
     (same : ∀ offset < size, first offset = second offset) :
@@ -61,13 +53,11 @@ private theorem readBytes_offsets_congr {first second : Memory} {address : BitVe
   unfold readBytes
   rw [foldr_bytes (fun offset bound => congrArg Fin.val (same offset bound))]
 
-/-- The addresses a read covers. -/
 private theorem covered {address : BitVec 64} {size offset : Nat}
     (small : size < 2^64) (bound : offset < size) :
     address + BitVec.ofNat 64 offset - address < BitVec.ofNat 64 size := by
   bv_omega
 
-/-- Memories that agree on the addresses a read covers give the same read. -/
 theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Nat}
     (agree : ∀ other, other - address < BitVec.ofNat 64 size → first other = second other)
     (small : size < 2^64 := by decide) :
@@ -76,7 +66,6 @@ theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Na
   intro offset bound
   exact agree _ (covered small bound)
 
-/-- A read inside a store sees the stored bytes. -/
 theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : Memory)
     {base length address : BitVec 64} {size : Nat}
     (fits : BitVec.ofNat 64 size ≤ length) (inside : address - base ≤ length - BitVec.ofNat 64 size)
@@ -88,9 +77,6 @@ theorem Memory.readBytes_storeBytes_within (memory : Memory) (bytes : Memory)
   have stored : address + BitVec.ofNat 64 offset - base < length := by bv_omega
   simp only [Memory.storeBytes, stored, ↓reduceIte]
 
-/-- Two ranges are disjoint exactly when each one's length is at most the distance
-from its base to the other's base. A read disjoint from a store sees the bytes from
-before it. -/
 theorem Memory.readBytes_storeBytes_disjoint (memory : Memory) (bytes : Memory)
     {base length address : BitVec 64} {size : Nat}
     (before : length ≤ address - base) (after : BitVec.ofNat 64 size ≤ base - address)
@@ -116,7 +102,6 @@ private theorem foldr_littleEndian (value offset size : Nat) :
     rw [shifted, inductionHypothesis (offset + 1), Nat.pow_succ 256 size, Nat.mul_comm _ 256,
       Nat.mod_mul, Nat.pow_succ 256 offset, ← Nat.div_div_eq_div_mul]
 
-/-- Reading a stored value back from byte `offset` on selects the corresponding bits. -/
 theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset size : Nat)
     (fits : offset + size ≤ 2^64) :
     readBytes (littleEndianAt value address) (address + BitVec.ofNat 64 offset) size =
@@ -130,19 +115,15 @@ theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (o
   rw [foldr_littleEndian, Nat.pow_mul, Nat.pow_mul]
   simp only [Nat.reducePow, Nat.mod_mod]
 
-/-- Reading a stored value back from where it was stored gives its low bits. -/
 @[simp] theorem readBytes_littleEndianAt (value : BitVec n) (address : BitVec 64) (size : Nat)
     (fits : size ≤ 2^64) :
     readBytes (littleEndianAt value address) address size = value.extractLsb' 0 (8 * size) := by
   simpa using readBytes_littleEndianAt_add value address 0 size (by omega)
 
-/-- A one-byte read is the byte at that address. Not a simp lemma: it would turn a byte
-read of a store into a point read before the store laws apply. -/
 theorem readBytes_one (memory : Memory) (address : BitVec 64) :
     readBytes memory address 1 = BitVec.ofNat 8 (memory address).val := by
   simp [readBytes]
 
-/-- The byte a stored value puts at `address + offset` is the value's byte `offset`. -/
 theorem littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset : Nat)
     (small : offset < 2^64 := by decide) :
     (littleEndianAt value address (address + BitVec.ofNat 64 offset)).val =
@@ -152,12 +133,10 @@ theorem littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset : Na
   simp only [littleEndianAt, distance, BitVec.extractLsb'_toNat, Nat.shiftRight_eq_div_pow,
     Nat.pow_mul]
 
-/-- The byte a stored value puts at its own address is the value's lowest byte. -/
 @[simp] theorem littleEndianAt_self (value : BitVec n) (address : BitVec 64) :
     (littleEndianAt value address address).val = (value.extractLsb' 0 8).toNat := by
   simpa using littleEndianAt_add value address 0
 
-/-- `after` holds the same bytes as `before` at every address outside `footprint`. -/
 def Memory.SameOutside (before after : Memory) (footprint : BitVec 64 → Prop) : Prop :=
   ∀ address, ¬ footprint address → after address = before address
 
@@ -170,13 +149,11 @@ theorem Memory.SameOutside.trans {first second third : Memory} {footprint : BitV
     first.SameOutside third footprint :=
   fun address outside => (later address outside).trans (earlier address outside)
 
-/-- A footprint can always be enlarged. -/
 theorem Memory.SameOutside.mono {before after : Memory} {footprint larger : BitVec 64 → Prop}
     (agree : before.SameOutside after footprint) (covered : ∀ address, footprint address → larger address) :
     before.SameOutside after larger :=
   fun address outside => agree address (fun inside => outside (covered address inside))
 
-/-- A store inside the footprint keeps the agreement. -/
 theorem Memory.SameOutside.storeBytes {before after : Memory} {footprint : BitVec 64 → Prop}
     (agree : before.SameOutside after footprint) {base length : BitVec 64} {bytes : Memory}
     (inside : ∀ address, address - base < length → footprint address) :
@@ -186,7 +163,6 @@ theorem Memory.SameOutside.storeBytes {before after : Memory} {footprint : BitVe
   simp only [Memory.storeBytes, away, ↓reduceIte]
   exact agree address outside
 
-/-- The frame law: a read outside the footprint sees the original bytes. -/
 theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : BitVec 64 → Prop}
     (agree : before.SameOutside after footprint) {address : BitVec 64} {size : Nat}
     (away : ∀ other, other - address < BitVec.ofNat 64 size → ¬ footprint other)

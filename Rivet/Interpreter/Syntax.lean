@@ -30,7 +30,6 @@ def Reg32.parent : Reg32 → Reg
   | .r14d => .r14
   | .r15d => .r15
 
-/-- Low-byte aliases; legacy high-byte registers are not supported. -/
 inductive Reg8 where
   | al | bl | cl | dl | sil | dil | bpl | spl | r8l | r9l | r10l | r11l | r12l | r13l | r14l | r15l
   deriving DecidableEq
@@ -72,7 +71,6 @@ def Reg16.parent : Reg16 → Reg
   | .r14w => .r14
   | .r15w => .r15
 
-/-- The sixteen legacy 128-bit XMM registers available in 64-bit mode. -/
 inductive Xmm where
   | xmm0 | xmm1 | xmm2 | xmm3 | xmm4 | xmm5 | xmm6 | xmm7
   | xmm8 | xmm9 | xmm10 | xmm11 | xmm12 | xmm13 | xmm14 | xmm15
@@ -99,7 +97,6 @@ inductive Scale where
 def Scale.value : Scale → Nat
   | .one => 1 | .two => 2 | .four => 4 | .eight => 8
 
-/-- A 64-bit effective address; displacement is signed and arithmetic wraps. -/
 structure Address where
   base : Option Reg := none
   index : Option Reg := none
@@ -121,7 +118,6 @@ abbrev Operand.width : Operand → Option Width
   | .reg32 _ => some .dword | .reg64 _ => some .qword
   | .memory width _ => some width | .immediate _ => none
 
-/-- MOV requires equal widths, no memory-to-memory transfer, and an encodable immediate. -/
 def validMove (destination source : Operand) : Bool :=
   match destination.width with
   | none => false
@@ -132,12 +128,10 @@ def validMove (destination source : Operand) : Bool :=
     | _, .immediate value => -(2^(width.bits-1)) ≤ value && value < 2^width.bits
     | _, _ => source.width == some width
 
-/-- Scalar operations sharing the same width and operand rules. -/
 inductive BinaryOp where
   | add | sub | sbb | cmp | test | and | or | xor
   deriving DecidableEq
 
-/-- 64-bit arithmetic immediates are sign-extended from 32 bits. TEST has no register/memory form. -/
 def validBinary (operation : BinaryOp) (destination source : Operand) : Bool :=
   validMove destination source &&
     (match destination.width, source with
@@ -145,7 +139,6 @@ def validBinary (operation : BinaryOp) (destination source : Operand) : Bool :=
     | _, _ => true) &&
     (match operation, source with | .test, .memory _ _ => false | _, _ => true)
 
-/-- Conditions supported by the modeled zero, carry, and sign flags. -/
 inductive Condition where
   | equal | notEqual | below | aboveOrEqual | belowOrEqual | above | sign
   deriving DecidableEq
@@ -155,8 +148,6 @@ def validConditionalMove (destination source : Operand) : Bool :=
   | .reg16 _ | .reg32 _ | .reg64 _ => source.width == destination.width
   | _ => false
 
-/-- Truncating two/three-operand IMUL: a 16/32/64-bit register, matching
-register/memory source, and optionally an encodable immediate multiplier. -/
 def validImul (destination source : Operand) (immediate : Option Int) : Bool :=
   validConditionalMove destination source &&
     match immediate with
@@ -167,7 +158,6 @@ inductive ShiftOp where
   | shl | shr
   deriving DecidableEq
 
-/-- The immediate-count register forms needed by LZ4. -/
 def validShift (destination : Operand) (count : Nat) : Bool :=
   (match destination with | .reg32 _ | .reg64 _ => true | _ => false) && count < 256
 
@@ -203,7 +193,6 @@ structure Instruction where
   deriving DecidableEq
 abbrev Program := List Instruction
 
-/-- Fetch at an exact byte address. Invalid x86 instruction lengths do not execute. -/
 def Program.fetch (program : Program) (address : BitVec 64) : Option Instruction :=
   program.find? fun instruction => instruction.address == address &&
     0 < instruction.length && instruction.length ≤ 15

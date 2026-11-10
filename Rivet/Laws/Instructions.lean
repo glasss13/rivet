@@ -55,8 +55,6 @@ private theorem shuffle_value (original : BitVec 128) (order : Nat) :
   have b3 := bound 3
   omega
 
-/-- MOVD copies the initial low dword of a GPR into XMM and zeroes the upper
-96 bits. Other XMM registers, GPRs, flags, and memory are preserved. -/
 theorem movd (image : Image) (address : BitVec 64) (destination : Xmm) (source : Reg32)
     (initial : MachineState)
     {length : Nat}
@@ -72,8 +70,6 @@ theorem movd (image : Image) (address : BitVec 64) (destination : Xmm) (source :
   rw [one code location undefinedFlags]
   simp [stepOp, next, location]
 
-/-- PSHUFD selects four initial dword lanes with the immediate's four two-bit
-selectors. Lane 0 is least significant; source/destination aliasing is allowed. -/
 theorem pshufd (image : Image) (address : BitVec 64) (destination source : Xmm) (order : Nat)
     (initial : MachineState)
     {length : Nat}
@@ -94,8 +90,6 @@ theorem pshufd (image : Image) (address : BitVec 64) (destination source : Xmm) 
   rw [shuffle_value]
   simp [next, location]
 
-/-- An unaligned 128-bit load for either modeled XMM move kind. It changes only
-the destination XMM register and fallthrough PC. -/
 theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (destination : Xmm) (source : Address) (initial : MachineState)
     {length : Nat}
@@ -114,8 +108,6 @@ theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
   rw [one code location undefinedFlags]
   simp [stepOp, readable, next, location]
 
-/-- An unaligned little-endian 128-bit store for either modeled XMM move kind.
-Only write permission is required; registers and flags are preserved. -/
 theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (destination : Address) (source : Xmm) (initial : MachineState)
     {length : Nat}
@@ -133,8 +125,6 @@ theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
   rw [one code location undefinedFlags]
   simp only [stepOp, writable, ite_true, next, location]
 
-/-- LEA computes an effective address from the initial registers. It neither
-reads memory nor changes flags. -/
 theorem lea (image : Image) (address : BitVec 64) (destination : Reg) (source : Address)
     (initial : MachineState)
     {length : Nat}
@@ -148,8 +138,6 @@ theorem lea (image : Image) (address : BitVec 64) (destination : Reg) (source : 
   rw [one code location undefinedFlags]
   simp [stepOp, next, MachineState.write, location]
 
-/-- MOVZX zero-extends any modeled byte or word source into a 32-bit destination,
-clearing its parent register's upper half. -/
 theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -168,8 +156,6 @@ theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (sourc
     simpa only [Bool.or_eq_true, beq_iff_eq] using valid
   simp [stepOp, encoded, readable, next, MachineState.write, location]
 
-/-- MOVSXD sign-extends any modeled dword source to 64 bits. Flags are preserved;
-memory sources require read permission. -/
 theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -219,7 +205,6 @@ private theorem sub_beq_zero (left right : BitVec width) :
   apply Bool.eq_iff_iff.mpr
   simp [BitVec.sub_eq_iff_eq_add]
 
-/-- Successful ADD for every supported scalar width and operand form. -/
 theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -245,7 +230,6 @@ theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
   exact binary .add image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-/-- Successful SUB for every supported scalar width and operand form. -/
 theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -271,7 +255,6 @@ theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
   exact binary .sub image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-/-- Successful SBB for every supported scalar width and operand form. -/
 theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -297,7 +280,6 @@ theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
   exact binary .sbb image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-/-- Successful CMP for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
 theorem compare (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -323,7 +305,6 @@ theorem compare (image : Image) (address : BitVec 64) (destination source : Oper
     binary .cmp image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
 
-/-- Successful TEST for every supported scalar width and operand form. Reads both operands without requiring write permission. -/
 theorem test (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -348,7 +329,6 @@ theorem test (image : Image) (address : BitVec 64) (destination source : Operand
   exact binary .test image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
 
-/-- Successful AND for every supported scalar width and operand form. -/
 theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -374,7 +354,6 @@ theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : 
   exact binary .and image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-/-- Successful OR for every supported scalar width and operand form. -/
 theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -400,7 +379,6 @@ theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : O
   exact binary .or image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-/-- Successful XOR for every supported scalar width and operand form. -/
 theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -426,9 +404,6 @@ theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : 
   exact binary .xor image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-/-- Successful truncating signed IMUL for every modeled width and operand form.
-The result and carry flag are specified; SF/ZF remain unconstrained for every
-undefined-flag choice supply. Source reads always use the initial state. -/
 theorem imul (image : Image) (address : BitVec 64) (destination source : Operand)
     (immediate : Option Int) (initial : MachineState)
     {length : Nat}
@@ -464,9 +439,6 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
   simp only [Option.getD_some, next, MachineState.writeOperand_status, location]
   cases immediate <;> rfl
 
-/-- Successful SHL/SHR for supported immediate-count register forms. The
-encoded count is masked to the operand width. Zero masked counts preserve flags,
-but still write the destination (and clear the upper half of an r32 parent). -/
 theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     (destination : Operand) (count : Nat) (initial : MachineState)
     {length : Nat}
@@ -505,8 +477,6 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
   cases operation <;> split <;>
     simp only [zero] <;> simp_all [next, MachineState.writeOperand_flags]
 
-/-- NOT complements a supported register or memory destination without changing
-flags; memory destinations require read/write permission. -/
 theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -522,8 +492,6 @@ theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand
   rw [one code location undefinedFlags]
   simp [stepOp, readable, writable, next, location]
 
-/-- SETcc writes a byte containing zero or one according to the initial flags.
-It requires only write access to its destination and performs no memory read. -/
 theorem setcc (image : Image) (address : BitVec 64) (condition : Condition) (destination : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -539,9 +507,6 @@ theorem setcc (image : Image) (address : BitVec 64) (condition : Condition) (des
   rw [one code location undefinedFlags]
   simp [stepOp, valid, writable, next, location]
 
-/-- CMOVcc reads its source even when not taken. Writing the selected value
-through the destination preserves narrow-register semantics, including clearing
-the upper half of a 32-bit destination on both paths. Flags are preserved. -/
 theorem cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -585,7 +550,6 @@ theorem dec (image : Image) (address : BitVec 64) (register : Reg) (initial : Ma
   rw [one code location undefinedFlags]
   simp_all [MachineState.write, stepOp, next] <;> try rfl
 
-/-- NOP preserves the entire state except for advancing the image counter. -/
 theorem nop (image : Image) (address : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
@@ -598,7 +562,6 @@ theorem nop (image : Image) (address : BitVec 64) (initial : MachineState)
   rw [one code location undefinedFlags]
   simp [stepOp, next, location]
 
-/-- JMP preserves the entire state except for setting the image counter. -/
 theorem jump (image : Image) (address target : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
@@ -610,8 +573,6 @@ theorem jump (image : Image) (address target : BitVec 64) (initial : MachineStat
   rw [one code location undefinedFlags]
   rfl
 
-/-- Jcc tests the initial flags, branching or falling through without changing
-registers, flags, or memory. Covers every modeled condition. -/
 theorem branch (image : Image) (address : BitVec 64) (condition : Condition) (target : BitVec 64)
     (initial : MachineState)
     {length : Nat}
@@ -626,8 +587,6 @@ theorem branch (image : Image) (address : BitVec 64) (condition : Condition) (ta
   simp only [stepOp, next, location]
   split <;> rfl
 
-/-- PUSH stores the source's initial 64-bit value before updating RSP. Only
-write permission for the eight-byte slot at the decremented pointer is required. -/
 theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
@@ -644,9 +603,6 @@ theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : Mac
   simp only [stepOp, writable, ite_true]
   simp [next, MachineState.write, MachineState.writeMemory, location]
 
-/-- POP reads the old stack slot, increments RSP, then writes the destination.
-For POP RSP the loaded value replaces the incremented pointer. Flags and memory
-are preserved. -/
 theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
