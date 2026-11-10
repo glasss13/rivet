@@ -36,63 +36,52 @@ private theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (stat
     simpa [Nat.succ_add, execute_succ, Nat.add_comm] using
       inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
-structure Ensures (image : Image) (precondition postcondition : MachineState → Prop) : Prop where
+structure Ensures (image : Image) (initial : MachineState) (postcondition : MachineState → Prop) : Prop where
   private mk ::
-  private allChoices : ∀ initial, precondition initial → ∀ choices : FlagChoices,
+  private allChoices : ∀ choices : FlagChoices,
     ∃ final, (∃ steps, execute image steps initial choices = final) ∧ postcondition final
 
-theorem Ensures.intro
-    (body : ∀ initial, precondition initial → Ensures image (· = initial) postcondition) :
-    Ensures image precondition postcondition :=
-  ⟨fun initial assumption => (body initial assumption).allChoices initial rfl⟩
-
 private theorem Ensures.of_step
-    (transition : ∀ initial, precondition initial → ∀ undefinedFlags,
-      postcondition (step image initial undefinedFlags)) :
-    Ensures image precondition postcondition := by
-  constructor
-  intro initial assumption choices
-  exact ⟨step image initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
-    transition initial assumption (choices 0)⟩
+    (transition : ∀ undefinedFlags, postcondition (step image initial undefinedFlags)) :
+    Ensures image initial postcondition :=
+  ⟨fun choices => ⟨step image initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
+    transition (choices 0)⟩⟩
 
 theorem Ensures.done {state : MachineState} (holds : postcondition state) :
-    Ensures image (· = state) postcondition :=
-  ⟨fun initial equal choices => ⟨initial, ⟨0, execute_zero image initial choices⟩, equal ▸ holds⟩⟩
+    Ensures image state postcondition :=
+  ⟨fun choices => ⟨state, ⟨0, execute_zero image state choices⟩, holds⟩⟩
 
-theorem Ensures.seq (first : Ensures image precondition intermediate)
-    (second : Ensures image intermediate postcondition) : Ensures image precondition postcondition := by
+theorem Ensures.bind (first : Ensures image state intermediate)
+    (continuation : ∀ next, intermediate next → Ensures image next postcondition) :
+    Ensures image state postcondition := by
   constructor
-  intro initial assumption choices
-  obtain ⟨middle, ⟨earlier, rfl⟩, holds⟩ := first.allChoices initial assumption choices
-  obtain ⟨final, ⟨later, reached⟩, result⟩ := second.allChoices _ holds (choices.drop earlier)
+  intro choices
+  obtain ⟨middle, ⟨earlier, rfl⟩, holds⟩ := first.allChoices choices
+  obtain ⟨final, ⟨later, reached⟩, result⟩ := (continuation _ holds).allChoices (choices.drop earlier)
   exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
-theorem Ensures.bind (first : Ensures image precondition intermediate)
-    (continuation : ∀ state, intermediate state → Ensures image (· = state) postcondition) :
-    Ensures image precondition postcondition :=
-  first.seq (Ensures.intro continuation)
-
-theorem Ensures.consequence (contract : Ensures image precondition postcondition)
-    (strengthenPrecondition : ∀ state, strongerPrecondition state → precondition state)
-    (weakenPostcondition : ∀ state, postcondition state → weakerPostcondition state) :
-    Ensures image strongerPrecondition weakerPostcondition := by
+theorem Ensures.consequence (contract : Ensures image state postcondition)
+    (weaken : ∀ final, postcondition final → weakerPostcondition final) :
+    Ensures image state weakerPostcondition := by
   constructor
-  intro initial assumption choices
-  obtain ⟨final, reached, result⟩ := contract.allChoices initial (strengthenPrecondition _ assumption) choices
-  exact ⟨final, reached, weakenPostcondition _ result⟩
+  intro choices
+  obtain ⟨final, reached, result⟩ := contract.allChoices choices
+  exact ⟨final, reached, weaken _ result⟩
 
 theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : MachineState → Nat)
-    (body : ∀ initial, invariant initial → ¬ finished initial →
-      Ensures image (· = initial) (fun final => invariant final ∧ measure final < measure initial)) :
-    Ensures image invariant (fun final => invariant final ∧ finished final) := by
+    (holds : invariant state)
+    (body : ∀ current, invariant current → ¬ finished current →
+      Ensures image current (fun next => invariant next ∧ measure next < measure current)) :
+    Ensures image state (fun final => invariant final ∧ finished final) := by
   constructor
-  intro initial assumption choices
-  induction bound : measure initial using Nat.strongRecOn generalizing initial choices with
+  intro choices
+  induction bound : measure state using Nat.strongRecOn generalizing state choices with
   | ind bound inductionHypothesis =>
-    by_cases done : finished initial
-    · exact ⟨initial, ⟨0, execute_zero image initial choices⟩, assumption, done⟩
-    · obtain ⟨middle, ⟨earlier, rfl⟩, holds, decreases⟩ := (body initial assumption done).allChoices initial rfl choices
-      obtain ⟨final, ⟨later, reached⟩, result⟩ := inductionHypothesis _ (by omega) _ holds (choices.drop earlier) rfl
+    by_cases done : finished state
+    · exact ⟨state, ⟨0, execute_zero image state choices⟩, holds, done⟩
+    · obtain ⟨middle, ⟨earlier, rfl⟩, holds, decreases⟩ := (body state holds done).allChoices choices
+      obtain ⟨final, ⟨later, reached⟩, result⟩ :=
+        inductionHypothesis _ (by omega) holds (choices.drop earlier) rfl
       exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
 -- Execution proofs are implementation details of `Ensures.preserves_unwritable`.
@@ -186,13 +175,12 @@ private theorem execute_writes_within (image : Image) (steps : Nat) (state : Mac
     exact (step_writes_within image state (choices 0)).trans
       (ih (step image state (choices 0)) (choices.drop 1))
 
-theorem Ensures.preserves_unwritable (contract : Ensures image (· = initial) postcondition) :
-    Ensures image (· = initial) (fun final =>
+theorem Ensures.preserves_unwritable (contract : Ensures image initial postcondition) :
+    Ensures image initial (fun final =>
       postcondition final ∧ initial.memory.SameOutside final.memory (image.writable · = true)) := by
   constructor
-  intro actual equal choices
-  subst actual
-  obtain ⟨final, ⟨steps, reached⟩, result⟩ := contract.allChoices initial rfl choices
+  intro choices
+  obtain ⟨final, ⟨steps, reached⟩, result⟩ := contract.allChoices choices
   exact ⟨final, ⟨steps, reached⟩, result, reached ▸ execute_writes_within image steps initial choices⟩
 
 end Rivet
