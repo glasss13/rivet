@@ -1,5 +1,6 @@
 module
 public import Rivet.Laws.Ensures
+public import Rivet.Laws.Operands
 import all Rivet.Interpreter.Machine
 import all Rivet.Laws.Ensures
 -- Instruction contracts: one `Ensures` rule per modeled operation, proved against `step`.
@@ -8,14 +9,13 @@ namespace Rivet
 
 -- Normalize known operand constructors without expanding unknown operands.
 -- These equations already exist; only their simplification attributes are new.
+-- Permission checks are closed; their equations are in `Rivet.Laws.Operands`.
 attribute [simp] Operand.width.eq_1 Operand.width.eq_2 Operand.width.eq_3
   Operand.width.eq_4 Operand.width.eq_5 Operand.width.eq_6
   MachineState.readOperand.eq_1 MachineState.readOperand.eq_2 MachineState.readOperand.eq_3
   MachineState.readOperand.eq_4 MachineState.readOperand.eq_5 MachineState.readOperand.eq_6
   MachineState.writeOperand.eq_1 MachineState.writeOperand.eq_2 MachineState.writeOperand.eq_3
   MachineState.writeOperand.eq_4 MachineState.writeOperand.eq_5 MachineState.writeOperand.eq_6
-  MachineState.canRead.eq_1 MachineState.canRead.eq_2
-  MachineState.canWrite.eq_1 MachineState.canWrite.eq_2 MachineState.canWrite.eq_3
   MachineState.recordRead.eq_1 MachineState.recordRead.eq_2
 
 @[simp] private theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
@@ -102,8 +102,7 @@ theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.loadXmm operation destination source))
     (readable : permits image.readable (source.evaluate initial.registers)
-      (source.evaluate initial.registers + 16#64) = true := by
-      first | assumption | rfl) :
+      (source.evaluate initial.registers + 16#64) = true := by rivet_access) :
     let pointer := source.evaluate initial.registers
     let value := readBytes initial.memory pointer 16
     Ensures image (· = initial) (· = { initial with
@@ -124,8 +123,7 @@ theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.storeXmm operation destination source))
     (writable : permits image.writable (destination.evaluate initial.registers)
-      (destination.evaluate initial.registers + 16#64) = true := by
-      first | assumption | rfl) :
+      (destination.evaluate initial.registers + 16#64) = true := by rivet_access) :
     let pointer := destination.evaluate initial.registers
     Ensures image (· = initial) (· = { initial with
       memory := initial.memory.storeBytes pointer (pointer + 16#64) (littleEndianAt (initial.xmmRegisters source) pointer)
@@ -160,7 +158,7 @@ theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (sourc
     (code : InstructionAt image.program address length (.movzx destination source))
     (valid : source.width = some .byte ∨ source.width = some .word := by
       first | assumption | exact Or.inl rfl | exact Or.inr rfl)
-    (readable : initial.canRead image source = true := by first | assumption | simp) :
+    (readable : initial.canRead image source = true := by rivet_access) :
     Ensures image (· = initial) (· = { initial.write destination.parent (initial.readOperand source) with
       status := .running (address + BitVec.ofNat 64 length)
       readHistory := (initial.recordRead source).readHistory }) := by
@@ -180,7 +178,7 @@ theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.movsxd destination source))
     (valid : source.width = some .dword := by first | rfl | assumption)
-    (readable : initial.canRead image source = true := by first | assumption | simp) :
+    (readable : initial.canRead image source = true := by rivet_access) :
     Ensures image (· = initial) (· = { initial.write destination ((initial.readOperand source).setWidth 32 |>.signExtend 64) with
       status := .running (address + BitVec.ofNat 64 length)
       readHistory := (initial.recordRead source).readHistory }) := by
@@ -239,9 +237,9 @@ theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp)
-    (writable : initial.canWrite image destination = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left + right
@@ -266,9 +264,9 @@ theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp)
-    (writable : initial.canWrite image destination = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left - right
@@ -293,9 +291,9 @@ theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp)
-    (writable : initial.canWrite image destination = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left - right - (if initial.carryFlag then 1 else 0)
@@ -320,8 +318,8 @@ theorem compare (image : Image) (address : BitVec 64) (destination source : Oper
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left - right
@@ -347,8 +345,8 @@ theorem test (image : Image) (address : BitVec 64) (destination source : Operand
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left &&& right
@@ -373,9 +371,9 @@ theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : 
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp)
-    (writable : initial.canWrite image destination = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left &&& right
@@ -400,9 +398,9 @@ theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : O
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp)
-    (writable : initial.canWrite image destination = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left ||| right
@@ -427,9 +425,9 @@ theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : 
       dsimp +instances [validBinary, validMove, Operand.width]
       all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
       all_goals omega)
-    (leftReadable : initial.canRead image destination = true := by simp)
-    (rightReadable : initial.canRead image source = true := by simp)
-    (writable : initial.canWrite image destination = true := by simp) :
+    (leftReadable : initial.canRead image destination = true := by rivet_access)
+    (rightReadable : initial.canRead image source = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     let left := (initial.readOperand destination).setWidth width.bits
     let right := (initial.readOperand source).setWidth width.bits
     let result := left ^^^ right
@@ -457,7 +455,7 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
         dsimp +instances [validImul, validConditionalMove, validBinary, validMove, Operand.width]
         all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
         all_goals omega))
-    (readable : initial.canRead image source = true := by first | assumption | simp) :
+    (readable : initial.canRead image source = true := by rivet_access) :
     let sourceValue := (initial.readOperand source).setWidth width.bits
     let multiplier : BitVec width.bits := match immediate with
       | none => (initial.readOperand destination).setWidth width.bits
@@ -528,8 +526,8 @@ theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.not destination))
-    (readable : initial.canRead image destination = true := by first | assumption | simp)
-    (writable : initial.canWrite image destination = true := by first | assumption | simp) :
+    (readable : initial.canRead image destination = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     Ensures image (· = initial) (· = { initial.writeOperand destination (~~~(initial.readOperand destination)) with
       status := .running (address + BitVec.ofNat 64 length)
       readHistory := (initial.recordRead destination).readHistory }) := by
@@ -547,7 +545,7 @@ theorem setcc (image : Image) (address : BitVec 64) (condition : Condition) (des
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.setcc condition destination))
     (valid : destination.width = some .byte := by first | rfl | assumption)
-    (writable : initial.canWrite image destination = true := by first | assumption | simp) :
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     Ensures image (· = initial) (· = { initial.writeOperand destination (if condition.holds initial then 1 else 0) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
@@ -566,7 +564,7 @@ theorem cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (de
     (code : InstructionAt image.program address length (.cmovcc condition destination source))
     (valid : validConditionalMove destination source = true := by
       first | assumption | simp [validConditionalMove])
-    (readable : initial.canRead image source = true := by first | assumption | simp) :
+    (readable : initial.canRead image source = true := by rivet_access) :
     let value := if condition.holds initial then initial.readOperand source else initial.readOperand destination
     Ensures image (· = initial) (· = { initial.writeOperand destination value with
       status := .running (address + BitVec.ofNat 64 length)
@@ -650,8 +648,8 @@ theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : Mac
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.push source))
-    (writable : permits image.writable (initial.registers .rsp - 8#64) (initial.registers .rsp) = true := by
-      first | assumption | rfl) :
+    (writable : permits image.writable (initial.registers .rsp - 8#64) (initial.registers .rsp) = true :=
+      by rivet_access) :
     Ensures image (· = initial) (· = {
       (initial.writeMemory (initial.registers .rsp - 8#64) .qword (initial.registers source)).write
         .rsp (initial.registers .rsp - 8#64) with status := .running (address + BitVec.ofNat 64 length) }) := by
@@ -669,8 +667,8 @@ theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial :
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.pop destination))
-    (readable : permits image.readable (initial.registers .rsp) (initial.registers .rsp + 8#64) = true := by
-      first | assumption | rfl) :
+    (readable : permits image.readable (initial.registers .rsp) (initial.registers .rsp + 8#64) = true :=
+      by rivet_access) :
     Ensures image (· = initial) (· = {
       (initial.write .rsp (initial.registers .rsp + 8#64)).write destination
         (readBytes initial.memory (initial.registers .rsp) 8) with
@@ -686,7 +684,8 @@ theorem call (image : Image) (address target : BitVec 64) (initial : MachineStat
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.call target))
-    (writable : permits image.writable (initial.registers .rsp - 8#64) (initial.registers .rsp) = true := by rfl) :
+    (writable : permits image.writable (initial.registers .rsp - 8#64) (initial.registers .rsp) = true :=
+      by rivet_access) :
     Ensures image (· = initial) (· = {
       (initial.writeMemory (initial.registers .rsp - 8#64) .qword
         (address + BitVec.ofNat 64 length)).write .rsp (initial.registers .rsp - 8#64) with
@@ -702,8 +701,8 @@ theorem return_ (image : Image) (address : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length .ret)
-    (slot : permits image.readable (initial.registers .rsp) (initial.registers .rsp + 8#64) = true := by
-      first | assumption | rfl) :
+    (readable : permits image.readable (initial.registers .rsp) (initial.registers .rsp + 8#64) = true :=
+      by rivet_access) :
     Ensures image (· = initial) (· = { initial.write .rsp (initial.registers .rsp + 8#64) with
       status := .running initial.returnAddress, readHistory := initial.readHistory ++ [⟨(initial.registers .rsp),8⟩] }) := by
   apply Ensures.of_step
@@ -716,8 +715,8 @@ theorem move (image : Image) (address : BitVec 64) (destination source : Operand
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.mov destination source))
     (valid : validMove destination source = true := by decide +kernel)
-    (readable : initial.canRead image source = true := by rfl)
-    (writable : initial.canWrite image destination = true := by rfl) :
+    (readable : initial.canRead image source = true := by rivet_access)
+    (writable : initial.canWrite image destination = true := by rivet_access) :
     Ensures image (· = initial) (· = { initial.writeOperand destination (initial.readOperand source) with
       status := .running (address + BitVec.ofNat 64 length), readHistory := (initial.recordRead source).readHistory }) := by
   apply Ensures.of_step

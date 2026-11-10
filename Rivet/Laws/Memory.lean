@@ -1,5 +1,6 @@
 module
 public import Rivet.Interpreter.Memory
+import all Rivet.Interpreter.Memory
 -- Laws of memory: stores, little-endian reads, permissions, and frames.
 @[expose] public section
 namespace Rivet

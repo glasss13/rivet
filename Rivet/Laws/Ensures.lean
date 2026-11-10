@@ -2,6 +2,7 @@ module
 public import Rivet.Interpreter.Machine
 public import Rivet.Laws.Memory
 public import Rivet.Laws.Program
+public import Rivet.Laws.Operands
 import all Rivet.Interpreter.Machine
 -- Laws of execution: block contracts (`Ensures`), reachability, and what execution preserves.
 @[expose] public section
@@ -296,7 +297,9 @@ private theorem WritesWithin.writeOperand (state : MachineState) (destination : 
     (allowed : state.canWrite image destination = true) :
     WritesWithin image state.memory (state.writeOperand destination value).memory := by
   cases destination <;> try exact Memory.SameOutside.refl
-  case memory width address => exact WritesWithin.writeMemory state _ width value allowed
+  case memory width address =>
+    rw [MachineState.canWrite_memory] at allowed
+    exact WritesWithin.writeMemory state _ width value allowed
 
 /-- The memory effect of one decoded operation, including faulting paths. -/
 private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC : BitVec 64) (flags : FlagValues) :
@@ -320,13 +323,13 @@ private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC
     simp only [stepOp]
     split
     · split <;> apply WritesWithin.writeOperand <;>
-        cases destination <;> simp_all [validShift, MachineState.canWrite]
+        cases destination <;> simp_all [validShift]
     · exact Memory.SameOutside.refl
   | imul destination source immediate | cmovcc condition destination source =>
     simp only [stepOp]
     split
     · apply WritesWithin.writeOperand
-      cases destination <;> simp_all [validImul, validConditionalMove, MachineState.canWrite]
+      cases destination <;> simp_all [validImul, validConditionalMove]
     · exact Memory.SameOutside.refl
   | storeXmm kind destination source =>
     simp only [stepOp]

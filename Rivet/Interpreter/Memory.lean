@@ -28,8 +28,9 @@ def readBytes (memory : Memory) (address : BitVec 64) (size : Nat) : BitVec (8 *
   BitVec.ofNat (8 * size) ((List.range size).foldr
     (fun offset value => (memory (address + BitVec.ofNat 64 offset)).val + 256 * value) 0)
 
-/-- An access to `[start, stop)` must not wrap, and needs permission at every address. -/
-def permits (permission : BitVec 64 → Bool) (start stop : BitVec 64) : Bool :=
+/-- An access to `[start, stop)` must not wrap, and needs permission at every address.
+Closed: reason about it through `permits_iff`, never by computation. -/
+@[no_expose, irreducible] def permits (permission : BitVec 64 → Bool) (start stop : BitVec 64) : Bool :=
   start ≤ stop && (List.range (stop - start).toNat).all (fun offset => permission (start + BitVec.ofNat 64 offset))
 
 /-! ## The image -/

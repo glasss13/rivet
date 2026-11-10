@@ -43,7 +43,8 @@ private def next (nextAddress : BitVec 64) (state : MachineState) : MachineState
   { state with status := match state.status with
       | .running _ => .running nextAddress
       | stopped => stopped }
-def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
+/-- The effective address. Closed: the `rivet` simp set states it per address shape. -/
+@[no_expose, irreducible] def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
   (address.base.map registers).getD 0 +
     (address.index.map registers).getD 0 * BitVec.ofNat 64 address.scale.value +
     BitVec.ofInt 64 address.displacement
@@ -73,12 +74,14 @@ def MachineState.writeOperand (state : MachineState) (operand : Operand) (value 
   | .memory width address => state.writeMemory (address.evaluate state.registers) width value
   | .immediate _ => state
 
-def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
+/-- Read permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
+@[no_expose, irreducible] def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.readable (address.evaluate state.registers)
       (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
   | _ => true
 
-def MachineState.canWrite (state : MachineState) (image : Image) : Operand → Bool
+/-- Write permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
+@[no_expose, irreducible] def MachineState.canWrite (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.writable (address.evaluate state.registers)
       (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
   | .immediate _ => false
