@@ -270,7 +270,9 @@ the interpreter implementation is hidden from normal imports. -/
     | none => { state with status := .fault }
   | _ => state
 
-def execute (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
+/-- Run a fixed number of interpreter steps, taking one set of undefined-flag candidates per
+step. Closed: `Ensures` and its laws are its proof interface. -/
+@[no_expose, irreducible] def execute (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
   match steps with
   | 0 => state
   | remainingSteps+1 => execute image remainingSteps (step image state (choices 0)) (choices.drop 1)
