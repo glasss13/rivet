@@ -63,8 +63,10 @@ private theorem Ensures.of_step
   exact ⟨step image initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
     transition initial assumption (choices 0)⟩
 
-theorem Ensures.refl : Ensures image predicate predicate :=
-  ⟨fun initial assumption choices => ⟨initial, ⟨0, execute_zero image initial choices⟩, assumption⟩⟩
+/-- Stop here: zero steps, when the postcondition already holds of the current state. -/
+theorem Ensures.done {state : MachineState} (holds : postcondition state) :
+    Ensures image (· = state) postcondition :=
+  ⟨fun initial equal choices => ⟨initial, ⟨0, execute_zero image initial choices⟩, equal ▸ holds⟩⟩
 
 theorem Ensures.seq (first : Ensures image precondition intermediate)
     (second : Ensures image intermediate postcondition) : Ensures image precondition postcondition := by
