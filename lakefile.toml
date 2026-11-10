@@ -3,7 +3,3 @@ version = "0.1.0"
 defaultTargets = ["Rivet"]
 [[lean_lib]]
 name = "Rivet"
-
-# Consumer tests, built with `lake build RivetTests`.
-[[lean_lib]]
-name = "RivetTests"
