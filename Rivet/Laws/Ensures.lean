@@ -39,7 +39,9 @@ private theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (stat
 /-- `Ensures image precondition postcondition` means: for every initial state satisfying
 `precondition` and every supply of undefined-flag values, some finite number of interpreter
 steps from that state reaches a state satisfying `postcondition`. Zero steps is allowed. The
-number of steps may depend on the initial state and the supply, and no step count is exposed. -/
+number of steps may depend on the initial state and the supply, and no step count is exposed.
+A faulted state never changes, so a postcondition that requires a running status also rules
+out a fault at every earlier step. -/
 structure Ensures (image : Image) (precondition postcondition : MachineState → Prop) : Prop where
   private mk ::
   private allChoices : ∀ initial, precondition initial → ∀ choices : FlagChoices,
