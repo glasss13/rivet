@@ -16,7 +16,6 @@ structure MachineState where
   carryFlag : Bool := false
   memory : Memory
   status : ExecutionStatus
-  readHistory : List Access
 
 /-- Candidate values for flags an instruction leaves undefined. Defined and preserved
 flags must not use these values. This is execution input, not architectural state. -/
@@ -91,13 +90,6 @@ states it per operand form. -/
   | .immediate _ => false
   | _ => true
 
-/-- Append a memory operand's access to the read history. Closed: the `rivet` simp set
-states it per operand form. -/
-@[no_expose, irreducible] def MachineState.recordRead (state : MachineState) : Operand → MachineState
-  | .memory width address => { state with readHistory := state.readHistory ++
-      [⟨address.evaluate state.registers, width.bytes⟩] }
-  | _ => state
-
 private def BinaryOp.writes : BinaryOp → Bool
   | .cmp | .test => false
   | _ => true
@@ -118,7 +110,7 @@ private def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec wi
   | .sbb => left < right || (carryIn && left == right)
   | _ => false
 
-/-- Read both operands from the initial state; commit flags, memory, and history only on success. -/
+/-- Read both operands from the initial state; commit flags and memory only on success. -/
 private def MachineState.binary (state : MachineState) (image : Image) (operation : BinaryOp) (destination source : Operand) (nextAddress : BitVec 64) : MachineState :=
   if validBinary operation destination source && state.canRead image destination && state.canRead image source &&
       (!operation.writes || state.canWrite image destination) then
@@ -130,8 +122,7 @@ private def MachineState.binary (state : MachineState) (image : Image) (operatio
     next nextAddress { updated with
       zeroFlag := result == 0
       signFlag := result.msb
-      carryFlag := operation.carry left right result state.carryFlag,
-      readHistory := ((state.recordRead destination).recordRead source).readHistory }
+      carryFlag := operation.carry left right result state.carryFlag }
   else { state with status := .fault }
 
 def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
@@ -165,8 +156,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     if permits image.readable address (address + 16#64) then
       let value := readBytes state.memory address 16
       next nextAddress { state with
-        xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register
-        readHistory := state.readHistory ++ [⟨address, 16⟩] }
+        xmmRegisters := fun register => if register = destination then value else state.xmmRegisters register }
     else { state with status := .fault }
   | .storeXmm _ destination source =>
     let address := destination.evaluate state.registers
@@ -204,30 +194,25 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
       next nextAddress { state.writeOperand destination (result.setWidth 64) with
         carryFlag := result.toInt != product
         signFlag := undefinedFlags.signFlag
-        zeroFlag := undefinedFlags.zeroFlag
-        readHistory := (state.recordRead source).readHistory }
+        zeroFlag := undefinedFlags.zeroFlag }
     else { state with status := .fault }
   | .lea destination address => next nextAddress (state.write destination (address.evaluate state.registers))
   | .movzx destination source =>
     if (source.width == some .byte || source.width == some .word) && state.canRead image source then
-      next nextAddress { state.write destination.parent (state.readOperand source) with
-        readHistory := (state.recordRead source).readHistory }
+      next nextAddress (state.write destination.parent (state.readOperand source))
     else { state with status := .fault }
   | .movsxd destination source =>
     if source.width == some .dword && state.canRead image source then
-      next nextAddress { state.write destination ((state.readOperand source).setWidth 32 |>.signExtend 64) with
-        readHistory := (state.recordRead source).readHistory }
+      next nextAddress (state.write destination ((state.readOperand source).setWidth 32 |>.signExtend 64))
     else { state with status := .fault }
   | .mov destination source =>
     if validMove destination source && state.canRead image source && state.canWrite image destination then
       -- Read and address calculation use the pre-instruction registers, including aliases.
-      let result := state.writeOperand destination (state.readOperand source)
-      next nextAddress { result with readHistory := (state.recordRead source).readHistory }
+      next nextAddress (state.writeOperand destination (state.readOperand source))
     else { state with status := .fault }
   | .not destination =>
     if state.canRead image destination && state.canWrite image destination then
-      next nextAddress { state.writeOperand destination (~~~(state.readOperand destination)) with
-        readHistory := (state.recordRead destination).readHistory }
+      next nextAddress (state.writeOperand destination (~~~(state.readOperand destination)))
     else { state with status := .fault }
   | .inc destination =>
     let result := state.registers destination + 1
@@ -247,7 +232,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     -- destination through its operand also clears the upper half of r32.
     if validConditionalMove destination source && state.canRead image source then
       let value := if condition.holds state then state.readOperand source else state.readOperand destination
-      next nextAddress { state.writeOperand destination value with readHistory := (state.recordRead source).readHistory }
+      next nextAddress (state.writeOperand destination value)
     else { state with status := .fault }
   | .push source =>
     let pointer := state.registers .rsp - 8#64
@@ -261,7 +246,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
       -- Write the destination last: POP RSP replaces the incremented pointer.
       let result := (state.write .rsp (state.registers .rsp + 8#64)).write destination
         (readBytes state.memory address 8)
-      next nextAddress { result with readHistory := state.readHistory ++ [⟨address,8⟩] }
+      next nextAddress result
     else { state with status := .fault }
   | .call target =>
     let pointer := state.registers .rsp - 8#64
@@ -273,8 +258,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     let address := state.registers .rsp
     if permits image.readable address (address + 8#64) then
       { state.write .rsp (state.registers .rsp + 8#64) with
-        status := .running (readBytes state.memory address 8)
-        readHistory := state.readHistory ++ [⟨address,8⟩] }
+        status := .running (readBytes state.memory address 8) }
     else { state with status := .fault }
 
 /-- Execute one fetched instruction. Instruction contracts provide its proof interface;

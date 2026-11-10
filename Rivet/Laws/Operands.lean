@@ -44,7 +44,7 @@ default simp set and the `rivet` set. -/
 
 /-! ## Operand values
 
-One equation per operand form for reading, writing, and recording a read. Narrow
+One equation per operand form for reading and writing. Narrow
 registers read the low bits of their parent; a 32-bit write clears the upper half,
 while 8- and 16-bit writes keep the remaining bits. In the default simp set and the
 `rivet` set. -/
@@ -91,21 +91,6 @@ while 8- and 16-bit writes keep the remaining bits. In the default simp set and 
 @[simp, rivet] theorem MachineState.writeOperand_immediate (state : MachineState) (operand : Int) (value : BitVec 64) :
     state.writeOperand (.immediate operand) value = state := by
   simp [writeOperand]
-
-@[simp, rivet] theorem MachineState.recordRead_reg8 (state : MachineState) (register : Reg8) :
-    state.recordRead (.reg8 register) = state := by simp [recordRead]
-@[simp, rivet] theorem MachineState.recordRead_reg16 (state : MachineState) (register : Reg16) :
-    state.recordRead (.reg16 register) = state := by simp [recordRead]
-@[simp, rivet] theorem MachineState.recordRead_reg32 (state : MachineState) (register : Reg32) :
-    state.recordRead (.reg32 register) = state := by simp [recordRead]
-@[simp, rivet] theorem MachineState.recordRead_reg64 (state : MachineState) (register : Reg) :
-    state.recordRead (.reg64 register) = state := by simp [recordRead]
-@[simp, rivet] theorem MachineState.recordRead_immediate (state : MachineState) (value : Int) :
-    state.recordRead (.immediate value) = state := by simp [recordRead]
-@[simp, rivet] theorem MachineState.recordRead_memory (state : MachineState) (width : Width) (address : Address) :
-    state.recordRead (.memory width address) = { state with readHistory := state.readHistory ++
-      [⟨address.evaluate state.registers, width.bytes⟩] } := by
-  simp [recordRead]
 
 -- Register aliases name their parent: `Reg32.edx.parent` is `.rdx`. Syntax only, so
 -- these stay open; they are in the `rivet` set but not the default simp set.

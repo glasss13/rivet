@@ -175,13 +175,6 @@ theorem Reaches.not_fault (reached : Reaches image initial final)
 @[simp] private theorem writeMemory_registers (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64) : (state.writeMemory address width value).registers = state.registers := rfl
 
-@[simp] private theorem writeMemory_readHistory (state : MachineState) (address : BitVec 64) (width : Width)
-    (value : BitVec 64) : (state.writeMemory address width value).readHistory = state.readHistory := rfl
-
-@[simp] private theorem writeOperand_readHistory (state : MachineState) (operand : Operand)
-    (value : BitVec 64) : (state.writeOperand operand value).readHistory = state.readHistory := by
-  cases operand <;> simp [MachineState.writeOperand, MachineState.write]
-
 private theorem op_preserves (image : Image) (operation : Op) (state : MachineState) (register : Reg) {undefinedFlags : FlagValues} {nextAddress : BitVec 64} (unchanged : modifies operation register = false) :
     (stepOp image operation nextAddress state undefinedFlags).registers register = state.registers register := by
   cases operation with
@@ -228,46 +221,6 @@ private theorem execute_preserves (image : Image) (steps : Nat) (state : Machine
   induction steps generalizing state choices with
   | zero => rfl
   | succ steps inductionHypothesis => rw [execute, inductionHypothesis, step_preserves image state register unchanged]
-
-private theorem step_reads_monotone (image : Image) (state : MachineState) (access : Access) {undefinedFlags : FlagValues}
-    (recorded : access ∈ state.readHistory) : access ∈ (step image state undefinedFlags).readHistory := by
-  unfold step
-  split
-  · split
-    · rename_i instruction instructionAtIndex
-      cases instruction.op with
-      | binary operation destination source =>
-        simp only [stepOp, MachineState.binary]
-        split
-        · cases destination <;> cases source <;> simp_all [next, MachineState.recordRead]
-        · exact recorded
-      | shift operation destination count =>
-        simp only [stepOp]
-        split
-        · split <;> simp_all [next]
-        · exact recorded
-      | imul destination source immediate | not source | mov destination source | movzx destination source | movsxd destination source
-      | cmovcc _ destination source =>
-        simp only [stepOp]
-        split
-        · cases source <;> simp_all [next, MachineState.recordRead, MachineState.write]
-        · exact recorded
-      | _ =>
-        simp_all [stepOp, next, MachineState.write] <;> split <;> simp_all
-    · exact recorded
-  · exact recorded
-
-private theorem execute_reads_monotone (image : Image) (state : MachineState) (steps : Nat) (access : Access) {choices : FlagChoices}
-    (recorded : access ∈ state.readHistory) : access ∈ (execute image steps state choices).readHistory := by
-  induction steps generalizing state choices with
-  | zero => exact recorded
-  | succ steps inductionHypothesis =>
-    exact inductionHypothesis (step image state (choices 0)) (step_reads_monotone image state access recorded)
-
-theorem Reaches.reads_mono (reached : Reaches image initial final)
-    (recorded : access ∈ initial.readHistory) : access ∈ final.readHistory := by
-  obtain ⟨choices, steps, rfl⟩ := reached
-  exact execute_reads_monotone _ _ steps _ recorded
 
 theorem Reaches.preserves_register (reached : Reaches image initial final) (register : Reg)
     (unchanged : image.program.all (fun instruction => !(modifies instruction.op register)) = true) :

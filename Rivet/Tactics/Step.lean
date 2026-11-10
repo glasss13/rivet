@@ -129,7 +129,7 @@ private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (
 
 /-- Every `MachineState` field, in declaration order. -/
 private meta def fields : List Name :=
-  [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `memory, `status, `readHistory]
+  [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `memory, `status]
 
 /-- Facts `state.field = …` about a state. -/
 private meta def factsAbout (state : FVarId) : MetaM (Array LocalDecl) := do
@@ -180,8 +180,7 @@ private meta def compact (clear : Bool) (only? : Option (Array Name) := none)
       `(Lean.Parser.Tactic.simpLemma| $term:term)
     let locations : Array (TSyntax `term) := targets.map (⟨·.raw⟩)
     evalTactic (← `(tactic| try simp +contextual only [$lemmas,*, Condition.holds, reduceCtorEq,
-        ↓reduceIte, eq_self_iff_true, Bool.not_eq_true', Bool.or_eq_true, decide_eq_true_eq,
-        List.append_assoc, List.cons_append, List.nil_append] at $locations*))
+        ↓reduceIte, eq_self_iff_true, Bool.not_eq_true', Bool.or_eq_true, decide_eq_true_eq] at $locations*))
   unless clear do return
   let mut goal ← getMainGoal
   for decl in ← goal.withContext getLCtx do
@@ -306,7 +305,7 @@ open Step in
   evalTactic (← `(tactic| try simp only [rivet] at $locations*))
   evalTactic (← `(tactic| try simp only [MachineState.write,
       MachineState.writeMemory, Operand.width, Width.bits, Width.bytes,
-      BitVec.setWidth_eq, List.append_assoc, List.cons_append, List.nil_append,
+      BitVec.setWidth_eq,
       -- The successor `address + length` reduces to a literal.
       BitVec.reduceOfNat, BitVec.reduceAdd,
       -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).

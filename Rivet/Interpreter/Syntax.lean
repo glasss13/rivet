@@ -208,8 +208,4 @@ def Program.fetch (program : Program) (address : BitVec 64) : Option Instruction
   program.find? fun instruction => instruction.address == address &&
     0 < instruction.length && instruction.length ≤ 15
 
-structure Access where
-  address : BitVec 64
-  size : Nat
-  deriving DecidableEq
 end Rivet
