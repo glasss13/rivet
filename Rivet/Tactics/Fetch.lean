@@ -1,5 +1,7 @@
 module
-public import Rivet.Memory
+public import Rivet.Interpreter.Memory
+public import Rivet.Laws.Program
+-- `rivet_fetch`: proves which instruction a concrete program holds at an address.
 public meta import Lean
 -- The lookup routine is public but not exposed; its helpers are private.
 public section

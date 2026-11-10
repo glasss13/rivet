@@ -1,5 +1,6 @@
 module
-public import Rivet.Memory
+public import Rivet.Interpreter.Memory
+-- The machine state and the executable interpreter: `step` and `execute`.
 @[expose] public section
 namespace Rivet
 
@@ -28,15 +29,6 @@ abbrev FlagChoices := Nat → FlagValues
 
 def FlagChoices.drop (choices : FlagChoices) (count : Nat) : FlagChoices :=
   fun index => choices (count + index)
-
-@[simp] private theorem FlagChoices.drop_zero (choices : FlagChoices) : choices.drop 0 = choices := by
-  funext index
-  simp [drop]
-
-@[simp] private theorem FlagChoices.drop_drop (choices : FlagChoices) (first second : Nat) :
-    (choices.drop first).drop second = choices.drop (first + second) := by
-  funext index
-  simp [drop, Nat.add_assoc]
 
 /-- Update one register; its width is enforced by the value's type. -/
 def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 64) : MachineState :=
@@ -293,15 +285,5 @@ def execute (image : Image) (steps : Nat) (state : MachineState) (choices : Flag
 /-- The little-endian address stored in the current stack return slot. -/
 def MachineState.returnAddress (state : MachineState) : BitVec 64 :=
   readBytes state.memory (state.registers .rsp) 8
-
-theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
-    {choices : FlagChoices} :
-    execute image (firstSteps + secondSteps) state choices =
-      execute image secondSteps (execute image firstSteps state choices) (choices.drop firstSteps) := by
-  induction firstSteps generalizing state choices with
-  | zero => simp [execute]
-  | succ firstSteps inductionHypothesis =>
-    simpa [Nat.succ_add, execute, Nat.add_comm] using
-      inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
 end Rivet

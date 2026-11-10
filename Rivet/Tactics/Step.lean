@@ -1,5 +1,6 @@
 module
-public import Rivet.Instructions
+public import Rivet.Laws.Instructions
+-- `rivet_step`: executes one instruction of an `Ensures` goal through its contract.
 public meta import Lean
 @[expose] public section
 namespace Rivet

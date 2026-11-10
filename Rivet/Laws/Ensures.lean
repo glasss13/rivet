@@ -1,8 +1,30 @@
 module
-public import Rivet.Model
-import all Rivet.Model
+public import Rivet.Interpreter.Machine
+public import Rivet.Laws.Memory
+public import Rivet.Laws.Program
+import all Rivet.Interpreter.Machine
+-- Laws of execution: block contracts (`Ensures`), reachability, and what execution preserves.
 @[expose] public section
 namespace Rivet
+
+@[simp] private theorem FlagChoices.drop_zero (choices : FlagChoices) : choices.drop 0 = choices := by
+  funext index
+  simp [drop]
+
+@[simp] private theorem FlagChoices.drop_drop (choices : FlagChoices) (first second : Nat) :
+    (choices.drop first).drop second = choices.drop (first + second) := by
+  funext index
+  simp [drop, Nat.add_assoc]
+
+theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
+    {choices : FlagChoices} :
+    execute image (firstSteps + secondSteps) state choices =
+      execute image secondSteps (execute image firstSteps state choices) (choices.drop firstSteps) := by
+  induction firstSteps generalizing state choices with
+  | zero => simp [execute]
+  | succ firstSteps inductionHypothesis =>
+    simpa [Nat.succ_add, execute, Nat.add_comm] using
+      inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
 /-- Some finite execution reaches the final state. This alone does not guarantee
 termination or correctness for every choice of undefined flags. -/

@@ -1,8 +1,9 @@
 module
-public import Rivet.Contracts
-public import Rivet.Fetch
-import all Rivet.Model
-import all Rivet.Contracts
+public import Rivet.Laws.Ensures
+public import Rivet.Tactics.Fetch
+import all Rivet.Interpreter.Machine
+import all Rivet.Laws.Ensures
+-- Instruction contracts: one `Ensures` rule per modeled operation, proved against `step`.
 @[expose] public section
 namespace Rivet
 
