@@ -102,31 +102,6 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     type := body.instantiate1 argument
   return (proof, sides)
 
-/-- Try to prove one side condition. It is first reduced by the `rivet` simp set,
-which closes register and immediate accesses and states memory accesses as `permits`
-over register reads. Cheap checks (`rfl` and `decide` for syntax-only conditions, a
-syntactic hypothesis match) run next; then the caller's discharger if given, otherwise
-`simp [*, rivet]`. Nothing here unfolds a closed definition. Returns the reduced goal,
-under its parameter's tag, if it stays open. -/
-private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (Option MVarId) := do
-  let tag ← goal.getTag
-  setGoals [goal]
-  evalTactic (← `(tactic| try simp only [rivet]))
-  let [reduced] ← getGoals | return none
-  reduced.setTag tag
-  let saved ← saveState
-  try
-    let fallback ← match tactic? with
-      | some tactic => pure (⟨tactic⟩ : TSyntax `tactic)
-      | none => `(tactic| (simp [*, rivet]; done))
-    evalTactic (← `(tactic| first | rfl | decide +kernel | with_reducible assumption | ($fallback; done)))
-    if (← getGoals).isEmpty then return none
-    saved.restore
-    return some reduced
-  catch _ =>
-    saved.restore
-    return some reduced
-
 /-- Every `MachineState` field, in declaration order. -/
 private meta def fields : List Name :=
   [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `memory, `status]
@@ -190,6 +165,64 @@ private meta def compact (clear : Bool) (only? : Option (Array Name) := none)
   goal ← goal.tryClearMany states
   replaceMainGoal [goal]
 
+/-- Whether `tactic` closes `goal`; if not, nothing changes. -/
+private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
+  let saved ← saveState
+  try
+    setGoals [goal]
+    evalTactic tactic
+    if (← getGoals).isEmpty then return true
+    saved.restore
+    return false
+  catch _ =>
+    saved.restore
+    return false
+
+/-- State a side condition over named states: rewrite it with the facts of the unnamed
+states only, so the rewrite stops at the most recent named state and costs as many
+steps as were taken since it. If no unnamed state remains, clear them and their facts
+from this goal's context. Returns `none` if the rewrite closes the goal, and otherwise
+the goal and whether the rewrite applied. -/
+private meta def overNamed (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
+  let states ← temporaryStates
+  let mentions (type : Expr) : Bool := states.any (type.containsFVar ·)
+  unless mentions (← instantiateMVars (← goal.getType)) do return some (goal, false)
+  let mut facts : Array LocalDecl := #[]
+  for state in states do facts := facts ++ (← factsAbout state)
+  let lemmas ← facts.mapM fun decl => do
+    let term ← Term.exprToSyntax (.fvar decl.fvarId)
+    `(Lean.Parser.Tactic.simpLemma| $term:term)
+  setGoals [goal]
+  evalTactic (← `(tactic| try simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, eq_self_iff_true]))
+  let [rewritten] ← getGoals | return none
+  if mentions (← instantiateMVars (← rewritten.getType)) then return some (rewritten, true)
+  let cleared ← (← rewritten.tryClearMany (facts.map (·.fvarId))).tryClearMany states
+  return some (cleared, true)
+
+/-- Try to prove one side condition. It is first reduced by the `rivet` simp set,
+which closes register and immediate accesses and states memory accesses as `permits`
+over register reads. Cheap checks (`rfl` and `decide` for syntax-only conditions, a
+syntactic hypothesis match) run next. Then it is stated over named states (`overNamed`),
+the hypothesis match is tried again, and the caller's discharger if given, otherwise
+`simp [*, rivet]`. Nothing here unfolds a closed definition. Returns the goal as
+stated over named states, under its parameter's tag, if it stays open. -/
+private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (Option MVarId) := do
+  let tag ← goal.getTag
+  setGoals [goal]
+  evalTactic (← `(tactic| try simp only [rivet]))
+  let [reduced] ← getGoals | return none
+  if ← closes (← `(tactic| first | rfl | decide +kernel | with_reducible assumption)) reduced then
+    return none
+  let some (named, rewritten) ← overNamed reduced | return none
+  named.setTag tag
+  if rewritten then
+    if ← closes (← `(tactic| with_reducible assumption)) named then return none
+  let fallback ← match tactic? with
+    | some tactic => pure (⟨tactic⟩ : TSyntax `tactic)
+    | none => `(tactic| (simp [*, rivet]; done))
+  if ← closes (← `(tactic| ($fallback; done))) named then return none
+  return some named
+
 end Step
 
 /--
@@ -214,9 +247,14 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   register and immediate accesses close, and a memory access becomes
   `permits image.writable a (a + 8#64) = true` with `a` over register reads.
   Then `rfl` and `decide` (for syntax-only conditions) and a syntactic hypothesis
-  match are tried, then the fallback discharger, `simp [*, rivet]`.
-  `rivet_step (disch := tac)` replaces the fallback and runs on the reduced goal.
-  Conditions left unproved remain, reduced, as goals tagged with the contract's
+  match are tried. A condition still open is stated over named states, as path
+  conditions are: it is rewritten with the facts of the unnamed states back to the
+  most recent named state, and the unnamed states are dropped from that goal. The
+  match is tried again, then the fallback discharger, `simp [*, rivet]`.
+  `rivet_step (disch := tac)` replaces the fallback and runs on that goal, so it
+  only names the region and proves the bounds:
+  `(disch := (apply permits_within frame <;> bv_omega))`.
+  Conditions left unproved remain, in that form, as goals tagged with the contract's
   parameter name (`case writable`, `case readable`, …).
 * **Lookup** uses `Fetch.prove`, as `rivet_fetch` does: constant time in the
   program size for programs generated as suffix chains (as by `rivet-import`);
