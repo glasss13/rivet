@@ -1,8 +1,31 @@
 module
-public import Rivet.Model
-import all Rivet.Model
+public import Rivet.Interpreter.Machine
+public import Rivet.Laws.Memory
+public import Rivet.Laws.Program
+public import Rivet.Laws.Operands
+import all Rivet.Interpreter.Machine
+-- Laws of execution: block contracts (`Ensures`), reachability, and what execution preserves.
 @[expose] public section
 namespace Rivet
+
+@[simp] private theorem FlagChoices.drop_zero (choices : FlagChoices) : choices.drop 0 = choices := by
+  funext index
+  simp [drop]
+
+@[simp] private theorem FlagChoices.drop_drop (choices : FlagChoices) (first second : Nat) :
+    (choices.drop first).drop second = choices.drop (first + second) := by
+  funext index
+  simp [drop, Nat.add_assoc]
+
+theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
+    {choices : FlagChoices} :
+    execute image (firstSteps + secondSteps) state choices =
+      execute image secondSteps (execute image firstSteps state choices) (choices.drop firstSteps) := by
+  induction firstSteps generalizing state choices with
+  | zero => simp [execute]
+  | succ firstSteps inductionHypothesis =>
+    simpa [Nat.succ_add, execute, Nat.add_comm] using
+      inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
 /-- Some finite execution reaches the final state. This alone does not guarantee
 termination or correctness for every choice of undefined flags. -/
@@ -274,7 +297,9 @@ private theorem WritesWithin.writeOperand (state : MachineState) (destination : 
     (allowed : state.canWrite image destination = true) :
     WritesWithin image state.memory (state.writeOperand destination value).memory := by
   cases destination <;> try exact Memory.SameOutside.refl
-  case memory width address => exact WritesWithin.writeMemory state _ width value allowed
+  case memory width address =>
+    rw [MachineState.canWrite_memory] at allowed
+    exact WritesWithin.writeMemory state _ width value allowed
 
 /-- The memory effect of one decoded operation, including faulting paths. -/
 private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC : BitVec 64) (flags : FlagValues) :
@@ -298,13 +323,13 @@ private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC
     simp only [stepOp]
     split
     · split <;> apply WritesWithin.writeOperand <;>
-        cases destination <;> simp_all [validShift, MachineState.canWrite]
+        cases destination <;> simp_all [validShift]
     · exact Memory.SameOutside.refl
   | imul destination source immediate | cmovcc condition destination source =>
     simp only [stepOp]
     split
     · apply WritesWithin.writeOperand
-      cases destination <;> simp_all [validImul, validConditionalMove, MachineState.canWrite]
+      cases destination <;> simp_all [validImul, validConditionalMove]
     · exact Memory.SameOutside.refl
   | storeXmm kind destination source =>
     simp only [stepOp]

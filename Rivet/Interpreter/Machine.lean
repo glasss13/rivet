@@ -1,5 +1,6 @@
 module
-public import Rivet.Memory
+public import Rivet.Interpreter.Memory
+-- The machine state and the executable interpreter: `step` and `execute`.
 @[expose] public section
 namespace Rivet
 
@@ -29,15 +30,6 @@ abbrev FlagChoices := Nat → FlagValues
 def FlagChoices.drop (choices : FlagChoices) (count : Nat) : FlagChoices :=
   fun index => choices (count + index)
 
-@[simp] private theorem FlagChoices.drop_zero (choices : FlagChoices) : choices.drop 0 = choices := by
-  funext index
-  simp [drop]
-
-@[simp] private theorem FlagChoices.drop_drop (choices : FlagChoices) (first second : Nat) :
-    (choices.drop first).drop second = choices.drop (first + second) := by
-  funext index
-  simp [drop, Nat.add_assoc]
-
 /-- Update one register; its width is enforced by the value's type. -/
 def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 64) : MachineState :=
   { state with registers := fun otherRegister =>
@@ -51,7 +43,8 @@ private def next (nextAddress : BitVec 64) (state : MachineState) : MachineState
   { state with status := match state.status with
       | .running _ => .running nextAddress
       | stopped => stopped }
-def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
+/-- The effective address. Closed: the `rivet` simp set states it per address shape. -/
+@[no_expose, irreducible] def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
   (address.base.map registers).getD 0 +
     (address.index.map registers).getD 0 * BitVec.ofNat 64 address.scale.value +
     BitVec.ofInt 64 address.displacement
@@ -81,12 +74,14 @@ def MachineState.writeOperand (state : MachineState) (operand : Operand) (value 
   | .memory width address => state.writeMemory (address.evaluate state.registers) width value
   | .immediate _ => state
 
-def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
+/-- Read permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
+@[no_expose, irreducible] def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.readable (address.evaluate state.registers)
       (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
   | _ => true
 
-def MachineState.canWrite (state : MachineState) (image : Image) : Operand → Bool
+/-- Write permission for an operand. Closed: the `rivet` simp set states it per operand form. -/
+@[no_expose, irreducible] def MachineState.canWrite (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.writable (address.evaluate state.registers)
       (address.evaluate state.registers + BitVec.ofNat 64 width.bytes)
   | .immediate _ => false
@@ -293,15 +288,5 @@ def execute (image : Image) (steps : Nat) (state : MachineState) (choices : Flag
 /-- The little-endian address stored in the current stack return slot. -/
 def MachineState.returnAddress (state : MachineState) : BitVec 64 :=
   readBytes state.memory (state.registers .rsp) 8
-
-theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
-    {choices : FlagChoices} :
-    execute image (firstSteps + secondSteps) state choices =
-      execute image secondSteps (execute image firstSteps state choices) (choices.drop firstSteps) := by
-  induction firstSteps generalizing state choices with
-  | zero => simp [execute]
-  | succ firstSteps inductionHypothesis =>
-    simpa [Nat.succ_add, execute, Nat.add_comm] using
-      inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
 
 end Rivet

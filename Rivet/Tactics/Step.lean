@@ -1,19 +1,8 @@
 module
-public import Rivet.Instructions
+public import Rivet.Laws.Instructions
+public import Rivet.Tactics.Fetch
+-- `rivet_step`: executes one instruction of an `Ensures` goal through its contract.
 public meta import Lean
-@[expose] public section
-namespace Rivet
-
-namespace Step
--- Address normalization: `Option.getD` leaves a numeral zero (`OfNat` form) for an
--- absent base or index. Rewriting only these keeps other numerals untouched.
-theorem add_zero (x : BitVec n) : x + 0 = x := BitVec.add_zero x
-theorem zero_add (x : BitVec n) : 0 + x = x := BitVec.zero_add x
-theorem zero_mul (x : BitVec n) : 0 * x = 0 := by simp
-end Step
-
-end Rivet
-end
 
 -- The tactic implementation is public but not exposed; its helpers are private.
 public section
@@ -83,7 +72,7 @@ private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := 
 
 /-- Apply a contract to its explicit arguments. Optional parameters take their
 defaults. Every side condition (an auto-parameter, or a remaining explicit
-hypothesis such as RET's `slot`) becomes a goal named after its parameter. -/
+hypothesis) becomes a goal named after its parameter. -/
 private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr × Array MVarId) := do
   let mut proof ← mkConstWithFreshMVarLevels name
   let mut type ← inferType proof
@@ -113,25 +102,30 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     type := body.instantiate1 argument
   return (proof, sides)
 
-/-- Try to prove one side condition. Cheap checks (`rfl`, `decide`, `assumption`)
-always run first; then the caller's discharger if given, otherwise `simp [*]`,
-which rewrites only the side condition with the current facts. -/
-private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM Bool := do
-  let saved ← saveState
+/-- Try to prove one side condition. It is first reduced by the `rivet` simp set,
+which closes register and immediate accesses and states memory accesses as `permits`
+over register reads. Cheap checks (`rfl` and `decide` for syntax-only conditions, a
+syntactic hypothesis match) run next; then the caller's discharger if given, otherwise
+`simp [*, rivet]`. Nothing here unfolds a closed definition. Returns the reduced goal,
+under its parameter's tag, if it stays open. -/
+private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (Option MVarId) := do
+  let tag ← goal.getTag
   setGoals [goal]
+  evalTactic (← `(tactic| try simp only [rivet]))
+  let [reduced] ← getGoals | return none
+  reduced.setTag tag
+  let saved ← saveState
   try
     let fallback ← match tactic? with
       | some tactic => pure (⟨tactic⟩ : TSyntax `tactic)
-      | none => `(tactic| (simp [*, MachineState.canRead, MachineState.canWrite,
-          Address.evaluate, Scale.value, BitVec.ofInt_neg, BitVec.ofInt_natCast,
-          BitVec.add_neg_eq_sub]; done))
-    evalTactic (← `(tactic| first | rfl | decide +kernel | assumption | ($fallback; done)))
-    if (← getGoals).isEmpty then return true
+      | none => `(tactic| (simp [*, rivet]; done))
+    evalTactic (← `(tactic| first | rfl | decide +kernel | with_reducible assumption | ($fallback; done)))
+    if (← getGoals).isEmpty then return none
     saved.restore
-    return false
+    return some reduced
   catch _ =>
     saved.restore
-    return false
+    return some reduced
 
 /-- Every `MachineState` field, in declaration order. -/
 private meta def fields : List Name :=
@@ -217,10 +211,14 @@ with a fresh successor state plus one fact per field: `t.registers = …`,
   retrieve one by statement, e.g. `‹t.memory = _›`. Between checkpoints, prefer
   `simp [*]` to `simp_all`, which rewrites every fact with every other.
 * **Side conditions.** The location and instruction evidence are supplied
-  directly. Others that the discharger cannot prove remain as goals tagged with
-  the contract's parameter name (`case writable`, `case slot`, …).
-  `rivet_step (disch := tac)` replaces the fallback discharger (`simp [*]`);
-  `rfl`, `decide` and `assumption` are always tried first.
+  directly. Every other side condition is first reduced by the `rivet` simp set:
+  register and immediate accesses close, and a memory access becomes
+  `permits image.writable a (a + 8#64) = true` with `a` over register reads.
+  Then `rfl` and `decide` (for syntax-only conditions) and a syntactic hypothesis
+  match are tried, then the fallback discharger, `simp [*, rivet]`.
+  `rivet_step (disch := tac)` replaces the fallback and runs on the reduced goal.
+  Conditions left unproved remain, reduced, as goals tagged with the contract's
+  parameter name (`case writable`, `case readable`, …).
 * **Lookup** uses `Fetch.prove`, as `rivet_fetch` does: constant time in the
   program size for programs generated as suffix chains (as by `rivet-import`);
   otherwise the list is searched.
@@ -262,7 +260,7 @@ open Step in
         unless ← isDefEq (← side.getType) (← inferType instructionProof) do
           throwError "rivet_step: unexpected instruction at {pc}"
         side.assign instructionProof
-      | _ => unless ← discharge discharger side do unsolved := unsolved.push side
+      | _ => if let some remaining ← discharge discharger side then unsolved := unsolved.push remaining
     instantiateMVars proof
   -- 2. Continue from a fresh successor: build `Ensures.bind contract (fun next equation => ?_)`
   --    directly, so no term is re-elaborated. Internal names are replaced at the end.
@@ -307,10 +305,7 @@ open Step in
       -- The successor `address + length` reduces to a literal.
       BitVec.reduceOfNat, BitVec.reduceAdd,
       -- Addresses as point reads of registers (`r .rbx - 8#64`), never the whole register file.
-      Address.evaluate, Scale.value, Option.map_some, Option.map_none, Option.getD_some,
-      Option.getD_none, Step.zero_mul, BitVec.mul_one, Step.add_zero, Step.zero_add, BitVec.add_zero,
-      BitVec.zero_add,
-      BitVec.ofInt_neg, BitVec.ofInt_natCast, BitVec.add_neg_eq_sub, BitVec.ofInt_ofNat] at $locations*))
+      rivet] at $locations*))
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   let isBranch := operation.isAppOfArity ``Op.jcc 2 && tracked.contains `status
   if isBranch then

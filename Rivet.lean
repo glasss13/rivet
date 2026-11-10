@@ -1,3 +1,4 @@
 module
-public import Rivet.Instructions
-public import Rivet.Step
+public import Rivet.Interpreter
+public import Rivet.Laws
+public import Rivet.Tactics
