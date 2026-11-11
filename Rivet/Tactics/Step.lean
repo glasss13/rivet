@@ -146,18 +146,32 @@ private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Arra
   let lemmas ← facts.mapM fun decl => do
     let term ← Term.exprToSyntax (.fvar decl.fvarId)
     `(Lean.Parser.Tactic.simpLemma| $term:term)
-  let stx ← if target then
-      `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, rivet, Nat.reduceLeDiff,
-        Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
-    else
-      -- `+contextual` drops the branch an earlier write to the same register leaves under
-      -- `¬ register = .rsp`; without it every push and pop adds a dead `if`.
-      `(tactic| simp +contextual only [$lemmas,*, reduceCtorEq, ↓reduceIte,
-        rivet, Nat.reduceLeDiff, Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
+  let stx ← `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, rivet, Nat.reduceLeDiff,
+    Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
-  let (result?, _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
-    (fvarIdsToSimp := targets)
-  return result?.map (·.2)
+  let (some (facts, goal), _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
+    (fvarIdsToSimp := targets) | return none
+  -- A register written twice is tested twice, and the second test can never hold: drop it, and
+  -- prove that for each register. Contextual simp would drop it too, but its cost doubles with
+  -- each register in the chain. Last fact first, since `replace` renames the facts after it.
+  some <$> facts.foldrM (init := goal) fun fact goal => goal.withContext do
+    let some (_, _, function) := (← instantiateMVars (← fact.getType)).eq? | return goal
+    let .lam binder domain chain info := function | return goal
+    let mut kept := #[]
+    let mut tested := #[]
+    let mut rest := chain
+    repeat
+      let_expr ite _ test _ _ next := rest | break
+      let_expr Eq _ argument register := test | break
+      unless argument == .bvar 0 do break
+      unless tested.contains register do kept := kept.push rest.appFn!
+      tested := tested.push register
+      rest := next
+    if kept.size == tested.size then return goal
+    let same ← mkFreshExprMVar (← mkEq function (.lam binder domain (kept.foldr mkApp rest) info))
+    discard <| Tactic.run same.mvarId! do
+      evalTactic (← `(tactic| funext r; cases r <;> simp only [reduceCtorEq, ↓reduceIte]))
+    return (← goal.replace fact (← mkEqTrans (.fvar fact) same)).mvarId
 
 -- Drops the given states and every memory name that nothing else mentions, with their facts.
 private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVarId :=
