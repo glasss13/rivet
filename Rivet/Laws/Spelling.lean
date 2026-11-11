@@ -7,8 +7,15 @@ namespace Rivet
 
 attribute [rivet] BitVec.setWidth_setWidth_of_le BitVec.setWidth_eq
   BitVec.xor_self BitVec.and_self BitVec.setWidth_zero BitVec.sub_zero
+  BitVec.shiftLeft_zero BitVec.ushiftRight_zero
+  eq_self_iff_true and_self Bool.false_eq_true Bool.true_eq_false
   decide_eq_true_eq decide_eq_false_iff_not beq_iff_eq beq_eq_false_iff_ne ne_eq Classical.not_not
   Bool.not_eq_true' Bool.and_eq_true Bool.or_eq_true BitVec.not_lt BitVec.not_le
+
+-- Literal displacements: `BitVec.ofInt 64 (-8)` becomes a subtraction of `8#64`, and a zero
+-- displacement is dropped.
+attribute [rivet] BitVec.ofInt_ofNat BitVec.ofInt_neg BitVec.ofInt_natCast BitVec.add_neg_eq_sub
+  BitVec.add_zero
 
 @[rivet] theorem le_and_ne_iff_lt {a b : BitVec w} : (b ≤ a ∧ ¬a = b) ↔ b < a := by
   bv_omega
@@ -66,9 +73,5 @@ attribute [rivet] BitVec.setWidth_setWidth_of_le BitVec.setWidth_eq
 @[rivet] theorem setcc_eq_zero {condition : Prop} [Decidable condition] :
     ((if condition then 1 else 0 : BitVec 8) = 0) ↔ ¬condition := by
   split <;> simp_all
-@[rivet] theorem setcc_or_setcc {first second : Prop} [Decidable first] [Decidable second] :
-    ((if first then 1 else 0 : BitVec 8) ||| (if second then 1 else 0)) =
-      if first ∨ second then 1 else 0 := by
-  by_cases first <;> by_cases second <;> simp_all
 
 end Rivet

@@ -139,13 +139,13 @@ private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Arra
     let term ← Term.exprToSyntax (.fvar decl.fvarId)
     `(Lean.Parser.Tactic.simpLemma| $term:term)
   let stx ← if target then
-      `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, eq_self_iff_true, rivet,
-        Nat.reduceLeDiff, Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth])
+      `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, rivet, Nat.reduceLeDiff,
+        Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth])
     else
       -- `+contextual` drops the branch an earlier write to the same register leaves under
       -- `¬ register = .rsp`; without it every push and pop adds a dead `if`.
-      `(tactic| simp +contextual only [$lemmas,*, Condition.holds, reduceCtorEq, ↓reduceIte,
-        eq_self_iff_true, rivet, Nat.reduceLeDiff, Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth])
+      `(tactic| simp +contextual only [$lemmas,*, reduceCtorEq, ↓reduceIte,
+        rivet, Nat.reduceLeDiff, Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
   let (result?, _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
     (fvarIdsToSimp := targets)
@@ -334,13 +334,11 @@ open Step in
   -- register it was built with, and simp does not rewrite instances.
   evalTactic (← `(tactic| try simp only [rivet] at $locations*))
   evalTactic (← `(tactic| try simp only [MachineState.write,
-      MachineState.writeMemory, Operand.width, Width.bits, Width.bytes,
-      BitVec.setWidth_eq,
+      MachineState.writeMemory, Width.bits,
       -- The successor `address + length` reduces to a literal.
       BitVec.reduceOfNat, BitVec.reduceAdd,
       -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).
-      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte, BitVec.shiftLeft_zero,
-      BitVec.ushiftRight_zero,
+      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte,
       -- Side conditions of the `rivet` set's rules on literals.
       Nat.reduceLeDiff, Nat.reduceAdd, BitVec.reduceSetWidth,
       -- Literal operands as numbers: PSHUFD's lane offsets, IMUL's immediate.
@@ -361,9 +359,7 @@ open Step in
     -- condition the same way to match it.
     evalTactic (← `(tactic| by_cases $path : Condition.holds $condition $oldStx = true <;>
       simp only [Condition.holds, rivet] at $path:ident <;>
-      simp only [$path:ident, ↓reduceIte, Bool.false_eq_true, Bool.true_eq_false, eq_self_iff_true,
-        and_self]
-        at $status:ident))
+      simp only [$path:ident, ↓reduceIte, rivet] at $status:ident))
     internal := internal.push `rivet_fact_path
   -- 5. In each goal: compact if requested, then give the new state and
   --    its facts their final names (yours, or inaccessible).
