@@ -99,6 +99,9 @@ private meta def noteModule : Name := `Rivet.Step.note
 -- Path conditions get a name of their own, so later checkpoints know them from the user's.
 private meta def pathModule : Name := `Rivet.Step.path
 
+-- A memory name's defining fact gets a name of its own, so steps know the name from the user's.
+private meta def memoryModule : Name := `Rivet.Step.memory
+
 private meta def ownName (module : Name) : CoreM Name := do
   return { extractMacroScopes (← mkFreshUserName `h) with ctx := module }.review
 
@@ -116,6 +119,11 @@ private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
       (lhs.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false do return none
   let .fvar state := lhs.appArg! | return none
   return some state
+
+private meta def memoryNamed? (decl : LocalDecl) : MetaM (Option FVarId) := do
+  unless owned memoryModule decl do return none
+  let some (_, .fvar memory, _) := (← instantiateMVars decl.type).eq? | return none
+  return some memory
 
 private meta def notesAbout (states : Array FVarId) : MetaM (Array LocalDecl) := do
   let mut found := #[]
@@ -151,29 +159,35 @@ private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Arra
     (fvarIdsToSimp := targets)
   return result?.map (·.2)
 
+-- Drops the given states and every memory name that nothing else mentions, with their facts.
 private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVarId :=
     goal.withContext do
-  if states.isEmpty then return goal
+  let mut subjects := states
   let mut uses : Array Expr := #[← instantiateMVars (← goal.getType)]
   let mut notes : Array (FVarId × LocalDecl) := #[]
   for decl in ← getLCtx do
     if decl.isImplementationDetail || states.contains decl.fvarId then continue
+    if let some memory ← memoryNamed? decl then
+      subjects := subjects.push memory
+      notes := notes.push (memory, decl)
+      continue
     match ← noteState? decl with
     | some state => if states.contains state then notes := notes.push (state, decl)
                     else uses := uses.push (← instantiateMVars decl.type)
     | none => uses := uses.push (← instantiateMVars decl.type)
+  if subjects.isEmpty then return goal
   let mut kept : Array FVarId := #[]
   let mut grown := true
   while grown do
     grown := false
-    for state in states do
-      if kept.contains state || !uses.any (·.containsFVar state) then continue
-      kept := kept.push state
+    for subject in subjects do
+      if kept.contains subject || !uses.any (·.containsFVar subject) then continue
+      kept := kept.push subject
       grown := true
-      for (subject, decl) in notes do
-        if subject == state then uses := uses.push (← instantiateMVars decl.type)
+      for (about, decl) in notes do
+        if about == subject then uses := uses.push (← instantiateMVars decl.type)
   let goal ← goal.tryClearMany ((notes.filter (!kept.contains ·.1)).map (·.2.fvarId))
-  goal.tryClearMany (states.filter (!kept.contains ·))
+  goal.tryClearMany (subjects.filter (!kept.contains ·))
 
 private meta def checkpoint : TacticM Unit := withMainContext do
   let states ← introducedStates
@@ -186,10 +200,12 @@ private meta def checkpoint : TacticM Unit := withMainContext do
   let some goal ← restate (← getMainGoal) states targets | replaceMainGoal []
   goal.withContext do
     for decl in ← getLCtx do
-      unless isFact decl && decl.userName != `rivet_fact_path do continue
+      let definesMemory := (← memoryNamed? decl).isSome
+      unless (isFact decl && decl.userName != `rivet_fact_path) || definesMemory do continue
       let type ← instantiateMVars decl.type
       let some state := states.find? (type.containsFVar ·) | continue
-      let field := decl.userName.toString.drop "rivet_fact_".length
+      let field :=
+        if definesMemory then "memory" else (decl.userName.toString.drop "rivet_fact_".length).toString
       let read? := type.find? fun e =>
         e.getAppNumArgs == 1 && e.appArg! == .fvar state &&
           (e.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false
@@ -199,6 +215,33 @@ private meta def checkpoint : TacticM Unit := withMainContext do
       throwError "rivet_step: the new state's `{field}` cannot be stated without the earlier \
         state `{Expr.fvar state}`: {why}.{indentExpr type}"
   replaceMainGoal [← dropStates goal states]
+
+-- A store's result becomes a variable `mₙ`, defined over the start state and earlier names and
+-- placed before the new state, so later facts mention the name instead of repeating the stores.
+private meta def nameMemory : TacticM Unit := do
+  let fact := mkIdent `rivet_fact_memory
+  let stored : TacticM (Option (FVarId × Expr)) := withMainContext do
+    let some decl := (← getLCtx).findFromUserName? fact.getId | return none
+    let some (_, _, value) := (← instantiateMVars decl.type).eq? | return none
+    return if value.isAppOfArity ``MachineState.memory 1 then none else some (decl.fvarId, value)
+  let some (before, _) ← stored | return
+  replaceMainGoal (← restate (← getMainGoal) (← withMainContext introducedStates) #[before]).toList
+  let some (_, value) ← stored | return
+  let definition := mkIdent (← ownName memoryModule)
+  withMainContext do
+    let lctx ← getLCtx
+    let some next := lctx.findFromUserName? `rivet_next | return
+    let name (index : Nat) := Name.mkSimple s!"m{index.toSubscriptString}"
+    let mut index := 1 + (← lctx.foldlM (init := 0) fun count decl =>
+      return if (← memoryNamed? decl).isSome then count + 1 else count)
+    while lctx.usesUserName (name index) do index := index + 1
+    let (reverted, goal) ← (← getMainGoal).revert #[next.fvarId]
+    replaceMainGoal [goal]
+    evalTactic (← `(tactic| obtain ⟨$(mkIdent (name index)), $definition⟩ :
+      ∃ memory : Memory, memory = $(← Term.exprToSyntax value) := ⟨_, rfl⟩))
+    let (_, goal) ← (← getMainGoal).introNP reverted.size
+    replaceMainGoal [goal]
+  evalTactic (← `(tactic| replace $fact:ident := Eq.trans $fact (Eq.symm $definition)))
 
 private meta def attempt (tactic : TSyntax `tactic) (goal : MVarId) (runtime := false) :
     TacticM (Option MessageData) := do
@@ -221,7 +264,6 @@ private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Boo
 
 private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
   let states ← introducedStates
-  if states.isEmpty then return some (goal, false)
   let mut goal := goal
   let rewritten := states.any ((← instantiateMVars (← goal.getType)).containsFVar ·)
   if rewritten then
@@ -348,6 +390,7 @@ open Step in
       -- Operand equations, register parents, and addresses as point reads of registers
       -- (`r .rbx - 8#64`), never the whole register file.
       rivet] at $locations*))
+  nameMemory
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   let isBranch := operation.isAppOfArity ``Op.jcc 2 && tracked.contains `status
   if isBranch then
