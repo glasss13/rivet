@@ -44,10 +44,10 @@ private def next (nextAddress : BitVec 64) (state : MachineState) : MachineState
     BitVec.ofInt 64 address.displacement
 
 def MachineState.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
-    (value : BitVec 64) : MachineState :=
+    (value : BitVec n) : MachineState :=
   { state with memory := state.memory.storeBytes address (BitVec.ofNat 64 width.bytes) (littleEndianAt value address) }
 
-@[no_expose, irreducible] def MachineState.readOperand (state : MachineState) : Operand → BitVec 64
+@[irreducible] private def MachineState.readOperand64 (state : MachineState) : Operand → BitVec 64
   | .reg8 register => ((state.registers register.parent).setWidth 8).setWidth 64
   | .reg16 register => ((state.registers register.parent).setWidth 16).setWidth 64
   | .reg32 register => ((state.registers register.parent).setWidth 32).setWidth 64
@@ -55,7 +55,7 @@ def MachineState.writeMemory (state : MachineState) (address : BitVec 64) (width
   | .memory width address => (readBytes state.memory (address.evaluate state.registers) width.bytes).setWidth 64
   | .immediate value => BitVec.ofInt 64 value
 
-@[no_expose, irreducible] def MachineState.writeOperand (state : MachineState) (operand : Operand) (value : BitVec 64) : MachineState :=
+@[irreducible] private def MachineState.writeOperand64 (state : MachineState) (operand : Operand) (value : BitVec 64) : MachineState :=
   match operand with
   | .reg8 register => state.write register.parent
       ((state.registers register.parent &&& ~~~(255#64)) ||| ((value.setWidth 8).setWidth 64))
@@ -65,6 +65,14 @@ def MachineState.writeMemory (state : MachineState) (address : BitVec 64) (width
   | .reg64 register => state.write register value
   | .memory width address => state.writeMemory (address.evaluate state.registers) width value
   | .immediate _ => state
+
+@[no_expose, irreducible] def MachineState.readOperand (state : MachineState) (width : Width) (operand : Operand) :
+    BitVec width.bits :=
+  (state.readOperand64 operand).setWidth width.bits
+
+@[no_expose, irreducible] def MachineState.writeOperand (state : MachineState) (width : Width) (operand : Operand)
+    (value : BitVec width.bits) : MachineState :=
+  state.writeOperand64 operand (value.setWidth 64)
 
 @[no_expose, irreducible] def MachineState.canRead (state : MachineState) (image : Image) : Operand → Bool
   | .memory width address => permits image.readable (address.evaluate state.registers)
@@ -101,10 +109,10 @@ private def MachineState.binary (state : MachineState) (image : Image) (operatio
   if validBinary operation destination source && state.canRead image destination && state.canRead image source &&
       (!operation.writes || state.canWrite image destination) then
     let width := destination.width.getD .qword
-    let left := (state.readOperand destination).setWidth width.bits
-    let right := (state.readOperand source).setWidth width.bits
+    let left := (state.readOperand64 destination).setWidth width.bits
+    let right := (state.readOperand64 source).setWidth width.bits
     let result := operation.result left right state.carryFlag
-    let updated := if operation.writes then state.writeOperand destination (result.setWidth 64) else state
+    let updated := if operation.writes then state.writeOperand64 destination (result.setWidth 64) else state
     next nextAddress { updated with
       zeroFlag := result == 0
       signFlag := result.msb
@@ -156,12 +164,12 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
       let width := (destination.width.getD .qword).bits
       -- For the supported widths, count masking is reduction modulo 32 or 64.
       let count := count % width
-      let value := (state.readOperand destination).setWidth width
+      let value := (state.readOperand64 destination).setWidth width
       let result : BitVec width := match operation with
         | .shl => BitVec.shiftLeft value count
         | .shr => BitVec.ushiftRight value count
       -- Even a zero-count r32 shift clears the upper half of its parent register.
-      let updated := state.writeOperand destination (result.setWidth 64)
+      let updated := state.writeOperand64 destination (result.setWidth 64)
       if count == 0 then next nextAddress updated else
         next nextAddress { updated with
           carryFlag := value.getLsbD (match operation with | .shl => width - count | .shr => count - 1)
@@ -171,13 +179,13 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
   | .imul destination source immediate =>
     if validImul destination source immediate && state.canRead image source then
       let width := (destination.width.getD .qword).bits
-      let sourceValue := (state.readOperand source).setWidth width
+      let sourceValue := (state.readOperand64 source).setWidth width
       let multiplier := match immediate with
-        | none => (state.readOperand destination).setWidth width
+        | none => (state.readOperand64 destination).setWidth width
         | some value => BitVec.ofInt width value
       let product := sourceValue.toInt * multiplier.toInt
       let result := BitVec.ofInt width product
-      next nextAddress { state.writeOperand destination (result.setWidth 64) with
+      next nextAddress { state.writeOperand64 destination (result.setWidth 64) with
         carryFlag := result.toInt != product
         signFlag := undefinedFlags.signFlag
         zeroFlag := undefinedFlags.zeroFlag }
@@ -185,20 +193,20 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
   | .lea destination address => next nextAddress (state.write destination (address.evaluate state.registers))
   | .movzx destination source =>
     if (source.width == some .byte || source.width == some .word) && state.canRead image source then
-      next nextAddress (state.write destination.parent (state.readOperand source))
+      next nextAddress (state.write destination.parent (state.readOperand64 source))
     else { state with status := .fault }
   | .movsxd destination source =>
     if source.width == some .dword && state.canRead image source then
-      next nextAddress (state.write destination ((state.readOperand source).setWidth 32 |>.signExtend 64))
+      next nextAddress (state.write destination ((state.readOperand64 source).setWidth 32 |>.signExtend 64))
     else { state with status := .fault }
   | .mov destination source =>
     if validMove destination source && state.canRead image source && state.canWrite image destination then
       -- Read and address calculation use the pre-instruction registers, including aliases.
-      next nextAddress (state.writeOperand destination (state.readOperand source))
+      next nextAddress (state.writeOperand64 destination (state.readOperand64 source))
     else { state with status := .fault }
   | .not destination =>
     if state.canRead image destination && state.canWrite image destination then
-      next nextAddress (state.writeOperand destination (~~~(state.readOperand destination)))
+      next nextAddress (state.writeOperand64 destination (~~~(state.readOperand64 destination)))
     else { state with status := .fault }
   | .inc destination =>
     let result := state.registers destination + 1
@@ -211,14 +219,14 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     if condition.holds state then { state with status := .running target } else next nextAddress state
   | .setcc condition destination =>
     if destination.width == some .byte && state.canWrite image destination then
-      next nextAddress (state.writeOperand destination (if condition.holds state then 1 else 0))
+      next nextAddress (state.writeOperand64 destination (if condition.holds state then 1 else 0))
     else { state with status := .fault }
   | .cmovcc condition destination source =>
     -- Memory sources are read even when the condition is false. Writing the old
     -- destination through its operand also clears the upper half of r32.
     if validConditionalMove destination source && state.canRead image source then
-      let value := if condition.holds state then state.readOperand source else state.readOperand destination
-      next nextAddress (state.writeOperand destination value)
+      let value := if condition.holds state then state.readOperand64 source else state.readOperand64 destination
+      next nextAddress (state.writeOperand64 destination value)
     else { state with status := .fault }
   | .push source =>
     let pointer := state.registers .rsp - 8#64

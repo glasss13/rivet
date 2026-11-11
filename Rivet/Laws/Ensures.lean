@@ -101,12 +101,8 @@ private theorem WritesWithin.writeMemory (state : MachineState) (address : BitVe
 
 private theorem WritesWithin.writeOperand (state : MachineState) (destination : Operand) (value : BitVec 64)
     (allowed : state.canWrite image destination = true) :
-    WritesWithin image state.memory (state.writeOperand destination value).memory := by
-  cases destination <;>
-    simp only [MachineState.writeOperand_reg8, MachineState.writeOperand_reg16,
-      MachineState.writeOperand_reg32, MachineState.writeOperand_reg64,
-      MachineState.writeOperand_memory, MachineState.writeOperand_immediate] <;>
-    try exact Memory.SameOutside.refl
+    WritesWithin image state.memory (state.writeOperand64 destination value).memory := by
+  cases destination <;> simp only [MachineState.writeOperand64] <;> try exact Memory.SameOutside.refl
   case memory width address =>
     rw [MachineState.canWrite_memory] at allowed
     exact WritesWithin.writeMemory state _ width value allowed
