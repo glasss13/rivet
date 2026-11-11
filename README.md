@@ -84,8 +84,9 @@ That gives `Sum.entry`, `Sum.program`, `Sum.regions` for the binary's segments, 
 - **Never unfold `permits`, `readBytes` or the operand functions.** Rewrite with
   `simp only [rivet]`, and use the laws: `permits_inside` and `permits_iff` for permissions,
   `Memory.readBytes_storeBytes_within` and `Memory.readBytes_storeBytes_disjoint` for a read
-  after a store. A store names the memory it leaves, `m₁`, `m₂`, …; rewrite with that fact
-  first, as in `rw [‹m₁ = _›]`.
+  after a store, `readBytes_succ` for a read of bytes you know, as in
+  `simp only [readBytes_succ, BitVec.of_length_zero]; decide`. A store names the memory it
+  leaves, `m₁`, `m₂`, …; rewrite with that fact first, as in `rw [‹m₁ = _›]`.
 - **State permissions about the state the block starts from.** Side conditions come back
   stated over that state, so one hypothesis per region is enough.
 - **Keep an invariant or postcondition whole.** State it as a structure, bind it as one

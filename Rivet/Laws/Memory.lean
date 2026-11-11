@@ -133,11 +133,7 @@ private theorem foldr_bytes_lt {byte : Nat → Nat} (offsets : List Nat) (small 
     have := small offset
     omega
 
-theorem readBytes_zero (memory : Memory) (address : BitVec 64) :
-    readBytes memory address 0 = 0#0 := by
-  simp [readBytes]
-
-theorem readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
+private theorem readBytes_succ_toNat (memory : Memory) (address : BitVec 64) (size : Nat) :
     (readBytes memory address (size + 1)).toNat =
       (memory address).val + 256 * (readBytes memory (address + 1#64) size).toNat := by
   have small : ∀ (start : BitVec 64) (offset : Nat), (memory (start + BitVec.ofNat 64 offset)).val < 256 :=
@@ -152,6 +148,15 @@ theorem readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
   intro offset _
   congr 2
   bv_omega
+
+theorem readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
+    readBytes memory address (size + 1) =
+      readBytes memory (address + 1#64) size ++ BitVec.ofNat 8 (memory address).val := by
+  apply BitVec.eq_of_toNat_eq
+  have byte := (memory address).isLt
+  rw [readBytes_succ_toNat, BitVec.toNat_append, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega),
+    ← Nat.shiftLeft_add_eq_or_of_lt (by omega), Nat.shiftLeft_eq]
+  omega
 
 theorem littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset : Nat)
     (small : offset < 2^64 := by decide) :
