@@ -339,7 +339,7 @@ open Step in
       BitVec.reduceOfNat, BitVec.reduceAdd,
       -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).
       Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte,
-      -- Side conditions of the `rivet` set's rules on literals.
+      -- Literal comparisons the `rivet` set's rules need or leave: `8 ≤ 56`, `1 = 0`.
       Nat.reduceLeDiff, Nat.reduceAdd, BitVec.reduceSetWidth, BitVec.reduceEq,
       -- Literal operands as numbers: PSHUFD's lane offsets, IMUL's immediate.
       Nat.reduceMul, Nat.reduceDiv, Nat.reducePow, BitVec.reduceToInt,
