@@ -94,15 +94,21 @@ private meta def fields : List Name :=
 
 private meta def noteModule : Name := `Rivet.Step.note
 
-private meta def noteName : CoreM Name := do
-  return { extractMacroScopes (← mkFreshUserName `h) with ctx := noteModule }.review
+-- Path conditions get a name of their own, so later checkpoints know them from the user's.
+private meta def pathModule : Name := `Rivet.Step.path
 
-private meta def isNote (decl : LocalDecl) : Bool :=
+private meta def ownName (module : Name) : CoreM Name := do
+  return { extractMacroScopes (← mkFreshUserName `h) with ctx := module }.review
+
+private meta def owned (module : Name) (decl : LocalDecl) : Bool :=
   !decl.isImplementationDetail && decl.userName.hasMacroScopes &&
-    (extractMacroScopes decl.userName).ctx == noteModule
+    (extractMacroScopes decl.userName).ctx == module
+
+private meta def isFact (decl : LocalDecl) : Bool :=
+  !decl.isImplementationDetail && decl.userName.toString.startsWith "rivet_fact_"
 
 private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
-  unless isNote decl do return none
+  unless owned noteModule decl do return none
   let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | return none
   unless lhs.isApp && lhs.getAppNumArgs == 1 &&
       (lhs.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false do return none
@@ -123,20 +129,24 @@ private meta def introducedStates : MetaM (Array FVarId) := do
       unless states.contains state do states := states.push state
   return states
 
-private meta def rewriteAt (facts : Array LocalDecl) (targets : Array FVarId) : TacticM Unit :=
-    withMainContext do
-  if facts.isEmpty || targets.isEmpty then return
+private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Array FVarId)
+    (target : Bool := false) : TacticM (Option MVarId) := goal.withContext do
+  let facts ← notesAbout states
+  if facts.isEmpty || (targets.isEmpty && !target) then return some goal
   let lemmas ← facts.mapM fun decl => do
     let term ← Term.exprToSyntax (.fvar decl.fvarId)
     `(Lean.Parser.Tactic.simpLemma| $term:term)
-  let stx ← `(tactic| simp +contextual only [$lemmas,*, Condition.holds, reduceCtorEq,
-      ↓reduceIte, eq_self_iff_true, Bool.not_eq_true', Bool.or_eq_true, decide_eq_true_eq])
+  let stx ← if target then
+      `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, eq_self_iff_true])
+    else
+      -- `+contextual` drops the branch an earlier write to the same register leaves under
+      -- `¬ register = .rsp`; without it every push and pop adds a dead `if`.
+      `(tactic| simp +contextual only [$lemmas,*, Condition.holds, reduceCtorEq, ↓reduceIte,
+        eq_self_iff_true, Bool.not_eq_true', Bool.or_eq_true, decide_eq_true_eq])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
-  try
-    let (result?, _) ← simpGoal (← getMainGoal) ctx simprocs (simplifyTarget := false)
-      (fvarIdsToSimp := targets)
-    replaceMainGoal (match result? with | some (_, goal) => [goal] | none => [])
-  catch _ => pure ()
+  let (result?, _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
+    (fvarIdsToSimp := targets)
+  return result?.map (·.2)
 
 private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVarId :=
     goal.withContext do
@@ -165,30 +175,46 @@ private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVar
 private meta def checkpoint : TacticM Unit := withMainContext do
   let states ← introducedStates
   if states.isEmpty then return
-  let mentions (type : Expr) : Bool := states.any (type.containsFVar ·)
   let mut targets := #[]
   for decl in ← getLCtx do
-    if decl.isImplementationDetail || isNote decl || states.contains decl.fvarId then continue
-    if mentions (← instantiateMVars decl.type) then targets := targets.push decl.fvarId
-  rewriteAt (← notesAbout states) targets
-  let some goal := (← getGoals).head? | return
-  let mut goal := goal
-  for decl in ← goal.withContext getLCtx do
-    if decl.isImplementationDetail || !decl.userName.toString.startsWith "rivet_fact_" then continue
-    if mentions (← instantiateMVars decl.type) then goal ← goal.tryClear decl.fvarId
+    unless isFact decl || owned pathModule decl do continue
+    let type ← instantiateMVars decl.type
+    if states.any (type.containsFVar ·) then targets := targets.push decl.fvarId
+  let some goal ← restate (← getMainGoal) states targets | replaceMainGoal []
+  goal.withContext do
+    for decl in ← getLCtx do
+      unless isFact decl && decl.userName != `rivet_fact_path do continue
+      let type ← instantiateMVars decl.type
+      let some state := states.find? (type.containsFVar ·) | continue
+      let field := decl.userName.toString.drop "rivet_fact_".length
+      let read? := type.find? fun e =>
+        e.getAppNumArgs == 1 && e.appArg! == .fvar state &&
+          (e.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false
+      let why := match read? with
+        | some read => m!"there is no fact `{read} = …` to restate `{read}` with"
+        | none => m!"it mentions `{Expr.fvar state}` other than through one of its fields"
+      throwError "rivet_step: the new state's `{field}` cannot be stated without the earlier \
+        state `{Expr.fvar state}`: {why}.{indentExpr type}"
   replaceMainGoal [← dropStates goal states]
 
-private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
+private meta def attempt (tactic : TSyntax `tactic) (goal : MVarId) (runtime := false) :
+    TacticM (Option MessageData) := do
   let saved ← saveState
-  try
+  let body : TacticM (Option MessageData) := do
     setGoals [goal]
     evalTactic tactic
-    if (← getGoals).isEmpty then return true
-    saved.restore
-    return false
-  catch _ =>
-    saved.restore
-    return false
+    let remaining ← getGoals
+    if remaining.isEmpty then return none
+    -- `restore` below discards these goals; the message keeps the context they need.
+    return some (← addMessageContext m!"it left{indentD (goalsToMessageData remaining)}")
+  let handler (error : Exception) : TacticM (Option MessageData) :=
+    pure (some m!"it failed with{indentD error.toMessageData}")
+  let failure ← if runtime then tryCatchRuntimeEx body handler else tryCatch body handler
+  if failure.isSome then saved.restore
+  return failure
+
+private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool :=
+  return (← attempt tactic goal).isNone
 
 private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
   let states ← introducedStates
@@ -196,16 +222,12 @@ private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) :
   let mut goal := goal
   let rewritten := states.any ((← instantiateMVars (← goal.getType)).containsFVar ·)
   if rewritten then
-    let lemmas ← (← notesAbout states).mapM fun decl => do
-      let term ← Term.exprToSyntax (.fvar decl.fvarId)
-      `(Lean.Parser.Tactic.simpLemma| $term:term)
-    setGoals [goal]
-    evalTactic (← `(tactic| try simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, eq_self_iff_true]))
-    let [next] ← getGoals | return none
+    let some next ← restate goal states #[] (target := true) | return none
     goal := next
   return some (← dropStates goal states, rewritten)
 
-private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (Option MVarId) := do
+private meta def discharge (pc : Nat) (tactic? : Option Syntax) (goal : MVarId) :
+    TacticM (Option MVarId) := do
   let tag ← goal.getTag
   setGoals [goal]
   evalTactic (← `(tactic| try simp only [rivet]))
@@ -216,11 +238,15 @@ private meta def discharge (tactic? : Option Syntax) (goal : MVarId) : TacticM (
   named.setTag tag
   if rewritten then
     if ← closes (← `(tactic| with_reducible assumption)) named then return none
-  let fallback ← match tactic? with
-    | some tactic => pure (⟨tactic⟩ : TSyntax `tactic)
-    | none => `(tactic| (simp [*, rivet]; done))
-  if ← closes (← `(tactic| ($fallback; done))) named then return none
-  return some named
+  match tactic? with
+  | some tactic =>
+    let some failure ← attempt ⟨tactic⟩ named (runtime := true) | return none
+    throwError "rivet_step: `disch` did not prove the side condition `{tag}` of the \
+      instruction at 0x{String.ofList (Nat.toDigits 16 pc)}: {failure}\nThe side condition, as `disch` saw it:\
+      {indentD (MessageData.ofGoal named)}"
+  | none =>
+    if ← closes (← `(tactic| (simp [*, rivet]; done))) named then return none
+    return some named
 
 end Step
 
@@ -257,7 +283,7 @@ open Step in
         unless ← isDefEq (← side.getType) (← inferType instructionProof) do
           throwError "rivet_step: unexpected instruction at {pc}"
         side.assign instructionProof
-      | _ => if let some remaining ← discharge discharger side then unsolved := unsolved.push remaining
+      | _ => if let some remaining ← discharge pc discharger side then unsolved := unsolved.push remaining
     instantiateMVars proof
   -- 2. Continue from a fresh successor: build `Ensures.bind contract (fun next equation => ?_)`
   --    directly, so no term is re-elaborated. Internal names are replaced at the end.
@@ -341,7 +367,7 @@ open Step in
           return (← state.getUserName).hasMacroScopes
         if oldNamed then states := states.push old.fvarId!
         if let some path := (← getLCtx).findFromUserName? `rivet_fact_path then
-          rewriteAt (← notesAbout states) #[path.fvarId]
+          replaceMainGoal (← restate (← getMainGoal) states #[path.fvarId]).toList
     if named?.isSome then checkpoint
     -- A path condition that rewrites to `False` closes the goal.
     let some goal := (← getGoals).head? | continue
@@ -351,7 +377,7 @@ open Step in
       goal ← goal.rename decl.fvarId finalName
     for fact in internal do
       if let some decl := lctx.findFromUserName? fact then
-        let name ← if fact == `rivet_fact_path then mkFreshUserName `h else noteName
+        let name ← ownName (if fact == `rivet_fact_path then pathModule else noteModule)
         goal ← goal.rename decl.fvarId name
     if isBranch then goal.setTag (if index == 0 then `taken else `fallthrough)
     finished := finished.push goal
