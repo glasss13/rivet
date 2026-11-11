@@ -51,17 +51,17 @@ theorem sum_correct (regions : List Region) (s : MachineState)
       f.registers .rax = s.registers .rdi + s.registers .rsi ∧
       f.registers .rbx = s.registers .rbx ∧
       f.registers .rsp = s.registers .rsp + 8#64) := by
-  rivet_step (disch := (apply permits_inside write <;> bv_omega))   -- push rbx
-  rivet_step                                                         -- mov rbx, rdi
-  rivet_step                                                         -- add rbx, rsi
-  rivet_step                                                         -- mov rax, rbx
-  rivet_step (disch := (apply permits_inside read <;> bv_omega))    -- pop rbx
-  rivet_step (disch := (apply permits_inside read <;> bv_omega))    -- ret
+  rivet_step (disch := (apply permits_inside write <;> grind))   -- push rbx
+  rivet_step                                                      -- mov rbx, rdi
+  rivet_step                                                      -- add rbx, rsi
+  rivet_step                                                      -- mov rax, rbx
+  rivet_step (disch := (apply permits_inside read <;> grind))    -- pop rbx
+  rivet_step (disch := (apply permits_inside read <;> grind))    -- ret
   exact Ensures.done (by
     simp [*, MachineState.returnAddress, BitVec.sub_add_cancel]
     constructor
-    · rw [Memory.readBytes_storeBytes_disjoint] <;> bv_omega   -- the return address sits above the saved rbx
-    · rw [Memory.readBytes_storeBytes_within] <;> simp)         -- pop reads back what push stored
+    · rw [Memory.readBytes_storeBytes_disjoint] <;> grind   -- the return address sits above the saved rbx
+    · rw [Memory.readBytes_storeBytes_within] <;> simp)      -- pop reads back what push stored
 ```
 
 Each `rivet_step` executes one instruction and records what it changed. An instruction
@@ -88,10 +88,10 @@ That gives `Sum.entry`, `Sum.program`, `Sum.regions` for the binary's segments, 
   first, as in `rw [‹m₁ = _›]`.
 - **State permissions about the state the block starts from.** Side conditions come back
   stated over that state, so one hypothesis per region is enough.
-- **Pick the law for each read yourself.** Giving both read laws to one
-  `simp (disch := bv_omega)` applies the wrong one and reports an error.
-- **Keep arithmetic small.** `bv_omega` slows down sharply as facts about words pile up.
-  If a call is slow, state the fact as its own lemma and apply it.
+- **Keep an invariant or postcondition whole.** State it as a structure, bind it as one
+  hypothesis, and name the fields a line uses: `grind [inv.bound, inv.rsp]`. Arithmetic
+  tactics read every hypothesis in scope; a whole structure keeps its fields out of their
+  way until named.
 
 ## Sizing blocks
 
@@ -106,14 +106,16 @@ and below 80 there was nothing more to gain.
 - **Join blocks with `bind`:**
 
   ```lean
-  refine (first_block regions s entry).bind fun t ⟨at_t, rbx_t, rsp_t, memory_t⟩ => ?_
-  refine (second_block regions t at_t (by rw [rsp_t]; exact read)).consequence ?_
-  intro f ⟨at_f, rax_f⟩
-  simp [*, MachineState.returnAddress]
+  refine (first_block regions s entry write).bind fun t summed => ?_
+  refine (second_block regions t summed.status (by rw [summed.rsp]; exact read)).consequence ?_
+  intro f restored
+  simp [restored.status, restored.rax, restored.rbx, restored.rsp,
+    summed.rax, summed.rsp, summed.saved, summed.ret, BitVec.sub_add_cancel]
+  grind
   ```
 
   `bind` hands the second block the state `t` the first one ended in, with the first
-  block's postcondition as the only facts about it. The second block's postcondition is
+  block's postcondition `summed` as the only fact about it. The second block's postcondition is
   stated over `t`; `consequence` turns it into the one the theorem promises about `s`.
 
 - **Inside a block, name a checkpoint** with `rivet_step as t` whenever the context gets
