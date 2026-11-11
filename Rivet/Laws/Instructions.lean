@@ -622,11 +622,11 @@ theorem return_ (image : Image) (address : BitVec 64) (initial : MachineState)
     (readable : permits image.readable (initial.registers .rsp) 8#64 = true :=
       by simp only [rivet, *]) :
     Ensures image initial (· = { initial.write .rsp (initial.registers .rsp + 8#64) with
-      status := .running initial.returnAddress }) := by
+      status := .running (readBytes initial.memory (initial.registers .rsp) 8) }) := by
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp_all [MachineState.write, MachineState.returnAddress, stepOp]
+  simp_all [MachineState.write, stepOp]
 theorem move (image : Image) (address : BitVec 64) (destination source : Operand) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
