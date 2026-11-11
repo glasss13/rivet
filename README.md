@@ -127,3 +127,26 @@ and below 80 there was nothing more to gain.
 - **Inside a block, name a checkpoint** with `rivet_step as t` whenever the context gets
   long. That returns the context to a fixed size plus one line per store; it does not
   shorten what the block remembers.
+
+## Loops
+
+`Ensures.loop` takes an invariant that holds at the loop head and a measure. The body must
+end either back in the invariant with a smaller measure, or in the postcondition.
+
+```lean
+-- loop: dec rcx · jne loop
+def countdown : Program :=
+  [⟨0x2000, 3, .dec .rcx⟩,
+   ⟨0x2003, 2, .jcc .notEqual 0x2000⟩]
+
+theorem countdown_exits (regions : List Region) (s : MachineState)
+    (entry : s.status = .running 0x2000) :
+    Ensures ⟨countdown, regions⟩ s (fun f =>
+      f.status = .running 0x2005 ∧ f.registers .rcx = 0) := by
+  refine Ensures.loop (fun c => c.status = .running 0x2000)
+    (fun c => (c.registers .rcx - 1).toNat) entry fun c at_head => ?_
+  rivet_step                                           -- dec rcx
+  rivet_step                                           -- jne loop
+  · exact Ensures.done (.inl (by simp [*]; grind))     -- taken: at the head, one fewer to go
+  · exact Ensures.done (.inr (by simp [*]; grind))     -- fell through: rcx is zero
+```

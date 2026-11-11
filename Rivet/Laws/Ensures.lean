@@ -68,21 +68,21 @@ theorem Ensures.consequence (contract : Ensures image state postcondition)
   obtain ⟨final, reached, result⟩ := contract.allChoices choices
   exact ⟨final, reached, weaken _ result⟩
 
-theorem Ensures.loop (invariant finished : MachineState → Prop) (measure : MachineState → Nat)
+theorem Ensures.loop (invariant : MachineState → Prop) (measure : MachineState → Nat)
     (holds : invariant state)
-    (body : ∀ current, invariant current → ¬ finished current →
-      Ensures image current (fun next => invariant next ∧ measure next < measure current)) :
-    Ensures image state (fun final => invariant final ∧ finished final) := by
+    (body : ∀ current, invariant current →
+      Ensures image current (fun next =>
+        invariant next ∧ measure next < measure current ∨ postcondition next)) :
+    Ensures image state postcondition := by
   constructor
   intro choices
   induction bound : measure state using Nat.strongRecOn generalizing state choices with
   | ind bound inductionHypothesis =>
-    by_cases done : finished state
-    · exact ⟨state, ⟨0, execute_zero image state choices⟩, holds, done⟩
-    · obtain ⟨middle, ⟨earlier, rfl⟩, holds, decreases⟩ := (body state holds done).allChoices choices
-      obtain ⟨final, ⟨later, reached⟩, result⟩ :=
+    obtain ⟨middle, ⟨earlier, rfl⟩, ⟨holds, decreases⟩ | exits⟩ := (body state holds).allChoices choices
+    · obtain ⟨final, ⟨later, reached⟩, result⟩ :=
         inductionHypothesis _ (by omega) holds (choices.drop earlier) rfl
       exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
+    · exact ⟨_, ⟨earlier, rfl⟩, exits⟩
 
 -- Execution proofs are implementation details of `Ensures.preserves_unwritable`.
 private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
