@@ -1,5 +1,6 @@
 module
 public import Rivet.Laws.Instructions
+public import Rivet.Laws.Spelling
 public import Rivet.Tactics.Fetch
 -- `rivet_step`: executes one instruction of an `Ensures` goal through its contract.
 public meta import Lean
@@ -138,12 +139,13 @@ private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Arra
     let term ← Term.exprToSyntax (.fvar decl.fvarId)
     `(Lean.Parser.Tactic.simpLemma| $term:term)
   let stx ← if target then
-      `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, eq_self_iff_true])
+      `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, rivet, Nat.reduceLeDiff,
+        Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
     else
       -- `+contextual` drops the branch an earlier write to the same register leaves under
       -- `¬ register = .rsp`; without it every push and pop adds a dead `if`.
-      `(tactic| simp +contextual only [$lemmas,*, Condition.holds, reduceCtorEq, ↓reduceIte,
-        eq_self_iff_true, Bool.not_eq_true', Bool.or_eq_true, decide_eq_true_eq])
+      `(tactic| simp +contextual only [$lemmas,*, reduceCtorEq, ↓reduceIte,
+        rivet, Nat.reduceLeDiff, Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
   let (result?, _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
     (fvarIdsToSimp := targets)
@@ -332,13 +334,13 @@ open Step in
   -- register it was built with, and simp does not rewrite instances.
   evalTactic (← `(tactic| try simp only [rivet] at $locations*))
   evalTactic (← `(tactic| try simp only [MachineState.write,
-      MachineState.writeMemory, Operand.width, Width.bits, Width.bytes,
-      BitVec.setWidth_eq,
+      MachineState.writeMemory, Width.bits,
       -- The successor `address + length` reduces to a literal.
       BitVec.reduceOfNat, BitVec.reduceAdd,
       -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).
-      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte, BitVec.shiftLeft_zero,
-      BitVec.ushiftRight_zero,
+      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte,
+      -- Literal comparisons the `rivet` set's rules need or leave: `8 ≤ 56`, `1 = 0`.
+      Nat.reduceLeDiff, Nat.reduceAdd, BitVec.reduceSetWidth, BitVec.reduceEq,
       -- Literal operands as numbers: PSHUFD's lane offsets, IMUL's immediate.
       Nat.reduceMul, Nat.reduceDiv, Nat.reducePow, BitVec.reduceToInt,
       -- A condition as the flags it tests.
@@ -353,14 +355,11 @@ open Step in
     let oldStx ← Term.exprToSyntax old
     let status := mkIdent `rivet_fact_status
     let path := mkIdent `rivet_fact_path
-    -- The status fact already tests the flags; unfold the path condition to match it.
+    -- The status fact already tests the flags, spelled by the `rivet` set; spell the path
+    -- condition the same way to match it.
     evalTactic (← `(tactic| by_cases $path : Condition.holds $condition $oldStx = true <;>
-      simp only [Condition.holds] at $path:ident <;>
-      simp only [$path:ident, ↓reduceIte, Bool.false_eq_true] at $status:ident))
-    -- State the path condition with flags in `Prop`.
-    evalTactic (← `(tactic| all_goals try simp only [Bool.not_eq_true',
-      Bool.or_eq_true, Bool.and_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true, Bool.not_false]
-      at $path:ident))
+      simp only [Condition.holds, rivet] at $path:ident <;>
+      simp only [$path:ident, ↓reduceIte, rivet] at $status:ident))
     internal := internal.push `rivet_fact_path
   -- 5. In each goal: compact if requested, then give the new state and
   --    its facts their final names (yours, or inaccessible).

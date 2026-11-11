@@ -159,9 +159,7 @@ attribute [rivet] Reg8.parent Reg16.parent Reg32.parent
       BitVec.ofInt 64 displacement := by
   simp [evaluate]
 
--- Literal displacements and access sizes as words: `BitVec.ofInt 64 (-8)` becomes a
--- subtraction of `8#64`, and a zero displacement is dropped.
-attribute [rivet] Width.bytes BitVec.ofInt_ofNat BitVec.ofInt_neg BitVec.ofInt_natCast
-  BitVec.add_neg_eq_sub BitVec.add_zero
+-- Access sizes as numbers of bytes.
+attribute [rivet] Width.bytes
 
 end Rivet
