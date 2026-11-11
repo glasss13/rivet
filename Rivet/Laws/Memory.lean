@@ -124,6 +124,35 @@ theorem readBytes_one (memory : Memory) (address : BitVec 64) :
     readBytes memory address 1 = BitVec.ofNat 8 (memory address).val := by
   simp [readBytes]
 
+private theorem foldr_bytes_lt {byte : Nat → Nat} (offsets : List Nat) (small : ∀ offset, byte offset < 256) :
+    offsets.foldr (fun offset value => byte offset + 256 * value) 0 < 256 ^ offsets.length := by
+  induction offsets with
+  | nil => simp
+  | cons offset rest inductionHypothesis =>
+    simp only [List.foldr_cons, List.length_cons, Nat.pow_succ]
+    have := small offset
+    omega
+
+theorem readBytes_zero (memory : Memory) (address : BitVec 64) :
+    readBytes memory address 0 = 0#0 := by
+  simp [readBytes]
+
+theorem readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
+    (readBytes memory address (size + 1)).toNat =
+      (memory address).val + 256 * (readBytes memory (address + 1#64) size).toNat := by
+  have small : ∀ (start : BitVec 64) (offset : Nat), (memory (start + BitVec.ofNat 64 offset)).val < 256 :=
+    fun _ _ => (memory _).isLt
+  simp only [readBytes, BitVec.toNat_ofNat]
+  rw [Nat.mod_eq_of_lt (by simpa [Nat.pow_mul] using foldr_bytes_lt (List.range (size + 1)) (small address)),
+    Nat.mod_eq_of_lt (by simpa [Nat.pow_mul] using foldr_bytes_lt (List.range size) (small (address + 1#64))),
+    List.range_succ_eq_map, List.foldr_cons, List.foldr_map]
+  simp only [BitVec.add_zero]
+  congr 2
+  apply foldr_bytes
+  intro offset _
+  congr 2
+  bv_omega
+
 theorem littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset : Nat)
     (small : offset < 2^64 := by decide) :
     (littleEndianAt value address (address + BitVec.ofNat 64 offset)).val =
