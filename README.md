@@ -103,6 +103,12 @@ and below 80 there was nothing more to gain.
 - **Start a new block about every 80 instructions,** and at every loop and call.
 - **End a block with a postcondition that states only what later code needs:** where
   execution is, the registers that matter, the memory facts that matter.
+- **Say which registers a block writes,** not which it keeps:
+  `s.SameRegistersOutside t [.rax, .rbx, .rsp]`, proved at the end of the block by
+  `simp +contextual [MachineState.SameRegistersOutside, *]`. A loop invariant states the
+  same about the loop's entry state, `s₀.SameRegistersOutside s loopWrites`. It crosses a
+  block with `inv.trans (block.mono (by decide))`, and `rw [inv _ (by decide)]` turns a
+  register the loop never writes into its value at `s₀`.
 - **Join blocks with `bind`:**
 
   ```lean
