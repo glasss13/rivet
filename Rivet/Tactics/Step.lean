@@ -12,6 +12,13 @@ open Lean Meta Elab Tactic
 
 namespace Step
 
+universe u
+
+-- Marks a state or memory the step introduced, so later steps know the facts named after it
+-- from yours. The marker is an implementation detail: it is not shown, and tactics skip it.
+inductive Introduced {α : Sort u} (x : α) : Prop
+  | intro
+
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   unless type.isAppOfArity ``Ensures 3 do
@@ -99,8 +106,7 @@ private meta def noteModule : Name := `Rivet.Step.note
 -- Path conditions get a name of their own, so later checkpoints know them from the user's.
 private meta def pathModule : Name := `Rivet.Step.path
 
--- A memory name's defining fact gets a name of its own, so steps know the name from the user's.
-private meta def memoryModule : Name := `Rivet.Step.memory
+private meta def markModule : Name := `Rivet.Step.mark
 
 private meta def ownName (module : Name) : CoreM Name := do
   return { extractMacroScopes (← mkFreshUserName `h) with ctx := module }.review
@@ -112,18 +118,39 @@ private meta def owned (module : Name) (decl : LocalDecl) : Bool :=
 private meta def isFact (decl : LocalDecl) : Bool :=
   !decl.isImplementationDetail && decl.userName.toString.startsWith "rivet_fact_"
 
-private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
-  unless owned noteModule decl do return none
-  let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | return none
-  unless lhs.isApp && lhs.getAppNumArgs == 1 &&
-      (lhs.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false do return none
-  let .fvar state := lhs.appArg! | return none
-  return some state
+private meta def markerOf? (subject : FVarId) : MetaM (Option FVarId) := do
+  for decl in ← getLCtx do
+    unless decl.isImplementationDetail do continue
+    let type ← instantiateMVars decl.type
+    if type.isAppOfArity ``Introduced 2 && type.appArg! == .fvar subject then return some decl.fvarId
+  return none
 
+private meta def mark (goal : MVarId) (subject : FVarId) : MetaM MVarId := goal.withContext do
+  let type ← mkAppM ``Introduced #[.fvar subject]
+  let proof ← mkAppOptM ``Introduced.intro #[none, Expr.fvar subject]
+  let (marker, goal) ← (← goal.assert (← ownName markModule) type proof).intro1P
+  goal.setFVarKind marker .implDetail
+  return goal
+
+-- A step's fact about a state: hidden for an unnamed state, `t_<field>` for a named one.
+private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
+  if decl.isImplementationDetail then return none
+  let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | return none
+  unless lhs.isApp && lhs.getAppNumArgs == 1 do return none
+  let some field := lhs.getAppFn.constName? | return none
+  unless field.getPrefix == ``MachineState do return none
+  let .fvar state := lhs.appArg! | return none
+  if owned noteModule decl then return some state
+  unless decl.userName == (← state.getUserName).appendAfter s!"_{field.getString!}" do
+    return none
+  return if (← markerOf? state).isSome then some state else none
+
+-- A store's memory name `mₙ`, from its definition `mₙ_def`.
 private meta def memoryNamed? (decl : LocalDecl) : MetaM (Option FVarId) := do
-  unless owned memoryModule decl do return none
+  if decl.isImplementationDetail then return none
   let some (_, .fvar memory, _) := (← instantiateMVars decl.type).eq? | return none
-  return some memory
+  unless decl.userName == (← memory.getUserName).appendAfter "_def" do return none
+  return if (← markerOf? memory).isSome then some memory else none
 
 private meta def notesAbout (states : Array FVarId) : MetaM (Array LocalDecl) := do
   let mut found := #[]
@@ -200,8 +227,11 @@ private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVar
       grown := true
       for (about, decl) in notes do
         if about == subject then uses := uses.push (← instantiateMVars decl.type)
+  let dropped := subjects.filter (!kept.contains ·)
+  let markers ← dropped.filterMapM markerOf?
   let goal ← goal.tryClearMany ((notes.filter (!kept.contains ·.1)).map (·.2.fvarId))
-  goal.tryClearMany (subjects.filter (!kept.contains ·))
+  let goal ← goal.tryClearMany markers
+  goal.tryClearMany dropped
 
 private meta def checkpoint : TacticM Unit := withMainContext do
   let states ← introducedStates
@@ -241,20 +271,24 @@ private meta def nameMemory : TacticM Unit := do
   let some (before, _) ← stored | return
   replaceMainGoal (← restate (← getMainGoal) (← withMainContext introducedStates) #[before]).toList
   let some (_, value) ← stored | return
-  let definition := mkIdent (← ownName memoryModule)
-  withMainContext do
+  let definition ← withMainContext do
     let lctx ← getLCtx
-    let some next := lctx.findFromUserName? `rivet_next | return
+    let some next := lctx.findFromUserName? `rivet_next | return none
     let name (index : Nat) := Name.mkSimple s!"m{index.toSubscriptString}"
     let mut index := 1 + (← lctx.foldlM (init := 0) fun count decl =>
       return if (← memoryNamed? decl).isSome then count + 1 else count)
-    while lctx.usesUserName (name index) do index := index + 1
+    while lctx.usesUserName (name index) || lctx.usesUserName ((name index).appendAfter "_def") do
+      index := index + 1
+    let definition := mkIdent ((name index).appendAfter "_def")
     let (reverted, goal) ← (← getMainGoal).revert #[next.fvarId]
     replaceMainGoal [goal]
     evalTactic (← `(tactic| obtain ⟨$(mkIdent (name index)), $definition⟩ :
       ∃ memory : Memory, memory = $(← Term.exprToSyntax value) := ⟨_, rfl⟩))
     let (_, goal) ← (← getMainGoal).introNP reverted.size
-    replaceMainGoal [goal]
+    let memory ← goal.withContext do return (← getLCtx).findFromUserName? (name index)
+    replaceMainGoal [← mark goal memory.get!.fvarId]
+    return some definition
+  let some definition := definition | return
   evalTactic (← `(tactic| replace $fact:ident := Eq.trans $fact (Eq.symm $definition)))
 
 private meta def attempt (tactic : TSyntax `tactic) (goal : MVarId) (runtime := false) :
@@ -316,7 +350,7 @@ private meta def discharge (pc : Nat) (tactic? : Option Syntax) (goal : MVarId) 
 end Step
 
 syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")?
-  (" as " ident)? (" tracking " "[" ident,* "]")? : tactic
+  (" as " ident)? (" if " ident)? (" tracking " "[" ident,* "]")? : tactic
 
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
@@ -332,8 +366,9 @@ open Step in
   let operation := instruction.getArg! 2
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
   let named? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
+  let condition? : Option Name := if stx[3].getNumArgs > 0 then some stx[3][1].getId else none
   let tracked : List Name :=
-    if stx[3].getNumArgs > 0 then (stx[3][2].getSepArgs.map (·.getId)).toList else fields
+    if stx[4].getNumArgs > 0 then (stx[4][2].getSepArgs.map (·.getId)).toList else fields
   for field in tracked do
     unless fields.contains field do throwError "rivet_step: unknown field `{field}`"
   -- 1. The contract, with side conditions as goals; discharge what we can.
@@ -413,6 +448,10 @@ open Step in
   nameMemory
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   let isBranch := operation.isAppOfArity ``Op.jcc 2 && tracked.contains `status
+  if let some condition := condition? then
+    unless isBranch do
+      throwError "rivet_step: `if {condition}` names a branch condition, and the instruction at \
+        0x{String.ofList (Nat.toDigits 16 pc)} is not a conditional jump"
   if isBranch then
     let condition ← Term.exprToSyntax operation.getAppArgs[0]!
     let oldStx ← Term.exprToSyntax old
@@ -450,9 +489,15 @@ open Step in
     let lctx ← goal.withContext getLCtx
     if let some decl := lctx.findFromUserName? `rivet_next then
       goal ← goal.rename decl.fvarId finalName
+      if named?.isSome then goal ← mark goal decl.fvarId
     for fact in internal do
       if let some decl := lctx.findFromUserName? fact then
-        let name ← ownName (if fact == `rivet_fact_path then pathModule else noteModule)
+        let field := (fact.toString.drop "rivet_fact_".length).toString
+        let name ← match fact == `rivet_fact_path, condition?, named? with
+          | true, some condition, _ => pure condition
+          | true, none, _ => ownName pathModule
+          | false, _, some state => pure (state.appendAfter s!"_{field}")
+          | false, _, none => ownName noteModule
         goal ← goal.rename decl.fvarId name
     if isBranch then goal.setTag (if index == 0 then `taken else `fallthrough)
     finished := finished.push goal
