@@ -84,7 +84,8 @@ That gives `Sum.entry`, `Sum.program`, `Sum.regions` for the binary's segments, 
 - **Never unfold `permits`, `readBytes` or the operand functions.** Rewrite with
   `simp only [rivet]`, and use the laws: `permits_inside` and `permits_iff` for permissions,
   `Memory.readBytes_storeBytes_within` and `Memory.readBytes_storeBytes_disjoint` for a read
-  after a store.
+  after a store. A store names the memory it leaves, `m₁`, `m₂`, …; rewrite with that fact
+  first, as in `rw [‹m₁ = _›]`.
 - **State permissions about the state the block starts from.** Side conditions come back
   stated over that state, so one hypothesis per region is enough.
 - **Pick the law for each read yourself.** Giving both read laws to one
@@ -116,5 +117,5 @@ and below 80 there was nothing more to gain.
   stated over `t`; `consequence` turns it into the one the theorem promises about `s`.
 
 - **Inside a block, name a checkpoint** with `rivet_step as t` whenever the context gets
-  long. That returns the context to a fixed size; it does not shorten what the block
-  remembers.
+  long. That returns the context to a fixed size plus one line per store; it does not
+  shorten what the block remembers.
