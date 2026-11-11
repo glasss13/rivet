@@ -10,10 +10,11 @@ lake build
 
 ## What a theorem says
 
-`Ensures image P Q` means: from every machine state satisfying `P`, and for every value
-the CPU might leave in its undefined flags, execution reaches a state satisfying `Q` in
-finitely many steps. A fault is permanent, so a `Q` that requires `status = .running …`
-also proves that nothing faulted on the way.
+`Ensures image s Q` means: from the machine state `s`, and for every value the CPU might
+leave in its undefined flags, execution reaches a state satisfying `Q` in finitely many
+steps. What the start state must satisfy is stated as ordinary hypotheses about `s`. A
+fault is permanent, so a `Q` that requires `status = .running …` also proves that nothing
+faulted on the way.
 
 What a proof does not cover:
 
@@ -45,7 +46,7 @@ theorem sum_correct (regions : List Region) (s : MachineState)
     -- the caller's promise: 16 bytes of stack, the slot `push` uses and the return address
     (write : permits (Image.writable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16#64 = true)
     (read : permits (Image.readable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16#64 = true) :
-    Ensures ⟨sum, regions⟩ (· = s) (fun f =>
+    Ensures ⟨sum, regions⟩ s (fun f =>
       f.status = .running s.returnAddress ∧
       f.registers .rax = s.registers .rdi + s.registers .rsi ∧
       f.registers .rbx = s.registers .rbx ∧
@@ -105,14 +106,14 @@ and below 80 there was nothing more to gain.
 
   ```lean
   refine (first_block regions s entry).bind fun t ⟨at_t, rbx_t, rsp_t, memory_t⟩ => ?_
-  refine (second_block regions t at_t (by rw [rsp_t]; exact read)).consequence (fun _ h => h) ?_
+  refine (second_block regions t at_t (by rw [rsp_t]; exact read)).consequence ?_
   intro f ⟨at_f, rax_f⟩
   simp [*, MachineState.returnAddress]
   ```
 
   `bind` hands the second block the state `t` the first one ended in, with the first
-  block's postcondition as the only facts about it. The second block's result is stated
-  over `t`; `consequence` restates it over `s`.
+  block's postcondition as the only facts about it. The second block's postcondition is
+  stated over `t`; `consequence` turns it into the one the theorem promises about `s`.
 
 - **Inside a block, name a checkpoint** with `rivet_step as t` whenever the context gets
   long. That returns the context to a fixed size; it does not shorten what the block

@@ -14,10 +14,8 @@ namespace Step
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   unless type.isAppOfArity ``Ensures 3 do
-    throwError "rivet_step: goal is not `Ensures P (· = s) Q`"
-  let .lam _ _ body _ := type.getAppArgs[1]!
-    | throwError "rivet_step: precondition is not `(· = s)`"
-  let state := body.getAppArgs[2]!
+    throwError "rivet_step: goal is not `Ensures image s Q`"
+  let state := type.getAppArgs[1]!
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
 
@@ -272,9 +270,7 @@ open Step in
     let stateType := mkConst ``MachineState
     withLocalDeclD `rivet_next stateType fun successor => do
       withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
-        let precondition ← withLocalDeclD `state stateType fun state => do
-          mkLambdaFVars #[state] (← mkEq state successor)
-        let target := mkApp3 (mkConst ``Ensures) image precondition postcondition
+        let target := mkApp3 (mkConst ``Ensures) image successor postcondition
         let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
         let continuation ← mkLambdaFVars #[successor, equation] goal
         mainGoal.assign (← mkAppM ``Ensures.bind #[contract, continuation])
