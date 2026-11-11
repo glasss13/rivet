@@ -260,6 +260,7 @@ private meta def nameMemory : TacticM Unit := do
 private meta def attempt (tactic : TSyntax `tactic) (goal : MVarId) (runtime := false) :
     TacticM (Option MessageData) := do
   let saved ← saveState
+  let logged := (← Core.getMessageLog).toList.length
   let body : TacticM (Option MessageData) := do
     setGoals [goal]
     evalTactic tactic
@@ -267,8 +268,13 @@ private meta def attempt (tactic : TSyntax `tactic) (goal : MVarId) (runtime := 
     if remaining.isEmpty then return none
     -- `restore` below discards these goals; the message keeps the context they need.
     return some (← addMessageContext m!"it left{indentD (goalsToMessageData remaining)}")
-  let handler (error : Exception) : TacticM (Option MessageData) :=
-    pure (some m!"it failed with{indentD error.toMessageData}")
+  -- A tactic that aborts, as `t <;> grind` does, has already logged its error; `restore` would drop it.
+  let handler (error : Exception) : TacticM (Option MessageData) := do
+    let errors := ((← Core.getMessageLog).toList.drop logged).filter (·.severity == .error)
+    let reason := match error, errors with
+      | .internal .., _ :: _ => MessageData.joinSep (errors.map (·.data)) Format.line
+      | _, _ => error.toMessageData
+    return some m!"it failed with{indentD reason}"
   let failure ← if runtime then tryCatchRuntimeEx body handler else tryCatch body handler
   if failure.isSome then saved.restore
   return failure
