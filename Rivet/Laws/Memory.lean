@@ -31,6 +31,26 @@ theorem permits_inside {permission : BitVec 64 → Bool} {base length first size
   rw [permits_iff] at whole ⊢
   exact ⟨by bv_omega, fun address within => whole.2 address (by bv_omega)⟩
 
+theorem Image.permits_readable {image : Image} {base length : BitVec 64}
+    (member : ∃ region ∈ image.regions, region.base = base ∧ region.length = length ∧ region.readable = true)
+    (noWrap : base ≤ base + length) :
+    permits image.readable base length = true := by
+  obtain ⟨region, inside, rfl, rfl, allowed⟩ := member
+  rw [permits_iff]
+  refine ⟨noWrap, fun address within => ?_⟩
+  simp only [Image.readable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  exact ⟨region, inside, allowed, within⟩
+
+theorem Image.permits_writable {image : Image} {base length : BitVec 64}
+    (member : ∃ region ∈ image.regions, region.base = base ∧ region.length = length ∧ region.writable = true)
+    (noWrap : base ≤ base + length) :
+    permits image.writable base length = true := by
+  obtain ⟨region, inside, rfl, rfl, allowed⟩ := member
+  rw [permits_iff]
+  refine ⟨noWrap, fun address within => ?_⟩
+  simp only [Image.writable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  exact ⟨region, inside, allowed, within⟩
+
 private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
     (same : ∀ offset < size, first offset = second offset) :
     (List.range size).foldr (fun offset value => first offset + 256 * value) 0 =
