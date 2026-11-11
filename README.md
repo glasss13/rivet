@@ -134,11 +134,11 @@ def countdown : Program :=
 theorem countdown_exits (regions : List Region) (s : MachineState)
     (entry : s.status = .running 0x2000) :
     Ensures ⟨countdown, regions⟩ s (fun f =>
-      f.status = .running 0x2005 ∧ f.registers .rcx = 0) := by
+      f.status = .running 0x2005 ∧ f.registers .rcx = 0#64) := by
   refine Ensures.loop (fun c => c.status = .running 0x2000)
-    (fun c => (c.registers .rcx - 1).toNat) entry fun c at_head => ?_
+    (fun c => (c.registers .rcx - 1#64).toNat) entry fun c at_head => ?_
   rivet_step                                           -- dec rcx
   rivet_step                                           -- jne loop
   · exact Ensures.done (.inl (by simp [*]; grind))     -- taken: at the head, one fewer to go
-  · exact Ensures.done (.inr (by simp [*]; grind))     -- fell through: rcx is zero
+  · exact Ensures.done (.inr (by simp [*]))            -- fell through: rcx is zero
 ```
