@@ -140,12 +140,12 @@ private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Arra
     `(Lean.Parser.Tactic.simpLemma| $term:term)
   let stx ← if target then
       `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, rivet, Nat.reduceLeDiff,
-        Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth])
+        Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
     else
       -- `+contextual` drops the branch an earlier write to the same register leaves under
       -- `¬ register = .rsp`; without it every push and pop adds a dead `if`.
       `(tactic| simp +contextual only [$lemmas,*, reduceCtorEq, ↓reduceIte,
-        rivet, Nat.reduceLeDiff, Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth])
+        rivet, Nat.reduceLeDiff, Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
   let (result?, _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
     (fvarIdsToSimp := targets)
@@ -340,7 +340,7 @@ open Step in
       -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).
       Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte,
       -- Side conditions of the `rivet` set's rules on literals.
-      Nat.reduceLeDiff, Nat.reduceAdd, BitVec.reduceSetWidth,
+      Nat.reduceLeDiff, Nat.reduceAdd, BitVec.reduceSetWidth, BitVec.reduceEq,
       -- Literal operands as numbers: PSHUFD's lane offsets, IMUL's immediate.
       Nat.reduceMul, Nat.reduceDiv, Nat.reducePow, BitVec.reduceToInt,
       -- A condition as the flags it tests.
