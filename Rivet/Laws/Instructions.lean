@@ -2,6 +2,7 @@ module
 public import Rivet.Laws.Ensures
 public import Rivet.Laws.Operands
 import all Rivet.Interpreter.Machine
+import all Rivet.Interpreter.Memory
 import all Rivet.Laws.Ensures
 -- Instruction contracts: one `Ensures` rule per modeled operation, proved against `step`.
 @[expose] public section
@@ -14,16 +15,44 @@ namespace Rivet
 attribute [simp] Operand.width.eq_1 Operand.width.eq_2 Operand.width.eq_3
   Operand.width.eq_4 Operand.width.eq_5 Operand.width.eq_6
 
-@[simp] private theorem MachineState.writeOperand_status (state : MachineState) (operand : Operand)
-    (value : BitVec 64) : (state.writeOperand operand value).status = state.status := by
-  cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
+@[simp] private theorem MachineState.writeOperand64_status (state : MachineState) (operand : Operand)
+    (value : BitVec 64) : (state.writeOperand64 operand value).status = state.status := by
+  cases operand <;> simp [MachineState.writeOperand64, MachineState.write, MachineState.writeMemory]
 
-private theorem MachineState.writeOperand_flags (state : MachineState) (operand : Operand)
+private theorem MachineState.writeOperand64_flags (state : MachineState) (operand : Operand)
     (value : BitVec 64) :
-    (state.writeOperand operand value).carryFlag = state.carryFlag ∧
-      (state.writeOperand operand value).zeroFlag = state.zeroFlag ∧
-      (state.writeOperand operand value).signFlag = state.signFlag := by
-  cases operand <;> simp [MachineState.writeOperand, MachineState.write, MachineState.writeMemory]
+    (state.writeOperand64 operand value).carryFlag = state.carryFlag ∧
+      (state.writeOperand64 operand value).zeroFlag = state.zeroFlag ∧
+      (state.writeOperand64 operand value).signFlag = state.signFlag := by
+  cases operand <;> simp [MachineState.writeOperand64, MachineState.write, MachineState.writeMemory]
+
+-- A store of the instruction's width keeps only that many low bytes of the value.
+private theorem MachineState.writeOperand64_setWidth (state : MachineState) (operand : Operand)
+    (value : BitVec 64) (hasWidth : operand.width = some width) :
+    state.writeOperand64 operand ((value.setWidth width.bits).setWidth 64) = state.writeOperand64 operand value := by
+  cases operand <;> simp only [Operand.width, Option.some.injEq, reduceCtorEq] at hasWidth <;> subst hasWidth
+  case memory width address =>
+    simp only [MachineState.writeOperand64, MachineState.writeMemory, MachineState.mk.injEq, and_true,
+      true_and]
+    funext other
+    simp only [Memory.storeBytes]
+    split
+    · next inside =>
+      have offset : (other - address.evaluate state.registers).toNat < width.bytes := by
+        rw [BitVec.lt_def] at inside
+        cases width <;> simpa using inside
+      have bits : 2 ^ width.bits = 256 ^ width.bytes := by cases width <;> rfl
+      have fits : value.toNat % 256 ^ width.bytes < 2 ^ 64 :=
+        Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.pow_pos (by decide))) (by cases width <;> decide)
+      unfold littleEndianAt
+      apply Fin.ext
+      simp only [BitVec.toNat_setWidth, bits]
+      rw [Nat.mod_eq_of_lt fits]
+      generalize (other - address.evaluate state.registers).toNat = byte at offset ⊢
+      obtain ⟨rest, split⟩ : ∃ rest, width.bytes = byte + (rest + 1) := ⟨width.bytes - byte - 1, by omega⟩
+      rw [split, Nat.pow_add, Nat.mod_mul_right_div_self, Nat.pow_succ, Nat.mod_mul_left_mod]
+    · rfl
+  all_goals simp [MachineState.writeOperand64]
 
 private theorem one (code : InstructionAt image.program address length instruction)
     (location : initial.status = .running address) (undefinedFlags : FlagValues) :
@@ -138,17 +167,22 @@ theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (sourc
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.movzx destination source))
-    (valid : source.width = some .byte ∨ source.width = some .word := by
-      first | assumption | exact Or.inl rfl | exact Or.inr rfl)
+    (width : Width := match source.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : source.width = some width := by rfl)
+    (valid : width = .byte ∨ width = .word := by first | assumption | exact Or.inl rfl | exact Or.inr rfl)
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
-    Ensures image initial (· = { initial.write destination.parent (initial.readOperand source) with
+    Ensures image initial (· = { initial.write destination.parent ((initial.readOperand width source).setWidth 64) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
   have encoded : (source.width == some .byte || source.width == some .word) = true := by
-    simpa only [Bool.or_eq_true, beq_iff_eq] using valid
-  simp [stepOp, encoded, readable, next, MachineState.write, location]
+    rcases valid with rfl | rfl <;> simp [hasWidth]
+  have extended : ((initial.readOperand64 source).setWidth width.bits).setWidth 64 = initial.readOperand64 source := by
+    rcases valid with rfl | rfl <;> cases source <;> simp_all [MachineState.readOperand64]
+  simp [stepOp, encoded, readable, next, MachineState.write, location, MachineState.readOperand, extended]
 
 theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source : Operand)
     (initial : MachineState)
@@ -157,12 +191,12 @@ theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source
     (code : InstructionAt image.program address length (.movsxd destination source))
     (valid : source.width = some .dword := by first | rfl | assumption)
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
-    Ensures image initial (· = { initial.write destination ((initial.readOperand source).setWidth 32 |>.signExtend 64) with
+    Ensures image initial (· = { initial.write destination ((initial.readOperand .dword source).signExtend 64) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp [stepOp, valid, readable, next, MachineState.write, location]
+  simp [stepOp, valid, readable, next, MachineState.write, location, MachineState.readOperand]
 
 -- Interpreter plumbing is shared privately; public rules expose opcode semantics.
 private theorem binary (operation : BinaryOp) (image : Image) (address : BitVec 64)
@@ -175,10 +209,10 @@ private theorem binary (operation : BinaryOp) (image : Image) (address : BitVec 
     (leftReadable : initial.canRead image destination = true)
     (rightReadable : initial.canRead image source = true)
     (writable : (!operation.writes || initial.canWrite image destination) = true) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := operation.result left right initial.carryFlag
-    let updated := if operation.writes then initial.writeOperand destination (result.setWidth 64) else initial
+    let updated := if operation.writes then initial.writeOperand width destination result else initial
     Ensures image initial (· = { updated with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
       carryFlag := operation.carry left right result initial.carryFlag, signFlag := result.msb }) := by
@@ -188,9 +222,9 @@ private theorem binary (operation : BinaryOp) (image : Image) (address : BitVec 
   simp only [stepOp, MachineState.binary, valid, leftReadable, rightReadable, writable,
     Bool.true_and, ite_true]
   rw [hasWidth]
-  simp only [Option.getD_some]
+  simp only [Option.getD_some, MachineState.readOperand, MachineState.writeOperand]
   cases operation <;>
-    simp [BinaryOp.writes, next, MachineState.writeOperand_status, location]
+    simp [BinaryOp.writes, next, MachineState.writeOperand64_status, location]
 
 private theorem sub_beq_zero (left right : BitVec width) :
     (left - right == 0) = (left == right) := by
@@ -213,10 +247,10 @@ theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left + right
-    Ensures image initial (· = { initial.writeOperand destination (result.setWidth 64) with
+    Ensures image initial (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
       carryFlag := result < left, signFlag := result.msb }) := by
   exact binary .add image address destination source initial width location code hasWidth valid
@@ -238,10 +272,10 @@ theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left - right
-    Ensures image initial (· = { initial.writeOperand destination (result.setWidth 64) with
+    Ensures image initial (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
       carryFlag := left < right, signFlag := result.msb }) := by
   exact binary .sub image address destination source initial width location code hasWidth valid
@@ -263,10 +297,10 @@ theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left - right - (if initial.carryFlag then 1 else 0)
-    Ensures image initial (· = { initial.writeOperand destination (result.setWidth 64) with
+    Ensures image initial (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
       carryFlag := left < right || (initial.carryFlag && left == right), signFlag := result.msb }) := by
   exact binary .sbb image address destination source initial width location code hasWidth valid
@@ -287,8 +321,8 @@ theorem compare (image : Image) (address : BitVec 64) (destination source : Oper
       all_goals omega)
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left - right
     Ensures image initial (· = { initial with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := left == right,
@@ -312,8 +346,8 @@ theorem test (image : Image) (address : BitVec 64) (destination source : Operand
       all_goals omega)
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left &&& right
     Ensures image initial (· = { initial with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
@@ -337,10 +371,10 @@ theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : 
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left &&& right
-    Ensures image initial (· = { initial.writeOperand destination (result.setWidth 64) with
+    Ensures image initial (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
       carryFlag := false, signFlag := result.msb }) := by
   exact binary .and image address destination source initial width location code hasWidth valid
@@ -362,10 +396,10 @@ theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : O
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left ||| right
-    Ensures image initial (· = { initial.writeOperand destination (result.setWidth 64) with
+    Ensures image initial (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
       carryFlag := false, signFlag := result.msb }) := by
   exact binary .or image address destination source initial width location code hasWidth valid
@@ -387,10 +421,10 @@ theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : 
     (leftReadable : initial.canRead image destination = true := by simp only [rivet, *])
     (rightReadable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    let left := (initial.readOperand destination).setWidth width.bits
-    let right := (initial.readOperand source).setWidth width.bits
+    let left := initial.readOperand width destination
+    let right := initial.readOperand width source
     let result := left ^^^ right
-    Ensures image initial (· = { initial.writeOperand destination (result.setWidth 64) with
+    Ensures image initial (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0,
       carryFlag := false, signFlag := result.msb }) := by
   exact binary .xor image address destination source initial width location code hasWidth valid
@@ -411,14 +445,14 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
         all_goals simp_all +instances [Bool.and_eq_true, decide_eq_true_eq]
         all_goals omega))
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
-    let sourceValue := (initial.readOperand source).setWidth width.bits
+    let sourceValue := initial.readOperand width source
     let multiplier : BitVec width.bits := match immediate with
-      | none => (initial.readOperand destination).setWidth width.bits
+      | none => initial.readOperand width destination
       | some value => BitVec.ofInt width.bits value
     let product := sourceValue.toInt * multiplier.toInt
     let result := BitVec.ofInt width.bits product
     Ensures image initial (fun final => ∃ sign zero : Bool,
-      final = { initial.writeOperand destination (result.setWidth 64) with
+      final = { initial.writeOperand width destination result with
         status := .running (address + BitVec.ofNat 64 length)
         carryFlag := result.toInt != product, signFlag := sign, zeroFlag := zero }) := by
   apply Ensures.of_step
@@ -427,7 +461,8 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
   rw [one code location undefinedFlags]
   simp only [stepOp, valid, readable, Bool.true_and, ite_true]
   rw [hasWidth]
-  simp only [Option.getD_some, next, MachineState.writeOperand_status, location]
+  simp only [Option.getD_some, next, MachineState.writeOperand64_status, location, MachineState.readOperand,
+    MachineState.writeOperand]
   cases immediate <;> rfl
 
 theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
@@ -442,11 +477,11 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     (valid : validShift destination count = true := by
       first | assumption | (simp [validShift] <;> omega)) :
     let amount := count % width.bits
-    let value := (initial.readOperand destination).setWidth width.bits
+    let value := initial.readOperand width destination
     let result : BitVec width.bits := match operation with
-      | .shl => BitVec.shiftLeft value amount
-      | .shr => BitVec.ushiftRight value amount
-    Ensures image initial (· = { initial.writeOperand destination (result.setWidth 64) with
+      | .shl => value <<< amount
+      | .shr => value >>> amount
+    Ensures image initial (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length)
       carryFlag := if amount = 0 then initial.carryFlag else
         value.getLsbD (match operation with | .shl => width.bits - amount | .shr => amount - 1)
@@ -463,23 +498,29 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     · intro equal; rw [equal]; rfl
   simp only [stepOp, valid, ite_true]
   rw [hasWidth]
-  simp only [Option.getD_some]
+  simp only [Option.getD_some, MachineState.readOperand, MachineState.writeOperand]
   cases operation <;> split <;>
-    simp only [zero] <;> simp_all [next, MachineState.writeOperand_flags]
+    simp only [zero] <;> simp_all [next, MachineState.writeOperand64_flags]
 
 theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.not destination))
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
     (readable : initial.canRead image destination = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    Ensures image initial (· = { initial.writeOperand destination (~~~(initial.readOperand destination)) with
+    Ensures image initial (· = { initial.writeOperand width destination (~~~(initial.readOperand width destination)) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp [stepOp, readable, writable, next, location]
+  have narrow : width.bits ≤ 64 := by cases width <;> decide
+  simp [stepOp, readable, writable, next, location, MachineState.readOperand, MachineState.writeOperand,
+    ← BitVec.setWidth_not narrow, MachineState.writeOperand64_setWidth initial destination _ hasWidth]
 
 theorem setcc (image : Image) (address : BitVec 64) (condition : Condition) (destination : Operand)
     (initial : MachineState)
@@ -488,28 +529,40 @@ theorem setcc (image : Image) (address : BitVec 64) (condition : Condition) (des
     (code : InstructionAt image.program address length (.setcc condition destination))
     (valid : destination.width = some .byte := by first | rfl | assumption)
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    Ensures image initial (· = { initial.writeOperand destination (if condition.holds initial then 1 else 0) with
+    Ensures image initial (· = { initial.writeOperand .byte destination (if condition.holds initial then 1 else 0) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp [stepOp, valid, writable, next, location]
+  have narrowed : ((if condition.holds initial then 1 else 0 : BitVec 64).setWidth 8) =
+      if condition.holds initial then 1 else 0 := by split <;> rfl
+  simp only [stepOp, valid, writable, MachineState.writeOperand, ← narrowed,
+    MachineState.writeOperand64_setWidth initial destination _ valid]
+  simp [next, location]
 
 theorem cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.cmovcc condition destination source))
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
     (valid : validConditionalMove destination source = true := by
       first | assumption | simp [validConditionalMove])
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
-    let value := if condition.holds initial then initial.readOperand source else initial.readOperand destination
-    Ensures image initial (· = { initial.writeOperand destination value with
+    let value := if condition.holds initial then initial.readOperand width source
+      else initial.readOperand width destination
+    Ensures image initial (· = { initial.writeOperand width destination value with
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp [stepOp, valid, readable, next, location]
+  simp only [stepOp, valid, readable, Bool.and_self, ite_true, MachineState.readOperand,
+    MachineState.writeOperand, ← apply_ite (BitVec.setWidth width.bits),
+    MachineState.writeOperand64_setWidth initial destination _ hasWidth]
+  simp [next, location]
 
 theorem inc (image : Image) (address : BitVec 64) (register : Reg) (initial : MachineState)
     {length : Nat}
@@ -631,14 +684,19 @@ theorem move (image : Image) (address : BitVec 64) (destination source : Operand
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.mov destination source))
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
     (valid : validMove destination source = true := by decide +kernel)
     (readable : initial.canRead image source = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    Ensures image initial (· = { initial.writeOperand destination (initial.readOperand source) with
+    Ensures image initial (· = { initial.writeOperand width destination (initial.readOperand width source) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp [stepOp, next, location, valid, readable, writable]
+  simp [stepOp, next, location, valid, readable, writable, MachineState.readOperand, MachineState.writeOperand,
+    MachineState.writeOperand64_setWidth initial destination _ hasWidth]
 
 end Rivet

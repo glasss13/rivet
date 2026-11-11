@@ -69,7 +69,8 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     let .forallE binder domain body info := type | break
     let mut argument := domain
     if let some default := domain.getOptParamDefault? then
-      argument := default
+      -- A contract's `width` defaults to a `match` on its operand; pass the width it names.
+      argument ← whnfD default
     else if domain.isAutoParam then
       let goal ← mkFreshExprMVar domain.consumeTypeAnnotations .syntheticOpaque binder
       sides := sides.push goal.mvarId!
@@ -257,7 +258,12 @@ open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
   let (image, old) ← goalParts (← getMainGoal)
   let program := mkApp (mkConst ``Image.program) image
-  let (address, pc, location) ← findPc old
+  let (written, pc, location) ← findPc old
+  -- An address given by a definition is passed as its value, so the next address is a literal too.
+  let (address, location) ← if (← getBitVecValue? written).isSome then pure (written, location) else do
+    let address := toExpr (BitVec.ofNat 64 pc)
+    let status := mkApp (mkConst ``MachineState.status) old
+    pure (address, ← mkExpectedTypeHint location (← mkEq status (mkApp (mkConst ``ExecutionStatus.running) address)))
   let (instruction, instructionProof) ← fetch program address pc
   let operation := instruction.getArg! 2
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
@@ -331,7 +337,12 @@ open Step in
       -- The successor `address + length` reduces to a literal.
       BitVec.reduceOfNat, BitVec.reduceAdd,
       -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).
-      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte,
+      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte, BitVec.shiftLeft_zero,
+      BitVec.ushiftRight_zero,
+      -- Literal operands as numbers: PSHUFD's lane offsets, IMUL's immediate.
+      Nat.reduceMul, Nat.reduceDiv, Nat.reducePow, BitVec.reduceToInt,
+      -- A condition as the flags it tests.
+      Condition.holds,
       -- Operand equations, register parents, and addresses as point reads of registers
       -- (`r .rbx - 8#64`), never the whole register file.
       rivet] at $locations*))
@@ -342,10 +353,12 @@ open Step in
     let oldStx ← Term.exprToSyntax old
     let status := mkIdent `rivet_fact_status
     let path := mkIdent `rivet_fact_path
+    -- The status fact already tests the flags; unfold the path condition to match it.
     evalTactic (← `(tactic| by_cases $path : Condition.holds $condition $oldStx = true <;>
+      simp only [Condition.holds] at $path:ident <;>
       simp only [$path:ident, ↓reduceIte, Bool.false_eq_true] at $status:ident))
-    -- State the path condition with flags rather than `Condition.holds`.
-    evalTactic (← `(tactic| all_goals try simp only [Condition.holds, Bool.not_eq_true',
+    -- State the path condition with flags in `Prop`.
+    evalTactic (← `(tactic| all_goals try simp only [Bool.not_eq_true',
       Bool.or_eq_true, Bool.and_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true, Bool.not_false]
       at $path:ident))
     internal := internal.push `rivet_fact_path
