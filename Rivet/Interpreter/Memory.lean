@@ -22,15 +22,16 @@ def Memory.storeBytes (memory : Memory) (base : BitVec 64) (length : Nat) (bytes
   base.toNat + length ≤ 2^64 &&
     (List.range length).all (fun offset => permission (base + BitVec.ofNat 64 offset))
 
+-- A region does not wrap: a mapping that crossed 2^64 would be two regions.
 structure Region where
-  base : BitVec 64
+  base : Nat
   length : Nat
   readable : Bool
   writable : Bool
+  fits : base + length ≤ 2^64 := by decide
 
--- A region does not wrap: a mapping that crossed 2^64 would be two regions.
 def Region.Contains (region : Region) (address : BitVec 64) : Prop :=
-  region.base.toNat ≤ address.toNat ∧ address.toNat < region.base.toNat + region.length
+  region.base ≤ address.toNat ∧ address.toNat < region.base + region.length
 
 instance (region : Region) (address : BitVec 64) : Decidable (region.Contains address) :=
   inferInstanceAs (Decidable (_ ∧ _))

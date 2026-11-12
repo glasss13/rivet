@@ -28,12 +28,12 @@ theorem permits_inside {permission : BitVec 64 → Bool} {base first : BitVec 64
   exact ⟨by omega, fun address low high => whole.2 address (by omega) (by omega)⟩
 
 abbrev Region.Covers (region : Region) (address : BitVec 64) (size : Nat) : Prop :=
-  region.base.toNat ≤ address.toNat ∧ address.toNat + size ≤ region.base.toNat + region.length ∧
-    address.toNat + size ≤ 2^64
+  region.base ≤ address.toNat ∧ address.toNat + size ≤ region.base + region.length
 
 theorem Region.Covers.toNat_add {region : Region} {address : BitVec 64} {size offset : Nat}
     (covers : region.Covers address size) (inside : offset < size) :
     (address + BitVec.ofNat 64 offset).toNat = address.toNat + offset := by
+  have := region.fits
   rw [BitVec.toNat_add_of_lt (by simp only [BitVec.toNat_ofNat]; omega), BitVec.toNat_ofNat]
   omega
 
@@ -41,7 +41,7 @@ theorem Image.permits_readable {image : Image} {region : Region} {address : BitV
     (member : region ∈ image.regions) (readable : region.readable = true) (covers : region.Covers address size) :
     permits image.readable address size = true := by
   rw [permits_iff]
-  refine ⟨covers.2.2, fun other start finish => ?_⟩
+  refine ⟨by have := region.fits; omega, fun other start finish => ?_⟩
   simp only [Image.readable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
   exact ⟨region, member, readable, by simp only [Region.Contains]; omega⟩
 
@@ -49,7 +49,7 @@ theorem Image.permits_writable {image : Image} {region : Region} {address : BitV
     (member : region ∈ image.regions) (writable : region.writable = true) (covers : region.Covers address size) :
     permits image.writable address size = true := by
   rw [permits_iff]
-  refine ⟨covers.2.2, fun other start finish => ?_⟩
+  refine ⟨by have := region.fits; omega, fun other start finish => ?_⟩
   simp only [Image.writable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
   exact ⟨region, member, writable, by simp only [Region.Contains]; omega⟩
 

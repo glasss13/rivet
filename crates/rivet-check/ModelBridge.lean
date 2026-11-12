@@ -82,20 +82,20 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     throw "invalid memory"
   let program := request.program.toList
   let some first := program.head? | throw "empty program"
-  unless request.memoryBase ≤ request.writableBase &&
-      request.writableBase ≤ request.memoryBase + request.memory.size do
-    throw "writable base outside memory range"
+  let Decidable.isTrue ranges := (inferInstance : Decidable (request.memoryBase ≤ request.writableBase ∧
+      request.writableBase ≤ request.memoryBase + request.memory.size ∧
+      request.memoryBase + request.memory.size ≤ 2^64))
+    | throw "writable base outside memory range, or memory past 2^64"
   let base := BitVec.ofNat 64 request.memoryBase
-  let writable := BitVec.ofNat 64 request.writableBase
   -- The byte at an absolute address, from the request's memory image; zero outside it.
   let memory : Memory := fun address =>
     let value := request.memory[(address - base).toNat]?.getD 0
     ⟨value % 256, Nat.mod_lt _ (by decide)⟩
   let image : Image := { program, regions := [
-    { base, length := request.writableBase - request.memoryBase,
-      readable := true, writable := false },
-    { base := writable, length := request.memoryBase + request.memory.size - request.writableBase,
-      readable := true, writable := true }] }
+    { base := request.memoryBase, length := request.writableBase - request.memoryBase,
+      readable := true, writable := false, fits := by omega },
+    { base := request.writableBase, length := request.memoryBase + request.memory.size - request.writableBase,
+      readable := true, writable := true, fits := by omega }] }
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128

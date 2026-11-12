@@ -120,20 +120,25 @@ One contract per instruction, applied by `rivet_step`: `move`, `movzx`, `movsxd`
 
 ## Memory
 
+Addresses the CPU computes and the values it moves are words (`BitVec 64`). Region bounds,
+sizes and facts about ranges are plain numbers over `address.toNat`.
+
 - `Memory`: a byte per 64-bit address. `Memory.storeBytes memory base length bytes`: writes the
   addresses whose value lies in `[base.toNat, base.toNat + length)`.
 - `readBytes memory address size`, `littleEndianAt value address`, `permits`: closed; never
   unfold them, use the laws below.
-- `Region` (`base`, `length`, `readable`, `writable`), `Image` (`program`, `regions`),
-  `Image.readable`, `Image.writable`. A region holds the addresses whose value lies in
-  `[base.toNat, base.toNat + length)` (`Region.Contains`); it never wraps.
-- `region.Covers address size`: the region holds `[address.toNat, address.toNat + size)`, and
-  that range ends at or below 2^64. It unfolds for `omega`. For a region written out as a
-  structure, `simp only [Region.Covers]` first exposes its fields.
+- `Region` (`base`, `length`, `readable`, `writable`, `fits : base + length ≤ 2^64`), `Image`
+  (`program`, `regions`), `Image.readable`, `Image.writable`. A region holds the addresses
+  whose value lies in `[base, base + length)` (`Region.Contains`). A region written with
+  `{ … }` proves `fits` by `decide`.
+- `region.Covers address size`: the region holds `[address.toNat, address.toNat + size)`. It
+  unfolds for `omega`. For a region written out as a structure, `simp only [Region.Covers]`
+  first exposes its fields.
 
 Laws. Ranges are intervals of `toNat` values, empty ones included, and lengths are numbers of
-bytes. An access ending past 2^64 would wrap around: the machine faults on it, and the laws
-about reads ask for `address.toNat + size ≤ 2^64`.
+bytes. A read of `size` bytes at `address` reads `address + i` as a word, so the laws about
+reads ask for `address.toNat + size ≤ 2^64`; `omega` proves it from a `Covers` fact and
+`have := region.fits`.
 
 - `Image.permits_readable`, `Image.permits_writable`: an access a region covers is permitted,
   given the region is in the image and grants the permission. Prove membership by `simp` with
