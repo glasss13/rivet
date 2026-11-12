@@ -15,6 +15,7 @@ syntax (name := withOnly) "with_only" " [" term,* "]" " => " tacticSeq : tactic
       | _ => mkFreshUserName `fact
     return (name, proof, ← inferType proof)
   let mut goal ← getMainGoal
+  let others := (← getGoals).tail
   let hidden ← goal.withContext do
     (← getLCtx).foldlM (init := #[]) fun hidden decl => do
       if decl.isImplementationDetail then return hidden
@@ -28,5 +29,6 @@ syntax (name := withOnly) "with_only" " [" term,* "]" " => " tacticSeq : tactic
   let remaining ← getGoals
   unless remaining.isEmpty do
     throwError "with_only: the tactic did not close the goal; it left{indentD (goalsToMessageData remaining)}"
+  setGoals others
 
 end Rivet
