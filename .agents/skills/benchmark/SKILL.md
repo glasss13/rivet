@@ -1,23 +1,23 @@
 ---
-name: benchmark-lz4
-description: Use when asked to benchmark, run a benchmark, eval or round of LZ4, or run LZ4 attempts on machines with models.
+name: benchmark
+description: Use when asked to benchmark, run a benchmark, eval or round of a task, or run attempts at a task on machines with models.
 ---
 
-# Running an LZ4 benchmark
+# Running a benchmark
 
-How to run one round of the LZ4 termination benchmark end to end: package, launch, wait, save, read,
-write up. A request looks like "benchmark lz4 on <machines> with <models>". The latest round under `evals/`
-is the template: copy its folder and change what this file says to change. If something here disagrees with
-the latest round's files, the files win; fix this skill.
+How to run one round of a Rivet benchmark end to end: package, launch, wait, save, read, write up. A
+benchmark is a proof task that independent AI agents each attempt with Rivet as it is on `main`. A request
+looks like "benchmark <task> on <machines> with <models>". The goal is an API and docs smooth enough that
+an agent finishes the task quickly; each round tests the library changes since the previous one.
 
-## What it measures
-
-Independent AI agents each prove `image_termination : Termination` for a compiled `LZ4_decompress_safe`
-(709 instructions) using Rivet as it is on `main`. The goal is an API and docs smooth enough that an agent
-does this in under an hour. Each round tests the library changes since the previous one.
+Rounds live in `evals/<date>-<task>-run-N/`. The latest round of the task is the template: copy its folder
+and change what this skill says to change. If something here disagrees with the latest round's files, the
+files win; fix this skill. This skill runs another round of an existing task. A new task first needs its
+package, modeled on an existing one.
 
 ## What the request decides
 
+- **Task.** The task named, matched to a `<task>` in `evals/`. If it is unclear which, ask.
 - **Machines.** Run the whole set of attempts once on each machine named, under one coordinator per
   machine. With no machine named, use this one. Find each machine's environment and project ids with your
   orchestration tools (for example `t3_environment_links`); do not assume them from an earlier round.
@@ -38,33 +38,35 @@ An attempt's label is its model's short name; saved attempts are `<label>-<machi
 - Fetch and build from `origin/main`, not a local `main`. If plain `git fetch` has no credentials, use
   `git -c credential.helper= -c credential.helper='!gh auth git-credential' fetch origin`.
 - Each machine needs the `rivet.slice` systemd slice capped at 100 GB with no swap. The coordinator checks
-  and sets it. Each attempt gets 16 GB through `lz4-termination/memrun`.
+  and sets it. Each attempt gets 16 GB through the package's `memrun`.
 
 ## 1. Package
 
-The package is `lz4-termination/` on a branch `lz4-run-N`. It holds `TASK.txt`, `Lz4Termination/Spec.lean`
-(the frozen goal), `Lz4Image.lean` (the imported program), `memrun`, `manifest.json` and `SHA256SUMS`.
+The package is a directory (for example `lz4-termination/`) on a branch `<task>-run-N`. It holds:
+- `TASK.txt`: the task and its rules;
+- the frozen spec and the imported program;
+- `memrun`, `manifest.json` and `SHA256SUMS`.
 
-    git switch -c lz4-run-N origin/main
-    git checkout <previous package commit> -- lz4-termination
+The previous round's `LAUNCH.md` names its package commit.
+
+    git switch -c <task>-run-N origin/main
+    git checkout <previous package commit> -- <package directory>
 
 - Update `manifest.json`'s `rivet_revision` to `origin/main`'s full SHA.
-- Regenerate `Lz4Image.lean` only if the importer changed:
-  `cargo run -p rivet-import -- lz4.elf --function LZ4_decompress_safe --namespace Lz4Image`. Check that the
-  instructions are unchanged and update `imported_image_sha256`.
-- Change `Spec.lean` or `TASK.txt` only if the library change requires it, and record why.
-- Regenerate the checksums: `cd lz4-termination && sha256sum TASK.txt manifest.json Lz4Image.lean
-  Lz4Termination.lean Lz4Termination/Spec.lean Check.lean lakefile.toml lake-manifest.json lean-toolchain
-  memrun > SHA256SUMS`.
-- Build it with `./memrun lake build` from `lz4-termination`.
-- Commit ("Add the LZ4 termination task package for run N") and push the branch, so that other machines can
+- Regenerate the imported program only if the importer changed, with the same `rivet-import` command the
+  package was made with. Check that the instructions are unchanged and update the image checksum in the
+  manifest.
+- Change the spec or `TASK.txt` only if the library change requires it, and record why.
+- Regenerate `SHA256SUMS` over the same files it lists, and check it passes.
+- Build it with `./memrun lake build` from the package directory.
+- Commit ("Add the <task> task package for run N") and push the branch, so that other machines can
   fetch it.
 
-Leave your own checkout on `lz4-run-N`; your machine's coordinator checks `HEAD` there.
+Leave your own checkout on `<task>-run-N`; your machine's coordinator checks `HEAD` there.
 
 ## 2. Round folder and tools
 
-Make `evals/<date>-lz4-run-N/` (keep `evals/` out of git, e.g. through `.git/info/exclude`).
+Make `evals/<date>-<task>-run-N/` (keep `evals/` out of git, e.g. through `.git/info/exclude`).
 
 - `prior/`: the last two rounds' `FINDINGS.md`, as `FINDINGS-runK.md`.
 - `tools/`: copy from the previous round and replace the old round number, branch name and package SHA
@@ -86,7 +88,7 @@ Make `evals/<date>-lz4-run-N/` (keep `evals/` out of git, e.g. through `.git/inf
 One coordinator per machine, Sonnet at high effort, started with `delegate_task`:
 - role general, mode async, isolation shared;
 - on that machine's environment and project;
-- titled "LZ4 run N coordinator (<machine>)".
+- titled "<task> run N coordinator (<machine>)".
 
 It runs its attempts as worktree children, sends early stoppers back to work, and verifies finished
 attempts.
@@ -103,11 +105,12 @@ The briefs already encode these rules:
 - at most 15 resumes per attempt;
 - an attempt is verified by:
   - a clean rebuild;
-  - `Check.lean` showing only `propext`, `Classical.choice` and `Quot.sound`;
+  - the package's check showing only `propext`, `Classical.choice` and `Quot.sound`;
   - no library changes;
   - no forbidden constructs, `bv_decide` and `native_decide` included.
 
-Record each coordinator's task id and thread in `LAUNCH.md`.
+Record each coordinator's task id and thread in `LAUNCH.md`. Do not stop or interrupt your own thread
+while the round runs: that interrupts every coordinator and attempt started from it.
 
 ## 4. While it runs
 
@@ -116,8 +119,9 @@ Record each coordinator's task id and thread in `LAUNCH.md`.
 - Log every stop, resume and verification in `LAUNCH.md`.
 - Confirm commit SHAs from git before quoting them; coordinators have garbled SHAs in messages.
 - If the owner cancels a model, tell every coordinator.
-- Times are wall-clock minutes from launch to the last commit. Subtract outages, such as a server restart
-  that froze attempts, and say so.
+- If attempts are interrupted from outside, have the coordinators resume them with an outage message that
+  does not count toward the 15.
+- Times are wall-clock minutes from launch to the last commit. Subtract outages and say so.
 
 ## 5. Save and read
 
