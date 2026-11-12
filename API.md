@@ -67,6 +67,37 @@ instruction at the current state's `status = .running address` through its contr
 
 `rivet_fetch` proves `program.fetch address = some instruction` for a concrete program.
 
+## Arithmetic
+
+A step's facts are about words (`rdi + rax`, `rax < rdx`, `rsp - 8#64`); bounds and invariants
+are plain numbers over `x.toNat`. `rivet_arith [f₁, f₂, …]` proves goals that mix the two, with
+Lean's `lia`, from the hypotheses in scope and the listed facts.
+
+- A fact is a statement about the goal's terms. `lia` does not look inside a structure, so list
+  the fields a goal needs (`inv.bound`), and give a general lemma its arguments (`lemma x`).
+- It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
+  `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w` (`toNat_ofNat_of_lt`). The
+  contracts state `not` as `-x - 1` and `movsxd` as a sum with an `if`, in these terms.
+- It has a fixed budget of 20000 heartbeats that `maxHeartbeats` does not change, and its work
+  does not count against the declaration. When the budget runs out, give it only the facts the
+  goal needs: `with_only [...] => rivet_arith`.
+- A term it does not read, such as a mask, needs its meaning as an equation, proved through
+  `toNat`. Not with `bv_decide`: its proofs depend on an axiom that trusts compiled code.
+
+  ```lean
+  have : x &&& 15#64 = x % 16#64 := by
+    apply BitVec.eq_of_toNat_eq; simpa using Nat.and_two_pow_sub_one_eq_mod x.toNat 4
+  ```
+
+- A goal that adds or subtracts a shifted value may need `grind`.
+- Goals about plain numbers alone: `omega`. Do not use `bv_omega`: it rewrites every fact about
+  words in scope, can run for minutes, and ignores `maxHeartbeats`.
+
+```lean
+rivet_step (disch := exact Image.permits_writable stackMember rfl)
+exact Ensures.done (by rivet_arith [inv.bound])
+```
+
 ## Restricting a tactic to chosen facts
 
 `with_only [f₁, f₂, …] => tac` closes the goal with `tac`, which sees the goal, the
@@ -74,19 +105,8 @@ variables and the listed facts, and no other hypothesis.
 
 - A fact is any term: a hypothesis, a field of a structure (`inv.bound`), a step's fact
   (`t_registers`), `‹_›`. One given by name keeps the last part of its name.
-- `tac` gets a fresh `maxHeartbeats` budget. `grind` and `simp` stop at it; `bv_omega` does
-  not.
+- `tac` gets a fresh `maxHeartbeats` budget.
 - `tac` must close the goal; leftover goals are an error.
-
-State bounds in plain numbers (`x.toNat`) and close them with `omega`. It ignores facts about
-words, so a large context costs it nothing and it needs no `with_only`. `grind` and
-`bv_omega` read every hypothesis in scope, and their cost grows with how many facts about
-words are there; `with_only [...] => grind` keeps them to the facts the goal needs:
-
-```lean
-rivet_step (disch := exact Image.permits_writable stackMember rfl (by omega))
-exact Ensures.done (by with_only [t_registers, inv.bound] => grind)
-```
 
 ## Machine model
 
@@ -134,8 +154,12 @@ sizes and facts about ranges are plain numbers over `address.toNat`.
 
 Laws. Ranges are intervals of `toNat` values, empty ones included, and lengths are numbers of
 bytes. A read of `size` bytes at `address` reads `address + i` as a word, so the laws about
-reads ask for `address.toNat + size ≤ 2^64`; `omega` proves it from the read's bounds in a
-region and `have := region.fits`.
+reads ask for `address.toNat + size ≤ 2^64`. Every bound a law asks for defaults to
+`by rivet_arith`, so a law takes only its other arguments
+(`exact Image.permits_writable member rfl`). `apply` and `rw` try the defaults at once. A
+default that fails is an error at that term; give the bound yourself,
+`(fits := by rivet_arith [region.fits])`, or keep it as a goal, `(fits := ?_)`. `lia` does not
+unfold definitions, so a region given by a definition needs it unfolded or its fields listed.
 
 - `Image.permits_readable`, `Image.permits_writable`: an access inside a region
   (`region.base ≤ address.toNat`, `address.toNat + size ≤ region.base + region.length`) is
@@ -151,6 +175,8 @@ region and `have := region.fits`.
   `simp only [readBytes_succ, BitVec.of_length_zero]; decide`. `readBytes_one`: one byte.
 - `readBytes_littleEndianAt`, `readBytes_littleEndianAt_add`, `littleEndianAt_add`,
   `littleEndianAt_self`: reading back a stored value, or part of it.
+- `toNat_ofNat_of_lt`: `(BitVec.ofNat w n).toNat = n` when `n < 2^w`, as for an offset inside
+  an address. `rivet_arith` uses it.
 - `Memory.SameOutside before after footprint`: memory changed only inside `footprint`;
   `refl`, `trans`, `mono`, `storeBytes` (extend across a store inside the footprint),
   `readBytes` (a read outside it is unchanged).
