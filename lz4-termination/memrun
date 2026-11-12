@@ -1,0 +1,21 @@
+#!/bin/bash
+# Runs a command under this checkout's own memory budget, so a runaway build is
+# killed instead of taking the machine down.
+#
+#   ./memrun [-m 16G] [-t 3600] command...
+#
+# -m  memory for this command and everything it starts (default: the whole budget)
+# -t  wall-clock limit in seconds (default 3600)
+#
+# Every command started from this checkout shares one 16G budget, separate from
+# any other checkout's. A command killed for memory exits with status 143 or 137;
+# one that hits the time limit exits with 124.
+mem=16G; secs=3600
+while getopts "m:t:" o; do case $o in m) mem=$OPTARG;; t) secs=$OPTARG;; esac; done
+shift $((OPTIND-1))
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+slice="rivet-$(basename "$root" | tr -c 'A-Za-z0-9\n' '_').slice"
+systemctl --user set-property --runtime "$slice" MemoryMax=16G MemorySwapMax=0 >/dev/null 2>&1
+# If the whole machine runs short, the kernel should pick this command first.
+echo 900 > /proc/self/oom_score_adj 2>/dev/null
+exec systemd-run --user --scope -q --slice="$slice" -p MemoryMax="$mem" -p MemorySwapMax=0 timeout "$secs" "$@"
