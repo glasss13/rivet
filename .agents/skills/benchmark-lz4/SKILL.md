@@ -1,9 +1,14 @@
+---
+name: benchmark-lz4
+description: Run a round of the LZ4 termination benchmark for Rivet (AI agents each prove that a compiled LZ4_decompress_safe always returns) on the machines and models the person names, then save, read and write up the results. Use when asked to benchmark LZ4, run an LZ4 eval or round, or kick off a benchmark in this repository.
+---
+
 # Running an LZ4 benchmark
 
 How to run one round of the LZ4 termination benchmark end to end: package, launch, wait, save, read,
 write up. A request looks like "benchmark lz4 on <machines> with <models>". The latest round under `evals/`
 is the template: copy its folder and change what this file says to change. If something here disagrees with
-the latest round's files, the files win; fix this file.
+the latest round's files, the files win; fix this skill.
 
 ## What it measures
 
