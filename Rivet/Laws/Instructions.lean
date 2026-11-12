@@ -184,7 +184,7 @@ theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (sourc
     rcases valid with rfl | rfl <;> cases source <;> simp_all [MachineState.readOperand64]
   simp [stepOp, encoded, readable, next, MachineState.write, location, MachineState.readOperand, extended]
 
-theorem signExtend_eq_add (value : BitVec 32) :
+private theorem signExtend_eq_add (value : BitVec 32) :
     value.signExtend 64 = value.setWidth 64 + if value < 0x80000000#32 then 0#64 else 0xFFFFFFFF00000000#64 := by
   apply BitVec.eq_of_toNat_eq
   have small := value.isLt

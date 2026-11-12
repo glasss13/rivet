@@ -77,8 +77,7 @@ Lean's `lia`, from the hypotheses in scope and the listed facts.
   the fields a goal needs (`inv.bound`), and give a general lemma its arguments (`lemma x`).
 - It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
   `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w` (`toNat_ofNat_of_lt`). The
-  contracts state `not` as `-x - 1` and `movsxd` as a sum with an `if`, in these terms;
-  `signExtend_eq_add` turns a `signExtend` of your own into the same form.
+  contracts state `not` as `-x - 1` and `movsxd` as a sum with an `if`, in these terms.
 - It has a fixed budget of 20000 heartbeats that `maxHeartbeats` does not change, and its work
   does not count against the declaration. When the budget runs out, give it only the facts the
   goal needs: `with_only [...] => rivet_arith`.
