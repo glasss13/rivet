@@ -1,6 +1,6 @@
 ---
 name: benchmark-lz4
-description: Run a round of the LZ4 termination benchmark for Rivet (AI agents each prove that a compiled LZ4_decompress_safe always returns) on the machines and models the person names, then save, read and write up the results. Use when asked to benchmark LZ4, run an LZ4 eval or round, or kick off a benchmark in this repository.
+description: Use when asked to benchmark, run a benchmark, eval or round of LZ4, or run LZ4 attempts on machines with models.
 ---
 
 # Running an LZ4 benchmark
