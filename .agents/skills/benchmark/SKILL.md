@@ -3,186 +3,69 @@ name: benchmark
 description: Use when asked to benchmark, run a benchmark, eval or round of a task, or run attempts at a task on machines with models.
 ---
 
-# Running a benchmark
+# Running a benchmark round
 
-How to run one round of a Rivet benchmark end to end: package, launch, wait, save, read, write up. A
-benchmark is a proof task that independent AI agents each attempt with Rivet as it is on `main`. A request
-looks like "benchmark <task> on <machines> with <models>". The goal is an API and docs smooth enough that
-an agent finishes the task quickly; each round tests the library changes since the previous one.
+Independent agents each attempt a proof task with Rivet as it is on `main`; each round tests the library
+changes since the last. The request names the task, the machines and the models. Rounds live in
+`evals/<date>-<task>-run-N/`, and the task's latest round is the template: copy it, and where it and this
+skill disagree, its files win. If the task, models or machines are unclear, ask.
 
-Rounds live in `evals/<date>-<task>-run-N/`. The latest round of the task is the template: copy its folder
-and change what this skill says to change. If something here disagrees with the latest round's files, the
-files win; fix this skill. This skill runs another round of an existing task. A new task first needs its
-package, modeled on an existing one.
-
-## What the request decides
-
-- **Task.** The task named, matched to a `<task>` in `evals/`. If it is unclear which, ask.
-- **Machines.** Run the whole set of attempts once on each machine named, under one coordinator per
-  machine. With no machine named, use this one. Find each machine's environment and project ids with your
-  orchestration tools (for example `t3_environment_links`); do not assume them from an earlier round.
-- **Models.** Use the models named, with the same settings on every machine. For each, find its
-  `providerInstanceId`, model id and options with `orchestrator_capabilities` on every machine it will run
-  on; a model missing anywhere is reported before launch, never substituted. Use high reasoning effort
-  unless told otherwise (`effort: "high"` for Claude models, `reasoningEffort: "high"` for Codex models),
-  and turn fast modes off. If no models are named, ask, offering the previous round's list.
-
-An attempt's label is its model's short name; saved attempts are `<label>-<machine>`.
-
-## Before launching
-
-- Every machine must be reachable from yours. If delegation to a machine fails, find out why and fix it
-  or report it; do not launch on the others alone without asking.
-- A machine may be unable to message you back. Its coordinator then reports in its own log and replies,
-  and you read its thread; its brief must say so.
-- Fetch and build from `origin/main`, not a local `main`. If plain `git fetch` has no credentials, use
-  `git -c credential.helper= -c credential.helper='!gh auth git-credential' fetch origin`.
-- Each machine needs the `rivet.slice` systemd slice capped at 100 GB with no swap. The coordinator checks
-  and sets it. Each attempt gets 16 GB through the package's `memrun`.
+**Setup per request.** One coordinator and one full set of attempts per machine (default: this one). Look
+up each machine's ids and each model's provider, id and options with your orchestration tools on every
+machine; report a missing model, never substitute. High reasoning effort, no fast mode, same settings
+everywhere. Labels are model short names; saved attempts are `<label>-<machine>`.
 
 ## 1. Package
 
-The package is a directory (for example `lz4-termination/`) on a branch `<task>-run-N`. It holds:
-- `TASK.txt`: the task and its rules;
-- the frozen spec and the imported program;
-- `memrun`, `manifest.json` and `SHA256SUMS`.
+From `origin/main` (fetch with `gh auth git-credential` if plain fetch lacks credentials), make branch
+`<task>-run-N` with the previous round's package directory. Set `manifest.json`'s `rivet_revision`;
+re-import the program only if the importer changed; change the spec or `TASK.txt` only if the library
+change forces it, and say why. Regenerate `SHA256SUMS`, build with `./memrun lake build`, commit, push,
+and leave your checkout on that branch.
 
-The previous round's `LAUNCH.md` names its package commit.
+## 2. Round folder
 
-    git switch -c <task>-run-N origin/main
-    git checkout <previous package commit> -- <package directory>
-
-- Update `manifest.json`'s `rivet_revision` to `origin/main`'s full SHA.
-- Regenerate the imported program only if the importer changed, with the same `rivet-import` command the
-  package was made with. Check that the instructions are unchanged and update the image checksum in the
-  manifest.
-- Change the spec or `TASK.txt` only if the library change requires it, and record why.
-- Regenerate `SHA256SUMS` over the same files it lists, and check it passes.
-- Build it with `./memrun lake build` from the package directory.
-- Commit ("Add the <task> task package for run N") and push the branch, so that other machines can
-  fetch it.
-
-Leave your own checkout on `<task>-run-N`; your machine's coordinator checks `HEAD` there.
-
-## 2. Round folder and tools
-
-Make `evals/<date>-<task>-run-N/` (keep `evals/` out of git, e.g. through `.git/info/exclude`).
-
-- `prior/`: the last two rounds' `FINDINGS.md`, as `FINDINGS-runK.md`.
-- `tools/`: copy from the previous round and replace the old round number, branch name and package SHA
-  everywhere.
-  - `coordinator-<machine>.txt`: one brief per machine, from the previous round's. Fill in:
-    - the machine's name;
-    - the model table;
-    - how it reports: messaging your thread (give your thread and environment ids) or, if it can't reach
-      you, its log and replies;
-    - which branch its checkout is on now.
-  - `ATTEMPT_PROMPT.txt`, `RESUME_MESSAGE.txt`: unchanged between rounds unless the owner asks.
-  - `verifyN.sh`: also embedded at the end of each brief; keep them in sync.
-  - `save.sh`, `digest.py`, `stats.py`: saving and condensing transcripts.
-  - `ANALYSIS_BRIEF.md`: rewritten each round, see step 5.
-- `LAUNCH.md`: settings, what changed since the last round, coordinator ids, and an event log.
+Copy the previous round's `tools/`, replacing round number, branch and package SHA everywhere. Each
+`coordinator-<machine>.txt` names its machine, the models, how it reports (to your thread, or in its own
+log if it can't reach you) and its checkout's current branch; the verify script is embedded in it, so keep
+the two in sync. Add `prior/` (last two `FINDINGS.md`) and `LAUNCH.md` (settings, changes, coordinator
+ids, event log). Keep `evals/` out of git.
 
 ## 3. Launch
 
-One coordinator per machine, Sonnet at high effort, started with `delegate_task`:
-- role general, mode async, isolation shared;
-- on that machine's environment and project;
-- titled "<task> run N coordinator (<machine>)".
+Per machine, `delegate_task` a Sonnet coordinator (high effort, async, shared isolation) on that machine:
+locally, point it at its brief; elsewhere, paste the brief inline. The briefs already say: never help an
+attempt; always resume a first hand-back; report rather than resume a resumed run that changed nothing,
+a provider problem or a claimed defect; at most 15 resumes; verify by clean rebuild, only `propext`,
+`Classical.choice`, `Quot.sound`, no library changes, no forbidden constructs. Each attempt runs in 16 GB,
+each machine within a 100 GB `rivet.slice`.
 
-It runs its attempts as worktree children, sends early stoppers back to work, and verifies finished
-attempts.
-
-What to give it:
-- **A coordinator on your machine** gets: "Your full instructions are in <round>/tools/coordinator-<machine>.txt.
-  Read that file in full now (with `command cat`, since `cat` may be aliased) and follow it exactly."
-- **A coordinator elsewhere** gets its whole brief inline, since it can't read your files.
-
-The briefs already encode these rules:
-- never help an attempt;
-- a first hand-back is always resumed;
-- a resumed run that changed nothing, a provider problem, or a claimed defect is reported, not resumed;
-- at most 15 resumes per attempt;
-- an attempt is verified by:
-  - a clean rebuild;
-  - the package's check showing only `propext`, `Classical.choice` and `Quot.sound`;
-  - no library changes;
-  - no forbidden constructs, `bv_decide` and `native_decide` included.
-
-Record each coordinator's task id and thread in `LAUNCH.md`. Do not stop or interrupt your own thread
-while the round runs: that interrupts every coordinator and attempt started from it.
+Never stop your own thread during the round: it interrupts everything started from it.
 
 ## 4. While it runs
 
-- Coordinators that can reach you message your thread as attempts finish. Read the others' threads and
-  their `local/runN/coordinator-<machine>.md`.
-- Log every stop, resume and verification in `LAUNCH.md`.
-- Confirm commit SHAs from git before quoting them; coordinators have garbled SHAs in messages.
-- If the owner cancels a model, tell every coordinator.
-- If attempts are interrupted from outside, have the coordinators resume them with an outage message that
-  does not count toward the 15.
-- Times are wall-clock minutes from launch to the last commit. Subtract outages and say so.
+Log every stop, resume and verification in `LAUNCH.md`, and confirm SHAs from git. Read the threads of
+coordinators that can't message you. If attempts are interrupted from outside, have coordinators resume
+them with an outage message that doesn't count toward the 15. Time is minutes from launch to last
+commit, minus outages.
 
 ## 5. Save and read
 
-1. **Your machine:** for each finished attempt, `bash <round>/tools/save.sh <label>-<machine> <worktree-id>`,
-   with the worktree id from the coordinator's log. Check each printed line for a non-empty transcript and a
-   digest with the expected time span. Copy `local/runN/verify-logs/<label>.txt` to
-   `<round>/verification-logs/<label>-<machine>.txt`. `save.sh` assumes T3's worktree directory and Claude's
-   and Codex's session folders; fix the paths if a machine keeps them elsewhere.
-2. **Other machines:** push a temporary branch `runN-kit` holding `tools/` and `prior/`. Then delegate to each
-   machine (Sonnet, effort high) a task that:
-   - fetches the kit and unpacks it into the round folder;
-   - extracts the package into `package/`;
-   - confirms each attempt's HEAD from git, not from the log;
-   - runs `save.sh` for each attempt;
-   - copies the verify logs and the coordinator log.
-
-   Delete `runN-kit` from origin afterwards.
-3. **Analysis brief:** rewrite `tools/ANALYSIS_BRIEF.md` for this round. It must cover:
-   - what changed in the library since last round, and what that change was meant to fix;
-   - the results table;
-   - the questions this round must answer.
-
-   Keep the fixed parts:
-   - read the whole digest;
-   - give evidence with timestamps;
-   - list stalls over a minute;
-   - say which abstractions the agent built;
-   - give the top five changes with minutes saved.
-
-   The owner cares most about long stalls, wants API changes over docs, and dislikes piles of small
-   bridging lemmas.
-4. **Readers:** one per attempt, on the machine that holds it. Use a strong model at high effort (rounds so
-   far used `gpt-6.1-sol`, `reasoningEffort` high, `serviceTier` ultrafast), role research, writing
-   `attempts/<label>/analysis.md`. Add a per-attempt extra question when an attempt is unusual.
-5. **Bring other machines' results back:** if the machines share no filesystem, have each machine tar
-   `attempts`, `verification-logs` and its coordinator log. It sends the archive with
-   `uvx --from magic-wormhole wormhole send --code-length 4 <file>` in the background and posts the code and
-   sha256. Receive with `uvx --from magic-wormhole wormhole receive --accept-file <code>`, check the sha256,
-   and unpack into the round folder.
+- Save each attempt with `tools/save.sh <label>-<machine> <worktree-id>` and copy its verify log. On other
+  machines, push a temporary `runN-kit` branch with `tools/` and `prior/` and delegate the same steps there,
+  with HEADs confirmed from git; delete the branch afterwards.
+- Rewrite `tools/ANALYSIS_BRIEF.md`: what changed and why, the results, this round's questions, plus the
+  fixed asks (whole digest, timestamped evidence, stalls over a minute, abstractions built, top five
+  changes with minutes saved). The owner cares most about long stalls, prefers API changes to docs, and
+  dislikes piles of small bridging lemmas.
+- One reader per attempt, on its machine, writing `attempts/<label>/analysis.md` (a strong model at high
+  effort; previous rounds used `gpt-6.1-sol`).
+- Bring other machines' folders back with `uvx --from magic-wormhole wormhole send`/`receive`, checking the
+  sha256.
 
 ## 6. Write up
 
-- `FINDINGS.md`:
-  - the short version;
-  - results, with minutes against the previous round on the same machine;
-  - whether this round's change did its job;
-  - what still hurt;
-  - what the readers ask for, counted;
-  - recommended next changes;
-  - notes on the run.
-
-  Mark readers' estimates as estimates.
-- `README.md`: one table of all attempts (model, machine, minutes, early stops, proof lines, clean rebuild,
-  head), plus the folder layout.
-- Clean up:
-  - the temporary kit branch;
-  - scratch worktrees;
-  - leftover scratch files in `local/`.
-
-  Leave the attempts' worktrees in place.
-- Report to the owner:
-  - the results table;
-  - the verdict on this round's change;
-  - the top recommendations.
+`FINDINGS.md`: short version, results against the previous round, whether the change worked, what still
+hurt, readers' requests counted, next changes, run notes; mark estimates. `README.md`: the attempts table
+and layout. Delete temporary branches and scratch worktrees, keep attempt worktrees, and report the
+table, the verdict and the top recommendations.
