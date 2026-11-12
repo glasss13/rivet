@@ -44,24 +44,25 @@ def sum : Program :=
 theorem sum_correct (regions : List Region) (s : MachineState)
     (entry : s.status = .running 0x1000)
     -- the caller's promise: 16 bytes of stack, the slot `push` uses and the return address
-    (write : permits (Image.writable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16#64 = true)
-    (read : permits (Image.readable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16#64 = true) :
+    (write : permits (Image.writable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16 = true)
+    (read : permits (Image.readable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16 = true) :
     Ensures ⟨sum, regions⟩ s (fun f =>
       f.status = .running s.returnAddress ∧
       f.registers .rax = s.registers .rdi + s.registers .rsi ∧
       f.registers .rbx = s.registers .rbx ∧
       f.registers .rsp = s.registers .rsp + 8#64) := by
-  rivet_step (disch := (apply permits_inside write <;> grind))   -- push rbx
-  rivet_step                                                      -- mov rbx, rdi
-  rivet_step                                                      -- add rbx, rsi
-  rivet_step                                                      -- mov rax, rbx
-  rivet_step (disch := (apply permits_inside read <;> grind))    -- pop rbx
-  rivet_step (disch := (apply permits_inside read <;> grind))    -- ret
+  have room := (permits_iff.mp write).1
+  rivet_step (disch := (apply permits_inside write <;> bv_omega))   -- push rbx
+  rivet_step                                                        -- mov rbx, rdi
+  rivet_step                                                        -- add rbx, rsi
+  rivet_step                                                        -- mov rax, rbx
+  rivet_step (disch := (apply permits_inside read <;> bv_omega))    -- pop rbx
+  rivet_step (disch := (apply permits_inside read <;> bv_omega))    -- ret
   exact Ensures.done (by
     simp [*, MachineState.returnAddress, BitVec.sub_add_cancel]
     constructor
-    · rw [Memory.readBytes_storeBytes_disjoint] <;> grind   -- the return address sits above the saved rbx
-    · rw [Memory.readBytes_storeBytes_within] <;> simp)      -- pop reads back what push stored
+    · rw [Memory.readBytes_storeBytes_outside] <;> bv_omega               -- the return address sits above the saved rbx
+    · rw [Memory.readBytes_storeBytes_inside] <;> first | omega | simp)   -- pop reads back what push stored
 ```
 
 Each `rivet_step` executes one instruction and records what it changed. An instruction

@@ -6,8 +6,9 @@ namespace Rivet
 
 abbrev Memory := BitVec 64 → Fin 256
 
-def Memory.storeBytes (memory : Memory) (base length : BitVec 64) (bytes : Memory) : Memory :=
-  fun address => if address - base < length then bytes address else memory address
+def Memory.storeBytes (memory : Memory) (base : BitVec 64) (length : Nat) (bytes : Memory) : Memory :=
+  fun address =>
+    if base.toNat ≤ address.toNat ∧ address.toNat < base.toNat + length then bytes address else memory address
 
 @[no_expose, irreducible] def littleEndianAt (value : BitVec n) (address : BitVec 64) : Memory :=
   fun other => ⟨(value.toNat / 256^(other - address).toNat) % 256, Nat.mod_lt _ (by decide)⟩
@@ -16,9 +17,10 @@ def Memory.storeBytes (memory : Memory) (base length : BitVec 64) (bytes : Memor
   BitVec.ofNat (8 * size) ((List.range size).foldr
     (fun offset value => (memory (address + BitVec.ofNat 64 offset)).val + 256 * value) 0)
 
-@[no_expose, irreducible] def permits (permission : BitVec 64 → Bool) (base length : BitVec 64) : Bool :=
-  base ≤ base + length &&
-    (List.range length.toNat).all (fun offset => permission (base + BitVec.ofNat 64 offset))
+-- An access that would wrap past 2^64 is never permitted.
+@[no_expose, irreducible] def permits (permission : BitVec 64 → Bool) (base : BitVec 64) (length : Nat) : Bool :=
+  base.toNat + length ≤ 2^64 &&
+    (List.range length).all (fun offset => permission (base + BitVec.ofNat 64 offset))
 
 structure Region where
   base : BitVec 64
@@ -26,14 +28,21 @@ structure Region where
   readable : Bool
   writable : Bool
 
+-- A region does not wrap: a mapping that crossed 2^64 would be two regions.
+def Region.Contains (region : Region) (address : BitVec 64) : Prop :=
+  region.base.toNat ≤ address.toNat ∧ address.toNat < region.base.toNat + region.length.toNat
+
+instance (region : Region) (address : BitVec 64) : Decidable (region.Contains address) :=
+  inferInstanceAs (Decidable (_ ∧ _))
+
 structure Image where
   program : Program
   regions : List Region
 
 def Image.readable (image : Image) (address : BitVec 64) : Bool :=
-  image.regions.any fun region => region.readable && address - region.base < region.length
+  image.regions.any fun region => region.readable && decide (region.Contains address)
 
 def Image.writable (image : Image) (address : BitVec 64) : Bool :=
-  image.regions.any fun region => region.writable && address - region.base < region.length
+  image.regions.any fun region => region.writable && decide (region.Contains address)
 
 end Rivet

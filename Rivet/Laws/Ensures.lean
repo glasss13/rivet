@@ -88,14 +88,14 @@ theorem Ensures.loop (invariant : MachineState → Prop) (measure : MachineState
 private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
   before.SameOutside after (image.writable · = true)
 
-private theorem WritesWithin.storeBytes (memory : Memory) (base length : BitVec 64)
+private theorem WritesWithin.storeBytes (memory : Memory) (base : BitVec 64) (length : Nat)
     (bytes : BitVec 64 → Fin 256) (allowed : permits image.writable base length = true) :
     WritesWithin image memory (memory.storeBytes base length bytes) :=
   Memory.SameOutside.refl.storeBytes (permits_iff.mp allowed).2
 
 private theorem WritesWithin.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
     (value : BitVec 64)
-    (allowed : permits image.writable address (BitVec.ofNat 64 width.bytes) = true) :
+    (allowed : permits image.writable address width.bytes = true) :
     WritesWithin image state.memory (state.writeMemory address width value).memory :=
   WritesWithin.storeBytes state.memory _ _ _ allowed
 
