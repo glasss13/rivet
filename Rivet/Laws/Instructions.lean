@@ -39,8 +39,8 @@ private theorem MachineState.writeOperand64_setWidth (state : MachineState) (ope
     split
     · next inside =>
       have offset : (other - address.evaluate state.registers).toNat < width.bytes := by
-        rw [BitVec.lt_def] at inside
-        cases width <;> simpa using inside
+        rw [BitVec.toNat_sub_of_le (BitVec.le_def.mpr inside.1)]
+        omega
       have bits : 2 ^ width.bits = 256 ^ width.bytes := by cases width <;> rfl
       have fits : value.toNat % 256 ^ width.bytes < 2 ^ 64 :=
         Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.pow_pos (by decide))) (by cases width <;> decide)
@@ -122,7 +122,7 @@ theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.loadXmm operation destination source))
-    (readable : permits image.readable (source.evaluate initial.registers) 16#64 = true :=
+    (readable : permits image.readable (source.evaluate initial.registers) 16 = true :=
       by simp only [rivet, *]) :
     let pointer := source.evaluate initial.registers
     let value := readBytes initial.memory pointer 16
@@ -139,11 +139,11 @@ theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.storeXmm operation destination source))
-    (writable : permits image.writable (destination.evaluate initial.registers) 16#64 = true :=
+    (writable : permits image.writable (destination.evaluate initial.registers) 16 = true :=
       by simp only [rivet, *]) :
     let pointer := destination.evaluate initial.registers
     Ensures image initial (· = { initial with
-      memory := initial.memory.storeBytes pointer 16#64 (littleEndianAt (initial.xmmRegisters source) pointer)
+      memory := initial.memory.storeBytes pointer 16 (littleEndianAt (initial.xmmRegisters source) pointer)
       status := .running (address + BitVec.ofNat 64 length) }) := by
   apply Ensures.of_step
   intro undefinedFlags
@@ -626,7 +626,7 @@ theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : Mac
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.push source))
-    (writable : permits image.writable (initial.registers .rsp - 8#64) 8#64 = true :=
+    (writable : permits image.writable (initial.registers .rsp - 8#64) 8 = true :=
       by simp only [rivet, *]) :
     Ensures image initial (· = {
       (initial.writeMemory (initial.registers .rsp - 8#64) .qword (initial.registers source)).write
@@ -641,7 +641,7 @@ theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial :
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.pop destination))
-    (readable : permits image.readable (initial.registers .rsp) 8#64 = true :=
+    (readable : permits image.readable (initial.registers .rsp) 8 = true :=
       by simp only [rivet, *]) :
     Ensures image initial (· = {
       (initial.write .rsp (initial.registers .rsp + 8#64)).write destination
@@ -656,7 +656,7 @@ theorem call (image : Image) (address target : BitVec 64) (initial : MachineStat
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length (.call target))
-    (writable : permits image.writable (initial.registers .rsp - 8#64) 8#64 = true :=
+    (writable : permits image.writable (initial.registers .rsp - 8#64) 8 = true :=
       by simp only [rivet, *]) :
     Ensures image initial (· = {
       (initial.writeMemory (initial.registers .rsp - 8#64) .qword
@@ -672,7 +672,7 @@ theorem return_ (image : Image) (address : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
     (code : InstructionAt image.program address length .ret)
-    (readable : permits image.readable (initial.registers .rsp) 8#64 = true :=
+    (readable : permits image.readable (initial.registers .rsp) 8 = true :=
       by simp only [rivet, *]) :
     Ensures image initial (· = { initial.write .rsp (initial.registers .rsp + 8#64) with
       status := .running (readBytes initial.memory (initial.registers .rsp) 8) }) := by

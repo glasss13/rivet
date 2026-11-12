@@ -44,7 +44,7 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
     for (index, segment) in segments.iter().enumerate() {
         writeln!(
             source,
-            "  {{ base := {:#x}#64, length := {:#x}#64, readable := {}, writable := {} }}{}",
+            "  {{ base := {:#x}, length := {:#x}, readable := {}, writable := {} }}{}",
             segment.address,
             segment.size,
             segment.readable,
@@ -83,8 +83,11 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
     for segment in segments {
         writeln!(
             source,
-            "  segment_{:x} : ∀ address, address - {:#x}#64 < {:#x}#64 → memory address = segment_{:x} address",
-            segment.address, segment.address, segment.size, segment.address
+            "  segment_{:x} : ∀ address, {:#x} ≤ address.toNat → address.toNat < {:#x} → memory address = segment_{:x} address",
+            segment.address,
+            segment.address,
+            segment.address + segment.size,
+            segment.address
         )?;
     }
     Ok(())

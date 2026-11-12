@@ -78,12 +78,13 @@ variables and the listed facts, and no other hypothesis.
   not.
 - `tac` must close the goal; leftover goals are an error.
 
-Arithmetic solvers (`grind`, `omega`, `bv_omega`) read every hypothesis in scope, and their
-cost grows with how many facts about words are there. `with_only [...] => grind` keeps it to
-the facts the goal needs:
+State bounds in plain numbers (`x.toNat`) and close them with `omega`. It ignores facts about
+words, so a large context costs it nothing and it needs no `with_only`. `grind` and
+`bv_omega` read every hypothesis in scope, and their cost grows with how many facts about
+words are there; `with_only [...] => grind` keeps them to the facts the goal needs:
 
 ```lean
-rivet_step (disch := (apply permits_inside write <;> with_only [room] => grind))
+rivet_step (disch := exact Image.permits_writable stackMember rfl (by omega))
 exact Ensures.done (by with_only [t_registers, inv.bound] => grind)
 ```
 
@@ -119,20 +120,31 @@ One contract per instruction, applied by `rivet_step`: `move`, `movzx`, `movsxd`
 
 ## Memory
 
-- `Memory`: a byte per 64-bit address. `Memory.storeBytes`: writes a range.
+Addresses the CPU computes and the values it moves are words (`BitVec 64`). Region bounds,
+sizes and facts about ranges are plain numbers over `address.toNat`.
+
+- `Memory`: a byte per 64-bit address. `Memory.storeBytes memory base length bytes`: writes the
+  addresses whose value lies in `[base.toNat, base.toNat + length)`.
 - `readBytes memory address size`, `littleEndianAt value address`, `permits`: closed; never
   unfold them, use the laws below.
-- `Region` (`base`, `length`, `readable`, `writable`), `Image` (`program`, `regions`),
-  `Image.readable`, `Image.writable`.
+- `Region` (`base`, `length`, `readable`, `writable`, `fits : base + length ≤ 2^64`), `Image`
+  (`program`, `regions`), `Image.readable`, `Image.writable`. A region holds the addresses
+  whose value lies in `[base, base + length)` (`Region.Contains`). A region written with
+  `{ … }` proves `fits` by `decide`.
 
-Laws. Ranges are stated as `x - base < length`, which is correct across wrap-around.
+Laws. Ranges are intervals of `toNat` values, empty ones included, and lengths are numbers of
+bytes. A read of `size` bytes at `address` reads `address + i` as a word, so the laws about
+reads ask for `address.toNat + size ≤ 2^64`; `omega` proves it from the read's bounds in a
+region and `have := region.fits`.
 
-- `Image.permits_readable`, `Image.permits_writable`: a region in the image grants its
-  permission. Prove membership by `simp` with the region list's definitions unfolded.
-- `permits_inside`: a permission covers any part of its range. `permits_iff`: what a
-  permission means, address by address.
-- `Memory.readBytes_storeBytes_within`: a read inside a store reads the stored bytes.
-- `Memory.readBytes_storeBytes_disjoint`, `Memory.read_storeBytes_outside`: a read or a byte
+- `Image.permits_readable`, `Image.permits_writable`: an access inside a region
+  (`region.base ≤ address.toNat`, `address.toNat + size ≤ region.base + region.length`) is
+  permitted, given the region is in the image and grants the permission. Prove membership by
+  `simp` with the region list's definitions unfolded.
+- `permits_iff`: what a permission means, address by address. `permits_inside`: a permission
+  covers any part of its range.
+- `Memory.readBytes_storeBytes_inside`: a read inside a store reads the stored bytes.
+- `Memory.readBytes_storeBytes_outside`, `Memory.read_storeBytes_outside`: a read or a byte
   outside a store is unchanged.
 - `readBytes_congr`: two memories that agree on a range read the same there.
 - `readBytes_succ`: a read in terms of its bytes. A read of known bytes:
