@@ -126,7 +126,7 @@ One contract per instruction, applied by `rivet_step`: `move`, `movzx`, `movsxd`
   unfold them, use the laws below.
 - `Region` (`base`, `length`, `readable`, `writable`), `Image` (`program`, `regions`),
   `Image.readable`, `Image.writable`. A region holds the addresses whose value lies in
-  `[base.toNat, base.toNat + length.toNat)` (`Region.Contains`); it never wraps.
+  `[base.toNat, base.toNat + length)` (`Region.Contains`); it never wraps.
 - `region.Covers address size`: the region holds `[address.toNat, address.toNat + size)`, and
   that range ends at or below 2^64. It unfolds for `omega`. For a region written out as a
   structure, `simp only [Region.Covers]` first exposes its fields.

@@ -28,7 +28,7 @@ theorem permits_inside {permission : BitVec 64 → Bool} {base first : BitVec 64
   exact ⟨by omega, fun address low high => whole.2 address (by omega) (by omega)⟩
 
 abbrev Region.Covers (region : Region) (address : BitVec 64) (size : Nat) : Prop :=
-  region.base.toNat ≤ address.toNat ∧ address.toNat + size ≤ region.base.toNat + region.length.toNat ∧
+  region.base.toNat ≤ address.toNat ∧ address.toNat + size ≤ region.base.toNat + region.length ∧
     address.toNat + size ≤ 2^64
 
 theorem Region.Covers.toNat_add {region : Region} {address : BitVec 64} {size offset : Nat}

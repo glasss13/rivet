@@ -24,13 +24,13 @@ def Memory.storeBytes (memory : Memory) (base : BitVec 64) (length : Nat) (bytes
 
 structure Region where
   base : BitVec 64
-  length : BitVec 64
+  length : Nat
   readable : Bool
   writable : Bool
 
 -- A region does not wrap: a mapping that crossed 2^64 would be two regions.
 def Region.Contains (region : Region) (address : BitVec 64) : Prop :=
-  region.base.toNat ≤ address.toNat ∧ address.toNat < region.base.toNat + region.length.toNat
+  region.base.toNat ≤ address.toNat ∧ address.toNat < region.base.toNat + region.length
 
 instance (region : Region) (address : BitVec 64) : Decidable (region.Contains address) :=
   inferInstanceAs (Decidable (_ ∧ _))
