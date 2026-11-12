@@ -5,9 +5,6 @@ public section
 namespace Rivet
 open Lean Meta Elab Tactic
 
-/-- `with_only [h₁, inv.bound, t_registers] => tac` closes the goal with `tac`, which sees the
-goal, the variables, and the listed facts, and no other hypothesis. Each fact may be any term;
-one given by name keeps the last part of that name. `tac` gets a fresh `maxHeartbeats` budget. -/
 syntax (name := withOnly) "with_only" " [" term,* "]" " => " tacticSeq : tactic
 
 @[tactic withOnly] meta def evalWithOnly : Tactic := fun stx => withMainContext do
