@@ -184,6 +184,14 @@ theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (sourc
     rcases valid with rfl | rfl <;> cases source <;> simp_all [MachineState.readOperand64]
   simp [stepOp, encoded, readable, next, MachineState.write, location, MachineState.readOperand, extended]
 
+theorem signExtend_eq_add (value : BitVec 32) :
+    value.signExtend 64 = value.setWidth 64 + if value < 0x80000000#32 then 0#64 else 0xFFFFFFFF00000000#64 := by
+  apply BitVec.eq_of_toNat_eq
+  have small := value.isLt
+  rw [BitVec.toNat_signExtend, BitVec.msb_eq_decide, BitVec.toNat_add]
+  simp only [BitVec.lt_def]
+  split <;> split <;> simp_all <;> omega
+
 theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source : Operand)
     (initial : MachineState)
     {length : Nat}
@@ -191,12 +199,16 @@ theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source
     (code : InstructionAt image.program address length (.movsxd destination source))
     (valid : source.width = some .dword := by first | rfl | assumption)
     (readable : initial.canRead image source = true := by simp only [rivet, *]) :
-    Ensures image initial (· = { initial.write destination ((initial.readOperand .dword source).signExtend 64) with
+    let value := initial.readOperand .dword source
+    Ensures image initial (· = { initial.write destination
+        (value.setWidth 64 + if value < 0x80000000#32 then 0#64 else 0xFFFFFFFF00000000#64) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
+  intro value
+  rw [← signExtend_eq_add]
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp [stepOp, valid, readable, next, MachineState.write, location, MachineState.readOperand]
+  simp [stepOp, valid, readable, next, MachineState.write, location, MachineState.readOperand, value]
 
 -- Interpreter plumbing is shared privately; public rules expose opcode semantics.
 private theorem binary (operation : BinaryOp) (image : Image) (address : BitVec 64)
@@ -513,8 +525,9 @@ theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand
     (hasWidth : destination.width = some width := by rfl)
     (readable : initial.canRead image destination = true := by simp only [rivet, *])
     (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
-    Ensures image initial (· = { initial.writeOperand width destination (~~~(initial.readOperand width destination)) with
+    Ensures image initial (· = { initial.writeOperand width destination (-initial.readOperand width destination - 1#width.bits) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
+  rw [← BitVec.not_eq_neg_add]
   apply Ensures.of_step
   intro undefinedFlags
   rw [one code location undefinedFlags]

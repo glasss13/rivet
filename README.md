@@ -52,22 +52,24 @@ theorem sum_correct (regions : List Region) (s : MachineState)
       f.registers .rbx = s.registers .rbx ∧
       f.registers .rsp = s.registers .rsp + 8#64) := by
   have room := (permits_iff.mp write).1
-  rivet_step (disch := (apply permits_inside write <;> bv_omega))   -- push rbx
-  rivet_step                                                        -- mov rbx, rdi
-  rivet_step                                                        -- add rbx, rsi
-  rivet_step                                                        -- mov rax, rbx
-  rivet_step (disch := (apply permits_inside read <;> bv_omega))    -- pop rbx
-  rivet_step (disch := (apply permits_inside read <;> bv_omega))    -- ret
+  rivet_step (disch := exact permits_inside write)   -- push rbx
+  rivet_step                                         -- mov rbx, rdi
+  rivet_step                                         -- add rbx, rsi
+  rivet_step                                         -- mov rax, rbx
+  rivet_step (disch := exact permits_inside read)    -- pop rbx
+  rivet_step (disch := exact permits_inside read)    -- ret
   exact Ensures.done (by
     simp [*, MachineState.returnAddress, BitVec.sub_add_cancel]
     constructor
-    · rw [Memory.readBytes_storeBytes_outside] <;> bv_omega               -- the return address sits above the saved rbx
-    · rw [Memory.readBytes_storeBytes_inside] <;> first | omega | simp)   -- pop reads back what push stored
+    · exact Memory.readBytes_storeBytes_outside _ _   -- the return address sits above the saved rbx
+    · rw [Memory.readBytes_storeBytes_inside]; simp)  -- pop reads back what push stored
 ```
 
 Each `rivet_step` executes one instruction and records what it changed. An instruction
-that touches memory asks for a permission; `disch` proves it by naming the region the
-access falls in. `Ensures.done` ends the block once the goal holds of the current state.
+that touches memory asks for a permission; `disch` proves it by naming the permission
+the access falls in. The bounds a law asks for prove themselves with `rivet_arith`, which
+handles arithmetic about words and numbers. `Ensures.done` ends the block once the goal
+holds of the current state.
 
 To work on a real binary, generate the program instead of writing it by hand:
 
