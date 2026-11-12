@@ -131,23 +131,18 @@ sizes and facts about ranges are plain numbers over `address.toNat`.
   (`program`, `regions`), `Image.readable`, `Image.writable`. A region holds the addresses
   whose value lies in `[base, base + length)` (`Region.Contains`). A region written with
   `{ … }` proves `fits` by `decide`.
-- `region.Covers address size`: the region holds `[address.toNat, address.toNat + size)`. It
-  unfolds for `omega`. For a region written out as a structure, `simp only [Region.Covers]`
-  first exposes its fields.
 
 Laws. Ranges are intervals of `toNat` values, empty ones included, and lengths are numbers of
 bytes. A read of `size` bytes at `address` reads `address + i` as a word, so the laws about
-reads ask for `address.toNat + size ≤ 2^64`; `omega` proves it from a `Covers` fact and
-`have := region.fits`.
+reads ask for `address.toNat + size ≤ 2^64`; `omega` proves it from the read's bounds in a
+region and `have := region.fits`.
 
-- `Image.permits_readable`, `Image.permits_writable`: an access a region covers is permitted,
-  given the region is in the image and grants the permission. Prove membership by `simp` with
-  the region list's definitions unfolded.
+- `Image.permits_readable`, `Image.permits_writable`: an access inside a region
+  (`region.base ≤ address.toNat`, `address.toNat + size ≤ region.base + region.length`) is
+  permitted, given the region is in the image and grants the permission. Prove membership by
+  `simp` with the region list's definitions unfolded.
 - `permits_iff`: what a permission means, address by address. `permits_inside`: a permission
   covers any part of its range.
-- `Region.Covers.toNat_add`: `(p + BitVec.ofNat 64 k).toNat = p.toNat + k` when the region
-  covers more than `k` bytes from `p`. To place an address such as `c + r - 16` relative to a
-  covered `s + r - 16`, rewrite it as `(s + r - 16) + (c - s)` with `grind` first.
 - `Memory.readBytes_storeBytes_inside`: a read inside a store reads the stored bytes.
 - `Memory.readBytes_storeBytes_outside`, `Memory.read_storeBytes_outside`: a read or a byte
   outside a store is unchanged.
