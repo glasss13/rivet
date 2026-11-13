@@ -27,26 +27,31 @@ exhaust its recursion limit.
   restores is not in the change.
 - Reading through it, with `kept : t.Except s c`:
   `kept.registers .rsi : t.registers .rsi = s.registers .rsi` and
-  `kept.readBytes address size : readBytes t.memory address size = readBytes s.memory address size`.
+  `kept.readBytes address size : readBytes t.memory address size = readBytes s.memory address size`
+  (give both: its bounds are proved where it is written, so `rw [kept.readBytes]` cannot find them).
   `simp only [rivet]` reads registers through `kept` by itself.
 
 While you step through a block from `s`, the goal is `Block image s c Q t`: the same block, now
-at the state `t` reached so far. The rules work from any such state:
+at the state `t` reached so far. The code in between runs as nested blocks: each instruction is
+one, and so is any block you proved. Only the block's end is compared with its start, so a nested
+block may change what the block keeps, if the code after it restores it.
 
 - `Block.done holds`: the block ends here, where `holds : Q t`.
-- `Block.seq first fun next kept post => …`: runs the block `first` from `t`. The rest is a block
-  from the state `next` it ends in, with `kept : next.Except t c₁` for `first`'s own change `c₁`,
-  and `post`, its postcondition.
-- `Block.loop invariant measure holds fun current kept inv => …`: a loop whose head is `t`. The
-  body is a block from any `current` in the invariant, with `kept : current.Except t c`, and ends
-  either back in the invariant with a smaller `measure`, or in the postcondition. The invariant
-  holds only what the loop changes: a fact about anything else is a fact about `t`, and stays one.
+- `Block.then inner fun next kept post => …`: runs the block `inner` from `t`, and goes on with
+  this block from the state `next` it ends in, with `kept : next.Except t c₁` for `inner`'s own
+  change `c₁`, and `post`, its postcondition. `rivet_step` does this with an instruction's contract.
+- `Block.loop invariant measure holds fun current kept inv => …`: a loop whose head is `t`, as a
+  block of its own, `Block image t c exit`; a caller runs it with `Block.then`. Each pass goes on
+  with that block from a `current` in the invariant, with `kept : current.Except t c`, and ends
+  either back in the invariant with a smaller `measure`, or in `exit`. The invariant holds only
+  what the loop changes: a fact about anything else is a fact about `t`, and stays one.
 
-Each rule's remaining arguments default to `by rivet_changes`. It proves that the steps since the
-block's start changed nothing outside `c`: every register a step wrote is in `c` or holds its old
-value again, and every store lies inside a range of `c`. Its error names the register or the store.
-A restored register it cannot see through can be proved first:
-`have : t.registers .rbx = s.registers .rbx := …`. Bounds on ranges go to `rivet_arith`.
+`Block.done`'s `kept : t.Except s c` defaults to `by rivet_changes`. It proves that the steps and
+nested blocks since `s` changed nothing outside `c`: every register a step or nested block wrote is
+in `c` or holds its old value again, every store lies inside a range of `c`, and so does every range
+a nested block may change. Its error names the register, the store or the nested block. A restored
+register it cannot see through can be proved first: `have : t.registers .rbx = s.registers .rbx :=
+…`. Bounds on ranges go to `rivet_arith`.
 
 ```lean
 def copied (a : Arguments) : Changes :=
@@ -59,7 +64,7 @@ theorem copy (s : MachineState) (pre : AtCopy a s) (room : (s.registers .rdi).to
   -- step; each exit: `Block.done (.inl ⟨…, smaller⟩)` back to the head, or `Block.done (.inr …)`
 
 -- in a caller, at state `u`:
-refine Block.seq (copy a u ⟨u_status, …⟩ …) fun next kept status => ?_
+refine Block.then (copy a u ⟨u_status, …⟩ …) fun next kept status => ?_
 ```
 
 ## Stepping
@@ -74,8 +79,8 @@ refine Block.seq (copy a u ⟨u_status, …⟩ …) fun next kept status => ?_
 - **Checkpoints.** `as t` also restates the facts over the block's start state and drops the
   unnamed states before it. At the next checkpoint, `t`'s facts are used and removed; `t` itself
   stays while one of your hypotheses mentions it.
-- **Unchanged registers.** In a loop body or after `Block.seq`, a register the block's start kept
-  is read from the state it was kept from, so facts about that state apply.
+- **Unchanged registers.** In a loop body or after `Block.then`, a register a nested block kept is
+  read from the state it was kept from, so facts about that state apply.
 - **Memory.** Each store makes `mₙ` with `mₙ_def : mₙ = mₙ₋₁.storeBytes …`, and later facts
   mention `mₙ`. Expand with `rw [m₂_def]`. A checkpoint removes a name nothing mentions.
 - **Branches.** A conditional jump gives two goals, `taken` and `fallthrough`. `if h` names the

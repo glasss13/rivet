@@ -23,12 +23,8 @@ def Operand.changes (operand : Operand) (state : MachineState) : Changes :=
 def Changes.Misses (c : Changes) (low high : Nat) : Prop :=
   ∀ range ∈ c.memory, high ≤ range.1 ∨ range.2 ≤ low
 
-def Changes.Within (smaller larger : Changes) : Prop :=
-  (∀ register ∈ smaller.registers, register ∈ larger.registers) ∧
-  ∀ range ∈ smaller.memory, ∃ cover ∈ larger.memory, cover.1 ≤ range.1 ∧ range.2 ≤ cover.2
-
--- Proves a goal about a change: `t.Except s c` from what the steps since `s` recorded, a register
--- outside a change, a range that misses one, and one change within another.
+-- Proves a goal about a change: `t.Except s c` from what the steps and nested blocks since `s`
+-- recorded, a register outside a change, and a range that misses one.
 syntax (name := rivetChanges) "rivet_changes" : tactic
 
 -- `t` is `s` except for `c`. Flags, vector registers and the status are not compared.
@@ -40,19 +36,6 @@ structure MachineState.Except (t s : MachineState) (c : Changes) : Prop where
 namespace MachineState.Except
 
 theorem refl {s : MachineState} {c : Changes} : s.Except s c := ⟨fun _ _ => rfl, fun _ _ => rfl⟩
-
-theorem trans {u t s : MachineState} {c : Changes} (later : u.Except t c) (earlier : t.Except s c) :
-    u.Except s c :=
-  ⟨fun register out => (later.sameRegisters register out).trans (earlier.sameRegisters register out),
-    fun address away => (later.sameMemory address away).trans (earlier.sameMemory address away)⟩
-
-theorem mono {t s : MachineState} {c larger : Changes} (same : t.Except s c)
-    (within : c.Within larger := by rivet_changes) : t.Except s larger := by
-  refine ⟨fun register out => same.sameRegisters register fun inside => out (within.1 register inside),
-    fun address away => same.sameMemory address fun range inside => ?_⟩
-  obtain ⟨cover, member, low, high⟩ := within.2 range inside
-  have := away cover member
-  omega
 
 theorem registers {t s : MachineState} {c : Changes} (same : t.Except s c) (register : Reg)
     (out : register ∉ c.registers := by rivet_changes) : t.registers register = s.registers register :=
