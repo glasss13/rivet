@@ -97,22 +97,25 @@ private meta def factAbout (lhs : Expr) : MetaM (Option (Expr × Expr)) := do
     if left == lhs then found := some (right, decl.toExpr)
   return found
 
--- The most recent `state.Except earlier c` in scope: the nested block that ended in `state`.
-private meta def keptBy (state : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
-  let mut found := none
+-- Every `state.Except earlier c` in scope, newest first: the nested blocks that ended in `state`.
+private meta def keptBy (state : Expr) : MetaM (Array (Expr × Expr × Expr)) := do
+  let mut found := #[]
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
     let_expr MachineState.Except t earlier c := ← instantiateMVars decl.type | continue
-    if t == state then found := some (earlier, c, decl.toExpr)
-  return found
+    if t == state then found := found.push (earlier, c, decl.toExpr)
+  return found.reverse
 
 -- The value of a register in a state, followed through the steps' facts to the state they
 -- start from: the value, whether a step wrote it, and a proof that the register holds it.
 private meta partial def readRegister (state register : Expr) : MetaM (Expr × Bool × Expr) := do
   let read := mkApp2 (mkConst ``MachineState.registers) state register
   let some (function, fact) ← factAbout (mkApp (mkConst ``MachineState.registers) state)
-    | let some (earlier, c, kept) ← keptBy state | return (read, false, ← mkEqRefl read)
-      if (← changedRegisters c).contains register.constName! then return (read, true, ← mkEqRefl read)
+    | let facts ← keptBy state
+      if facts.isEmpty then return (read, false, ← mkEqRefl read)
+      let some (earlier, c, kept) ← facts.findM? fun (_, c, _) =>
+          return !(← changedRegisters c).contains register.constName!
+        | return (read, true, ← mkEqRefl read)
       let out ← mkDecideProof (mkNot (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.registers) c, register]))
       let (earlierValue, written, rest) ← readRegister earlier register
       return (earlierValue, written,
@@ -130,53 +133,52 @@ private meta partial def readRegister (state register : Expr) : MetaM (Expr × B
   let (earlierValue, written, rest) ← readRegister earlier register
   return (earlierValue, written, ← mkEqTrans proof rest)
 
+-- `t`'s register and `s`'s, each followed back to where the facts start, are the same there.
 private meta def registerKept (t s c register : Expr) : TacticM Expr := do
   let goal ← mkEq (mkApp2 (mkConst ``MachineState.registers) t register)
     (mkApp2 (mkConst ``MachineState.registers) s register)
   for decl in ← getLCtx do
     if !decl.isImplementationDetail && (← instantiateMVars decl.type) == goal then return decl.toExpr
   let (value, written, proof) ← readRegister t register
-  let mut proof := proof
-  if written then
-    -- What memory holds: the stores, each state's memory, and reads that a nested block left alone.
-    let mut definitions := #[]
-    for decl in ← getLCtx do
-      if decl.isImplementationDetail then continue
-      let type ← instantiateMVars decl.type
-      let lemma? ← if type.isAppOfArity ``MachineState.Except 3 then
-          some <$> mkAppM ``MachineState.Except.readBytes #[decl.toExpr]
-        else match type.eq? with
-          | some (_, .fvar memory, _) =>
-            pure <| if (← memory.getType).isConstOf ``Memory then some decl.toExpr else none
-          | some (_, lhs, _) => pure <| if lhs.isAppOfArity ``MachineState.memory 1 then some decl.toExpr else none
-          | none => pure none
-      if let some lemma := lemma? then
-        definitions := definitions.push (← `(Lean.Parser.Tactic.simpLemma| $(← Term.exprToSyntax lemma):term))
-    let restored ← mkEq value (mkApp2 (mkConst ``MachineState.registers) s register)
-    match ← prove restored `(tactic| first
-        | rfl
-        | simp (disch := first | rivet_changes | rivet_arith) [$definitions,*, rivet,
-            Memory.readBytes_storeBytes_inside, Memory.readBytes_storeBytes_outside]) with
-    | .ok same => proof ← mkEqTrans proof same
-    | .error _ =>
-      let unnamed := if (← t.fvarId!.getUserName).hasMacroScopes then
-        m!"\nName the last state (`rivet_step … as t`): its registers are then stated over the block's start." else m!""
-      let writer ← match value.app2? ``MachineState.registers with
-        | some (state, _) => pure <| if (← keptBy state).isSome then
-            m!"changed by the nested block ending in{indentExpr state}\nand" else m!"written, and"
-        | none => pure m!"written, and"
-      throwError "rivet_changes: register `{register}` is {writer} it is not in the change\
-        {indentExpr c}\nIf it is restored, prove this first, and it will be used:{indentExpr goal}\n\
-        Its value is{indentExpr value}{unnamed}"
-  unless ← isDefEq (← inferType proof) goal do
-    throwError "rivet_changes: could not follow register `{register}` from{indentExpr t}\nback to\
-      {indentExpr s}\nThe steps' facts give{indentExpr value}"
-  return proof
+  let (start, startWritten, startProof) ← readRegister s register
+  let back ← mkEqSymm startProof
+  if ← withReducible <| isDefEq value start then return ← mkEqTrans proof back
+  unless written || startWritten do
+    throwError "rivet_changes: could not follow register `{register}` from{indentExpr t}\nand from\
+      {indentExpr s}\nto the same value. The steps' facts give{indentExpr value}\nand{indentExpr start}"
+  -- What memory holds: the stores, each state's memory, and reads that a nested block left alone.
+  let mut definitions := #[]
+  for decl in ← getLCtx do
+    if decl.isImplementationDetail then continue
+    let type ← instantiateMVars decl.type
+    let lemma? ← if type.isAppOfArity ``MachineState.Except 3 then
+        some <$> mkAppM ``MachineState.Except.readBytes #[decl.toExpr]
+      else match type.eq? with
+        | some (_, .fvar memory, _) =>
+          pure <| if (← memory.getType).isConstOf ``Memory then some decl.toExpr else none
+        | some (_, lhs, _) => pure <| if lhs.isAppOfArity ``MachineState.memory 1 then some decl.toExpr else none
+        | none => pure none
+    if let some lemma := lemma? then
+      definitions := definitions.push (← `(Lean.Parser.Tactic.simpLemma| $(← Term.exprToSyntax lemma):term))
+  match ← prove (← mkEq value start) `(tactic| first
+      | rfl
+      | simp (disch := first | rivet_changes | rivet_arith) [$definitions,*, rivet,
+          Memory.readBytes_storeBytes_inside, Memory.readBytes_storeBytes_outside]) with
+  | .ok same => mkEqTrans proof (← mkEqTrans same back)
+  | .error error =>
+    let unnamed := if (← t.fvarId!.getUserName).hasMacroScopes then
+      m!"\nName the last state (`rivet_step … as t`): its registers are then stated over the block's start." else m!""
+    let writer ← match value.app2? ``MachineState.registers with
+      | some (state, _) => pure <| if !(← keptBy state).isEmpty then
+          m!"changed by the nested block ending in{indentExpr state}\nand" else m!"written, and"
+      | none => pure m!"written, and"
+    throwError "rivet_changes: register `{register}` is {writer} it is not in the change{indentExpr c}\n\
+      Its value is{indentExpr value}\nand it is not shown to be{indentExpr start}\n\
+      Reading it back, as for a register saved and restored, failed with{indentD error.toMessageData}{unnamed}"
 
-private meta partial def memoryKept (s c address memory : Expr) : TacticM Expr := do
-  let read := mkApp memory address
-  if let some state := memory.app1? ``MachineState.memory then
-    if state == s then return ← mkEqRefl read
+-- `names` are what the facts say `s`'s memory is, each with a proof that it is.
+private meta partial def memoryKept (names : Array (Expr × Expr)) (c address memory : Expr) : TacticM Expr := do
+  if let some (_, same) := names.find? (·.1 == memory) then return ← mkCongrFun (← mkEqSymm same) address
   if memory.isAppOfArity ``Memory.storeBytes 4 then
     let #[earlier, base, length, bytes] := memory.getAppArgs | unreachable!
     let ranges ← changedRanges c
@@ -187,21 +189,31 @@ private meta partial def memoryKept (s c address memory : Expr) : TacticM Expr :
       m!"the {length} bytes stored at{indentExpr base}\nare not shown to lie inside the change's \
         memory, {MessageData.joinSep (ranges.toList.map fun (_, low, high) => showRange low high) ", "}."
     return ← mkEqTrans (← mkAppOptM ``Memory.read_storeBytes_outside #[earlier, base, length, bytes, address, away])
-      (← memoryKept s c address earlier)
+      (← memoryKept names c address earlier)
   if let some (earlier, fact) ← factAbout memory then
-    return ← mkEqTrans (← mkCongrFun fact address) (← memoryKept s c address earlier)
-  let some (earlier, inner, kept) ← match memory.app1? ``MachineState.memory with
-      | some state => keptBy state
-      | none => pure none
-    | throwError "rivet_changes: nothing in scope says what this memory is, relative to{indentExpr s}\n\
-        {indentExpr memory}"
+    return ← mkEqTrans (← mkCongrFun fact address) (← memoryKept names c address earlier)
+  let facts ← match memory.app1? ``MachineState.memory with
+    | some state => keptBy state
+    | none => pure #[]
+  if facts.isEmpty then
+    throwError "rivet_changes: nothing in scope says what this memory is, relative to{indentExpr names[0]!.1}\n\
+      {indentExpr memory}"
   let low ← mkAppM ``BitVec.toNat #[address]
   let high ← mkAppM ``HAdd.hAdd #[low, mkNatLit 1]
-  let away ← try misses inner low high (← mkAppM ``Changes.Misses #[inner, low, high]) catch error =>
-    throwError "rivet_changes: the nested block ending in{indentExpr (memory.appArg!)}\nmay change memory that \
-      this block's change does not cover.\n{error.toMessageData}"
-  return ← mkEqTrans (mkApp6 (mkConst ``MachineState.Except.sameMemory) memory.appArg! earlier inner kept address away)
-    (← memoryKept s c address (mkApp (mkConst ``MachineState.memory) earlier))
+  let mut failure := none
+  for (earlier, inner, kept) in facts do
+    match ← prove (← mkAppM ``Changes.Misses #[inner, low, high]) `(tactic| rivet_changes) with
+    | .ok away =>
+      return ← mkEqTrans (mkApp6 (mkConst ``MachineState.Except.sameMemory) memory.appArg! earlier inner kept address away)
+        (← memoryKept names c address (mkApp (mkConst ``MachineState.memory) earlier))
+    | .error error => failure := failure <|> some error.toMessageData
+  throwError "rivet_changes: the nested block ending in{indentExpr memory.appArg!}\nmay change memory that \
+    this block's change does not cover.\n{failure.getD m!""}"
+
+-- What the facts say `memory` is, and what they say that is, each with a proof `s.memory = …`.
+private meta partial def namesOf (memory same : Expr) : MetaM (Array (Expr × Expr)) := do
+  let some (next, fact) ← factAbout memory | return #[(memory, same)]
+  return #[(memory, same)] ++ (← namesOf next (← mkEqTrans same fact))
 
 private meta def except (t s c : Expr) : TacticM Expr := do
   if t == s then return ← mkAppOptM ``MachineState.Except.refl #[s, c]
@@ -234,8 +246,10 @@ private meta def except (t s c : Expr) : TacticM Expr := do
       let proof := mkApp2 (.fvar away) pair (← member pair (ranges.map (·.1)))
       pure (type, proof)
     goal := (← (← goal.assert `away fact.1 fact.2).intro1P).2
+  let start := mkApp (mkConst ``MachineState.memory) s
+  let names ← namesOf start (← mkEqRefl start)
   goal.withContext do
-    goal.assign (← memoryKept s c (.fvar address) (mkApp (mkConst ``MachineState.memory) t))
+    goal.assign (← memoryKept names c (.fvar address) (mkApp (mkConst ``MachineState.memory) t))
   mkAppOptM ``MachineState.Except.mk #[t, s, c, ← instantiateMVars registersGoal, ← instantiateMVars memoryGoal]
 
 -- As a `simp` discharger it runs at reducible transparency, where a change does not unfold, and
