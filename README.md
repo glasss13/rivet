@@ -10,11 +10,12 @@ lake build
 
 ## What a theorem says
 
-`Ensures image s Q` means: from the machine state `s`, and for every value the CPU might
-leave in its undefined flags, execution reaches a state satisfying `Q` in finitely many
-steps. What the start state must satisfy is stated as ordinary hypotheses about `s`. A
-fault is permanent, so a `Q` that requires `status = .running …` also proves that nothing
-faulted on the way.
+`Block image s c Q` means: from the machine state `s`, and for every value the CPU might
+leave in its undefined flags, execution reaches a state in finitely many steps that
+satisfies `Q` and is `s` except for the change `c`: every register and every byte of memory
+that `c` does not list is as it was. What the start state must satisfy is stated as ordinary
+hypotheses about `s`. A fault is permanent, so a `Q` that requires `status = .running …`
+also proves that nothing faulted on the way.
 
 What a proof does not cover:
 
@@ -46,30 +47,33 @@ theorem sum_correct (regions : List Region) (s : MachineState)
     -- the caller's promise: 16 bytes of stack, the slot `push` uses and the return address
     (write : permits (Image.writable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16 = true)
     (read : permits (Image.readable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16 = true) :
-    Ensures ⟨sum, regions⟩ s (fun f =>
-      f.status = .running s.returnAddress ∧
-      f.registers .rax = s.registers .rdi + s.registers .rsi ∧
-      f.registers .rbx = s.registers .rbx ∧
-      f.registers .rsp = s.registers .rsp + 8#64) := by
+    Block ⟨sum, regions⟩ s
+      -- all it changes: two registers and the slot below the stack pointer
+      { registers := [.rax, .rsp],
+        memory := [((s.registers .rsp).toNat - 8, (s.registers .rsp).toNat)] }
+      (fun f =>
+        f.status = .running s.returnAddress ∧
+        f.registers .rax = s.registers .rdi + s.registers .rsi ∧
+        f.registers .rsp = s.registers .rsp + 8#64) := by
   have room := (permits_iff.mp write).1
-  rivet_step (disch := exact permits_inside write)   -- push rbx
-  rivet_step                                         -- mov rbx, rdi
-  rivet_step                                         -- add rbx, rsi
-  rivet_step                                         -- mov rax, rbx
-  rivet_step (disch := exact permits_inside read)    -- pop rbx
-  rivet_step (disch := exact permits_inside read)    -- ret
-  exact Ensures.done (by
-    simp [*, MachineState.returnAddress, BitVec.sub_add_cancel]
-    constructor
-    · exact Memory.readBytes_storeBytes_outside _ _   -- the return address sits above the saved rbx
-    · rw [Memory.readBytes_storeBytes_inside]; simp)  -- pop reads back what push stored
+  rivet_step (disch := exact permits_inside write)       -- push rbx
+  rivet_step                                             -- mov rbx, rdi
+  rivet_step                                             -- add rbx, rsi
+  rivet_step                                             -- mov rax, rbx
+  rivet_step (disch := exact permits_inside read)        -- pop rbx
+  rivet_step (disch := exact permits_inside read) as f   -- ret
+  refine Block.done ⟨?_, by simp only [f_registers, rivet], by simp only [f_registers, rivet]⟩
+  rw [f_status, m₁_def, Memory.readBytes_storeBytes_outside]   -- the return address sits above the saved rbx
+  rfl
 ```
 
 Each `rivet_step` executes one instruction and records what it changed. An instruction
 that touches memory asks for a permission; `disch` proves it by naming the permission
 the access falls in. The bounds a law asks for prove themselves with `rivet_arith`, which
-handles arithmetic about words and numbers. `Ensures.done` ends the block once the goal
-holds of the current state.
+handles arithmetic about words and numbers. `Block.done` ends the block once `Q` holds of
+the current state, and checks the change against what the steps recorded: `rbx` is not in
+it because `pop` reads back what `push` stored, and leaving out `rax` or the stack slot is
+an error naming it.
 
 To work on a real binary, generate the program instead of writing it by hand:
 

@@ -2,7 +2,7 @@ module
 public import Rivet.Laws.Instructions
 public import Rivet.Laws.Spelling
 public import Rivet.Tactics.Fetch
--- `rivet_step`: executes one instruction of an `Ensures` goal through its contract.
+-- `rivet_step`: executes one instruction of a `Block` goal through its contract.
 public meta import Lean
 
 -- The tactic implementation is public but not exposed; its helpers are private.
@@ -21,9 +21,9 @@ inductive Introduced {α : Sort u} (x : α) : Prop
 
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
-  unless type.isAppOfArity ``Ensures 3 do
-    throwError "rivet_step: goal is not `Ensures image s Q`"
-  let state := type.getAppArgs[1]!
+  unless type.isAppOfArity ``Block 5 do
+    throwError "rivet_step: goal is not a `Block`"
+  let state := type.getAppArgs[4]!
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
 
@@ -350,7 +350,7 @@ private meta def discharge (pc : Nat) (tactic? : Option Syntax) (goal : MVarId) 
 end Step
 
 syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")?
-  (" as " ident)? (" if " ident)? (" tracking " "[" ident,* "]")? : tactic
+  (" as " ident)? (" if " ident)? : tactic
 
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
@@ -367,10 +367,6 @@ open Step in
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
   let named? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
   let condition? : Option Name := if stx[3].getNumArgs > 0 then some stx[3][1].getId else none
-  let tracked : List Name :=
-    if stx[4].getNumArgs > 0 then (stx[4][2].getSepArgs.map (·.getId)).toList else fields
-  for field in tracked do
-    unless fields.contains field do throwError "rivet_step: unknown field `{field}`"
   -- 1. The contract, with side conditions as goals; discharge what we can.
   let mut unsolved : Array MVarId := #[]
   let mainGoal ← getMainGoal
@@ -390,21 +386,21 @@ open Step in
         side.assign instructionProof
       | _ => if let some remaining ← discharge pc discharger side then unsolved := unsolved.push remaining
     instantiateMVars proof
-  -- 2. Continue from a fresh successor: build `Ensures.bind contract (fun next equation => ?_)`
+  -- 2. Continue from a fresh successor: build `Block.then contract (fun next equation => ?_)`
   --    directly, so no term is re-elaborated. Internal names are replaced at the end.
   let next ← mainGoal.withContext do
     let contractType ← whnfR (← inferType contract)
-    unless contractType.isAppOfArity ``Ensures 3 do
+    unless contractType.isAppOfArity ``Block 5 do
       throwError "rivet_step: unexpected contract type {contractType}"
-    let intermediate := contractType.getArg! 2
-    let postcondition := (← whnfR (← mainGoal.getType)).getArg! 2
+    let intermediate := contractType.getArg! 3
+    let goalArgs := (← whnfR (← mainGoal.getType)).getAppArgs
     let stateType := mkConst ``MachineState
     withLocalDeclD `rivet_next stateType fun successor => do
       withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
-        let target := mkApp3 (mkConst ``Ensures) image successor postcondition
+        let target := mkApp5 (mkConst ``Block) image goalArgs[1]! goalArgs[2]! goalArgs[3]! successor
         let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
         let continuation ← mkLambdaFVars #[successor, equation] goal
-        mainGoal.assign (← mkAppM ``Ensures.bind #[contract, continuation])
+        mainGoal.assign (← mkAppM ``Block.then #[contract, continuation])
         return goal.mvarId!
   setGoals [next]
   let equation := mkIdent `rivet_step_equation
@@ -415,10 +411,9 @@ open Step in
       return (← whnfR (← instantiateMVars decl.type)).isAppOfArity ``Exists 2
     unless isExists do break
     evalTactic (← `(tactic| obtain ⟨_, $equation⟩ := $equation))
-  -- 3. One fact per tracked field, normalized.
+  -- 3. One fact per field, normalized.
   let mut internal : Array Name := #[]
   for field in fields do
-    unless tracked.contains field do continue
     let fact := Name.mkSimple s!"rivet_fact_{field}"
     evalTactic (← `(tactic| have $(mkIdent fact) := congrArg $(mkIdent (`Rivet.MachineState ++ field)) $equation))
     internal := internal.push fact
@@ -447,7 +442,7 @@ open Step in
       rivet] at $locations*))
   nameMemory
   -- 4. Conditional jump: two tagged goals, each with its path condition.
-  let isBranch := operation.isAppOfArity ``Op.jcc 2 && tracked.contains `status
+  let isBranch := operation.isAppOfArity ``Op.jcc 2
   if let some condition := condition? then
     unless isBranch do
       throwError "rivet_step: `if {condition}` names a branch condition, and the instruction at \

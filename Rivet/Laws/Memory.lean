@@ -2,7 +2,7 @@ module
 public import Rivet.Interpreter.Memory
 public import Rivet.Tactics.Arith
 import all Rivet.Interpreter.Memory
--- Laws of memory: permissions, stores, little-endian reads, and frames. A range is an interval of
+-- Laws of memory: permissions, stores and little-endian reads. A range is an interval of
 -- `toNat` values. A read that ends past 2^64 wraps around, so the laws about reads ask it not to.
 @[expose] public section
 namespace Rivet
@@ -195,41 +195,5 @@ theorem littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset : Na
 @[simp] theorem littleEndianAt_self (value : BitVec n) (address : BitVec 64) :
     (littleEndianAt value address address).val = (value.extractLsb' 0 8).toNat := by
   simpa using littleEndianAt_add value address 0
-
-def Memory.SameOutside (before after : Memory) (footprint : BitVec 64 → Prop) : Prop :=
-  ∀ address, ¬ footprint address → after address = before address
-
-theorem Memory.SameOutside.refl {memory : Memory} {footprint : BitVec 64 → Prop} :
-    memory.SameOutside memory footprint :=
-  fun _ _ => rfl
-
-theorem Memory.SameOutside.trans {first second third : Memory} {footprint : BitVec 64 → Prop}
-    (earlier : first.SameOutside second footprint) (later : second.SameOutside third footprint) :
-    first.SameOutside third footprint :=
-  fun address outside => (later address outside).trans (earlier address outside)
-
-theorem Memory.SameOutside.mono {before after : Memory} {footprint larger : BitVec 64 → Prop}
-    (agree : before.SameOutside after footprint) (covered : ∀ address, footprint address → larger address) :
-    before.SameOutside after larger :=
-  fun address outside => agree address (fun inside => outside (covered address inside))
-
-theorem Memory.SameOutside.storeBytes {before after : Memory} {footprint : BitVec 64 → Prop}
-    (agree : before.SameOutside after footprint) {base : BitVec 64} {length : Nat} {bytes : Memory}
-    (inside : ∀ address, base.toNat ≤ address.toNat → address.toNat < base.toNat + length → footprint address) :
-    before.SameOutside (after.storeBytes base length bytes) footprint := by
-  intro address outside
-  have away : ¬ (base.toNat ≤ address.toNat ∧ address.toNat < base.toNat + length) :=
-    fun ⟨start, finish⟩ => outside (inside address start finish)
-  simp only [Memory.storeBytes, away, ↓reduceIte]
-  exact agree address outside
-
-theorem Memory.SameOutside.readBytes {before after : Memory} {footprint : BitVec 64 → Prop}
-    (agree : before.SameOutside after footprint) {address : BitVec 64} {size : Nat}
-    (away : ∀ other, address.toNat ≤ other.toNat → other.toNat < address.toNat + size → ¬ footprint other)
-    (fits : address.toNat + size ≤ 2^64 := by rivet_arith) :
-    Rivet.readBytes after address size = Rivet.readBytes before address size := by
-  apply readBytes_offsets_congr
-  intro offset bound
-  exact agree _ (away _ (by bv_omega) (by bv_omega))
 
 end Rivet

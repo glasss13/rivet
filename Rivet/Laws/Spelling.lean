@@ -12,6 +12,11 @@ attribute [rivet] BitVec.setWidth_setWidth_of_le BitVec.setWidth_eq
   decide_eq_true_eq decide_eq_false_iff_not beq_iff_eq beq_eq_false_iff_ne ne_eq Classical.not_not
   Bool.not_eq_true' Bool.and_eq_true Bool.or_eq_true BitVec.not_lt BitVec.not_le
 
+-- A read of a register the step did not write skips the `if`s for the ones it did. Lean's own
+-- `reduceCtorEq` and `reduceIte` are not `meta`, so a module cannot add them to a set directly.
+simproc [rivet] distinctConstructors (_ = _) := reduceCtorEq
+simproc ↓ [rivet] decidedIte (ite _ _ _) := reduceIte
+
 -- Literal displacements: `BitVec.ofInt 64 (-8)` becomes a subtraction of `8#64`, and a zero
 -- displacement is dropped.
 attribute [rivet] BitVec.ofInt_ofNat BitVec.ofInt_neg BitVec.ofInt_natCast BitVec.add_neg_eq_sub
