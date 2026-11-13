@@ -23,8 +23,8 @@ def Operand.changes (operand : Operand) (state : MachineState) : Changes :=
 def Changes.Misses (c : Changes) (low high : Nat) : Prop :=
   ∀ range ∈ c.memory, high ≤ range.1 ∨ range.2 ≤ low
 
--- Proves a goal about a change: `t.Except s c` from what the steps and nested blocks since `s`
--- recorded, a register outside a change, and a range that misses one.
+-- Proves a goal about a change: `t.Except s c`, for a block's start `s` or any state since, from what
+-- the steps and nested blocks recorded; a register outside a change; and a range that misses one.
 syntax (name := rivetChanges) "rivet_changes" : tactic
 
 -- `t` is `s` except for `c`. Flags, vector registers and the status are not compared.

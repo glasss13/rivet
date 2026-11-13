@@ -49,9 +49,11 @@ block may change what the block keeps, if the code after it restores it.
 `Block.done`'s `kept : t.Except s c` defaults to `by rivet_changes`. It proves that the steps and
 nested blocks since `s` changed nothing outside `c`: every register a step or nested block wrote is
 in `c` or holds its old value again, every store lies inside a range of `c`, and so does every range
-a nested block may change. Its error names the register, the store or the nested block. A restored
-register it cannot see through can be proved first: `have : t.registers .rbx = s.registers .rbx :=
-…`. Bounds on ranges go to `rivet_arith`.
+a nested block may change. A register pushed and popped needs nothing: it is read back from where
+it was saved. `rivet_changes` also proves `u.Except e c` for any state `e` since the block's start,
+and reads through every `Except` in scope. Its error names the register, the store or the nested
+block. A register restored in a way it cannot see through can be proved first:
+`have : t.registers .rbx = s.registers .rbx := …`. Bounds on ranges go to `rivet_arith`.
 
 ```lean
 def copied (a : Arguments) : Changes :=
