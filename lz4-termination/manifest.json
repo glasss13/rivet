@@ -1,0 +1,17 @@
+{
+  "rivet_revision": "2aefbaa20f545e771eef7f0901a7584a5bc33341",
+  "lean_toolchain": "leanprover/lean4:v4.35.0",
+  "elf_sha256": "0a535cf5ca1a56f0741722681fe14bb95f00aebefe6ff7699936f624dab42a6d",
+  "imported_image_sha256": "fff673c0760649c561f7f466cc5a66f56a328c6c2d193ad011bd749a5d59edaf",
+  "goal": "Rivet.Lz4Proof.image_termination : Rivet.Lz4Proof.Termination",
+  "meaning": "For every Arguments and every state satisfying Preconditions, Block (image arguments) initial (callChanges arguments) (Returned arguments): for every value of the undefined flags, execution reaches in finitely many steps a state satisfying Returned that differs from the initial state only in callChanges.",
+  "permitted_axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+  ],
+  "excluded_goals": [
+    "decompression correctness",
+    "return-code classification"
+  ]
+}
