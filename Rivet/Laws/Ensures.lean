@@ -3,8 +3,9 @@ public import Rivet.Interpreter.Machine
 public import Rivet.Laws.Memory
 public import Rivet.Laws.Program
 public import Rivet.Laws.Operands
+public import Rivet.Laws.Changes
 import all Rivet.Interpreter.Machine
--- Laws of execution: block contracts (`Ensures`) and what execution preserves.
+-- Laws of execution: `Ensures`, and block contracts (`Block`) that also say what changed.
 @[expose] public section
 namespace Rivet
 
@@ -47,7 +48,7 @@ private theorem Ensures.of_step
   ⟨fun choices => ⟨step image initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
     transition (choices 0)⟩⟩
 
-theorem Ensures.done {state : MachineState} (holds : postcondition state) :
+private theorem Ensures.done {state : MachineState} (holds : postcondition state) :
     Ensures image state postcondition :=
   ⟨fun choices => ⟨state, ⟨0, execute_zero image state choices⟩, holds⟩⟩
 
@@ -60,7 +61,7 @@ theorem Ensures.bind (first : Ensures image state intermediate)
   obtain ⟨final, ⟨later, reached⟩, result⟩ := (continuation _ holds).allChoices (choices.drop earlier)
   exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
 
-theorem Ensures.consequence (contract : Ensures image state postcondition)
+private theorem Ensures.consequence (contract : Ensures image state postcondition)
     (weaken : ∀ final, postcondition final → weakerPostcondition final) :
     Ensures image state weakerPostcondition := by
   constructor
@@ -68,7 +69,7 @@ theorem Ensures.consequence (contract : Ensures image state postcondition)
   obtain ⟨final, reached, result⟩ := contract.allChoices choices
   exact ⟨final, reached, weaken _ result⟩
 
-theorem Ensures.loop (invariant : MachineState → Prop) (measure : MachineState → Nat)
+private theorem Ensures.loop (invariant : MachineState → Prop) (measure : MachineState → Nat)
     (holds : invariant state)
     (body : ∀ current, invariant current →
       Ensures image current (fun next =>
@@ -84,99 +85,39 @@ theorem Ensures.loop (invariant : MachineState → Prop) (measure : MachineState
       exact ⟨final, ⟨earlier + later, by simpa [execute_add] using reached⟩, result⟩
     · exact ⟨_, ⟨earlier, rfl⟩, exits⟩
 
--- Execution proofs are implementation details of `Ensures.preserves_unwritable`.
-private abbrev WritesWithin (image : Image) (before after : Memory) : Prop :=
-  before.SameOutside after (image.writable · = true)
+-- From `s`, execution ends in a state that is `s` except for `c` and satisfies `Q`.
+abbrev Block (image : Image) (s : MachineState) (c : Changes) (Q : MachineState → Prop) : Prop :=
+  Ensures image s (fun final => final.Except s c ∧ Q final)
 
-private theorem WritesWithin.storeBytes (memory : Memory) (base : BitVec 64) (length : Nat)
-    (bytes : BitVec 64 → Fin 256) (allowed : permits image.writable base length = true) :
-    WritesWithin image memory (memory.storeBytes base length bytes) :=
-  Memory.SameOutside.refl.storeBytes (permits_iff.mp allowed).2
+theorem Block.ensures {image : Image} {s : MachineState} {c : Changes} {Q : MachineState → Prop}
+    (block : Block image s c Q) : Ensures image s Q :=
+  Ensures.consequence block fun _ post => post.2
 
-private theorem WritesWithin.writeMemory (state : MachineState) (address : BitVec 64) (width : Width)
-    (value : BitVec 64)
-    (allowed : permits image.writable address width.bytes = true) :
-    WritesWithin image state.memory (state.writeMemory address width value).memory :=
-  WritesWithin.storeBytes state.memory _ _ _ allowed
+-- The rules below prove a block from a state `t` it has reached, so they also apply at its start.
 
-private theorem WritesWithin.writeOperand (state : MachineState) (destination : Operand) (value : BitVec 64)
-    (allowed : state.canWrite image destination = true) :
-    WritesWithin image state.memory (state.writeOperand64 destination value).memory := by
-  cases destination <;> simp only [MachineState.writeOperand64] <;> try exact Memory.SameOutside.refl
-  case memory width address =>
-    rw [MachineState.canWrite_memory] at allowed
-    exact WritesWithin.writeMemory state _ width value allowed
+theorem Block.done {image : Image} {s t : MachineState} {c : Changes} {Q : MachineState → Prop}
+    (holds : Q t) (kept : t.Except s c := by rivet_changes) :
+    Ensures image t (fun final => final.Except s c ∧ Q final) :=
+  Ensures.done ⟨kept, holds⟩
 
-private theorem op_writes_within (operation : Op) (state : MachineState) (nextPC : BitVec 64) (flags : FlagValues) :
-    WritesWithin image state.memory (stepOp image operation nextPC state flags).memory := by
-  cases operation with
-  | binary operation destination source =>
-    simp only [stepOp, MachineState.binary]
-    split
-    · split
-      · apply WritesWithin.writeOperand
-        simp_all [Bool.and_eq_true]
-      · exact Memory.SameOutside.refl
-    · exact Memory.SameOutside.refl
-  | mov destination source | not destination | setcc condition destination =>
-    simp only [stepOp]
-    split
-    · apply WritesWithin.writeOperand
-      simp_all [Bool.and_eq_true]
-    · exact Memory.SameOutside.refl
-  | shift operation destination count =>
-    simp only [stepOp]
-    split
-    · split <;> apply WritesWithin.writeOperand <;>
-        cases destination <;> simp_all [validShift]
-    · exact Memory.SameOutside.refl
-  | imul destination source immediate | cmovcc condition destination source =>
-    simp only [stepOp]
-    split
-    · apply WritesWithin.writeOperand
-      cases destination <;> simp_all [validImul, validConditionalMove]
-    · exact Memory.SameOutside.refl
-  | storeXmm kind destination source =>
-    simp only [stepOp]
-    split
-    · exact WritesWithin.storeBytes state.memory _ _ _ (by assumption)
-    · exact Memory.SameOutside.refl
-  | push source | call target =>
-    simp only [stepOp]
-    split
-    · apply WritesWithin.writeMemory
-      assumption
-    · exact Memory.SameOutside.refl
-  | _ =>
-    simp only [stepOp]
-    first
-    | exact Memory.SameOutside.refl
-    | (split <;> exact Memory.SameOutside.refl)
+theorem Block.seq {image : Image} {s t : MachineState} {c₁ c : Changes} {P Q : MachineState → Prop}
+    (first : Block image t c₁ P) (rest : ∀ next, next.Except t c₁ → P next → Block image next c Q)
+    (within : c₁.Within c := by rivet_changes) (kept : t.Except s c := by rivet_changes) :
+    Ensures image t (fun final => final.Except s c ∧ Q final) :=
+  Ensures.bind first fun next post =>
+    Ensures.consequence (rest next post.1 post.2) fun _ final =>
+      ⟨final.1.trans ((post.1.mono within).trans kept), final.2⟩
 
-private theorem step_writes_within (image : Image) (state : MachineState) (flags : FlagValues) :
-    WritesWithin image state.memory (step image state flags).memory := by
-  unfold step
-  split
-  · split
-    · exact op_writes_within _ _ _ _
-    · exact Memory.SameOutside.refl
-  · exact Memory.SameOutside.refl
-
-private theorem execute_writes_within (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
-    WritesWithin image state.memory (execute image steps state choices).memory := by
-  induction steps generalizing state choices with
-  | zero => rw [execute_zero]; exact Memory.SameOutside.refl
-  | succ steps ih =>
-    rw [execute_succ]
-    exact (step_writes_within image state (choices 0)).trans
-      (ih (step image state (choices 0)) (choices.drop 1))
-
-theorem Ensures.preserves_unwritable (contract : Ensures image initial postcondition) :
-    Ensures image initial (fun final =>
-      postcondition final ∧ initial.memory.SameOutside final.memory (image.writable · = true)) := by
-  constructor
-  intro choices
-  obtain ⟨final, ⟨steps, reached⟩, result⟩ := contract.allChoices choices
-  exact ⟨final, ⟨steps, reached⟩, result, reached ▸ execute_writes_within image steps initial choices⟩
+theorem Block.loop {image : Image} {s t : MachineState} {c : Changes} {exit : MachineState → Prop}
+    (invariant : MachineState → Prop) (measure : MachineState → Nat) (holds : invariant t)
+    (body : ∀ current, current.Except t c → invariant current →
+      Block image current c (fun next => invariant next ∧ measure next < measure current ∨ exit next))
+    (kept : t.Except s c := by rivet_changes) :
+    Ensures image t (fun final => final.Except s c ∧ exit final) :=
+  Ensures.loop (fun current => current.Except t c ∧ invariant current) measure ⟨.refl, holds⟩
+    fun current inv => Ensures.consequence (body current inv.1 inv.2) fun _ post =>
+      match post.2 with
+      | .inl again => .inl ⟨⟨post.1.trans inv.1, again.1⟩, again.2⟩
+      | .inr out => .inr ⟨(post.1.trans inv.1).trans kept, out⟩
 
 end Rivet

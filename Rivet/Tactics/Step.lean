@@ -350,7 +350,7 @@ private meta def discharge (pc : Nat) (tactic? : Option Syntax) (goal : MVarId) 
 end Step
 
 syntax (name := rivetStep) "rivet_step" (" (" &"disch" " := " tacticSeq ")")?
-  (" as " ident)? (" if " ident)? (" tracking " "[" ident,* "]")? : tactic
+  (" as " ident)? (" if " ident)? : tactic
 
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
@@ -367,10 +367,6 @@ open Step in
   let discharger : Option Syntax := if stx[1].getNumArgs > 0 then some stx[1][3] else none
   let named? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
   let condition? : Option Name := if stx[3].getNumArgs > 0 then some stx[3][1].getId else none
-  let tracked : List Name :=
-    if stx[4].getNumArgs > 0 then (stx[4][2].getSepArgs.map (·.getId)).toList else fields
-  for field in tracked do
-    unless fields.contains field do throwError "rivet_step: unknown field `{field}`"
   -- 1. The contract, with side conditions as goals; discharge what we can.
   let mut unsolved : Array MVarId := #[]
   let mainGoal ← getMainGoal
@@ -415,10 +411,9 @@ open Step in
       return (← whnfR (← instantiateMVars decl.type)).isAppOfArity ``Exists 2
     unless isExists do break
     evalTactic (← `(tactic| obtain ⟨_, $equation⟩ := $equation))
-  -- 3. One fact per tracked field, normalized.
+  -- 3. One fact per field, normalized.
   let mut internal : Array Name := #[]
   for field in fields do
-    unless tracked.contains field do continue
     let fact := Name.mkSimple s!"rivet_fact_{field}"
     evalTactic (← `(tactic| have $(mkIdent fact) := congrArg $(mkIdent (`Rivet.MachineState ++ field)) $equation))
     internal := internal.push fact
@@ -447,7 +442,7 @@ open Step in
       rivet] at $locations*))
   nameMemory
   -- 4. Conditional jump: two tagged goals, each with its path condition.
-  let isBranch := operation.isAppOfArity ``Op.jcc 2 && tracked.contains `status
+  let isBranch := operation.isAppOfArity ``Op.jcc 2
   if let some condition := condition? then
     unless isBranch do
       throwError "rivet_step: `if {condition}` names a branch condition, and the instruction at \

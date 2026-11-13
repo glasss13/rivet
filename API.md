@@ -16,37 +16,68 @@ exhaust its recursion limit.
 
 - `Ensures image s Q`: from state `s`, for every value of the undefined flags, execution
   reaches a state satisfying `Q` in finitely many steps.
-- `Ensures.done`: `Q s` proves `Ensures image s Q`.
-- `Ensures.bind`: one contract, then a continuation from every state it can end in.
-- `Ensures.consequence`: weakens the postcondition.
-- `Ensures.loop invariant measure holds body`: a loop. `body` starts from any state in the
-  invariant and ends either back in it with a smaller `measure`, or in the postcondition.
-- `Ensures.preserves_unwritable`: adds to a contract that memory no region may write is
-  unchanged.
+- `Block image s c Q`: the same, and the end state is `s` except for the change `c`. It is
+  `Ensures image s (fun t => t.Except s c ∧ Q t)`. Proofs are written as blocks;
+  `Block.ensures` gives the `Ensures`.
+- `Changes`: what a block may change. `registers` is a list of registers; `memory` is a list
+  of ranges `(low, high)`, the addresses whose value lies in `[low, high)`. Both default to
+  empty. A change may mention the block's start state, not a later one.
+- `t.Except s c`: every register outside `c.registers` and every byte outside `c.memory` is
+  the same in `t` as in `s`. Flags, vector registers and the status are not compared: state
+  what you need of them in `Q`. A register the block saves and restores is not in the change.
+  `refl`, `trans`, `mono` (to a larger change).
+- Reading through it: `kept.registers .rsi : t.registers .rsi = s.registers .rsi`, and
+  `kept.readBytes address size : readBytes t.memory address size = readBytes s.memory address size`.
 
-Joining two blocks:
+The rules prove a block from any state `t` it has reached, so they apply after stepping as
+well as at its start:
+
+- `Block.done holds`: the block ends here, where `holds : Q t`.
+- `Block.seq first fun next kept post => …`: runs the block `first` from `t`. The rest is a
+  block from the state `next` it ends in, with `kept : next.Except t c₁` for `first`'s own
+  change `c₁`, and `post`, its postcondition.
+- `Block.loop invariant measure holds fun current kept inv => …`: a loop whose head is `t`.
+  The body is a block from any `current` in the invariant, with `kept : current.Except t c`,
+  and ends either back in the invariant with a smaller `measure`, or in the postcondition.
+  The invariant holds only what the loop changes: a fact about anything else is a fact about
+  `t`, and stays one.
+
+Each rule's remaining arguments default to `by rivet_changes`, which proves:
+
+- `t.Except s c`, from the facts the steps since `s` stated. Every register a step wrote is in
+  `c` or holds its old value again, and every store lies inside a range of `c`. The error
+  names the register or the store. A restored register it cannot see through can be proved
+  first: `have : t.registers .rbx = s.registers .rbx := …`.
+- `c₁.Within c`: every register of `c₁` is in `c` and every range of `c₁` lies inside one of `c`.
+- `c.Misses low high`, for `kept.readBytes`, and `register ∉ c.registers`, for `kept.registers`.
+
+Bounds on ranges go to `rivet_arith`. A change may be a definition.
 
 ```lean
-refine (first_block regions s entry).bind fun t post => ?_
-refine (second_block regions t post.status).consequence ?_
-```
+def copied (a : Arguments) : Changes :=
+  { registers := [.rcx, .r8, .r11], memory := [(a.output.toNat, a.output.toNat + a.size.toNat)] }
 
-A loop whose head is `0x2000`:
+theorem copy (s : MachineState) (pre : AtCopy a s) (room : (s.registers .rdi).toNat + 8 ≤ …) :
+    Block (image a) s (copied a) (fun t => t.status = .running 0x4017b3) := by
+  refine Block.loop (AtCopy a) (fun c => (s.registers .rdi).toNat - (c.registers .r8).toNat) pre
+    fun c kept inv => ?_
+  -- step; each exit: `Block.done (.inl ⟨…, smaller⟩)` back to the head, or `Block.done (.inr …)`
 
-```lean
-refine Ensures.loop (fun c => c.status = .running 0x2000)
-  (fun c => (c.registers .rcx).toNat) entry fun c at_head => ?_
--- each exit: `Ensures.done (.inl ⟨…, smaller⟩)` back to the head, or `Ensures.done (.inr …)`
+-- in a caller, at state `u`:
+refine Block.seq (copy a u ⟨u_status, …⟩ …) fun next kept status => ?_
 ```
 
 ## Stepping
 
-`rivet_step (disch := tac)? (as t)? (if h)? (tracking [field, …])?` executes the
-instruction at the current state's `status = .running address` through its contract.
+`rivet_step (disch := tac)? (as t)? (if h)?` executes the instruction at the current state's
+`status = .running address` through its contract.
 
 - **Facts.** The new state gets one fact per field: `status`, `registers`, `memory`,
-  `signFlag`, `zeroFlag`, `carryFlag`, `xmmRegisters`. `tracking [...]` keeps only those
-  listed.
+  `signFlag`, `zeroFlag`, `carryFlag`, `xmmRegisters`.
+- **Unchanged registers.** When the block's start state `t` has `kept : t.Except s c`, as in a
+  loop body or after `Block.seq`, a register outside `c` is read from `s`: the facts say
+  `s.registers .rdi`, so facts about `s` apply. `simp only [rivet]` does the same to your own
+  hypotheses.
 - **Names.** An unnamed state's facts are hidden. `as t` names the state and its facts
   `t_status`, `t_registers`, … (the state's name, `_`, the field).
 - **Checkpoints.** `as t` also restates the facts over the block's start state and drops
@@ -95,7 +126,7 @@ Lean's `lia`, from the hypotheses in scope and the listed facts.
 
 ```lean
 rivet_step (disch := exact Image.permits_writable stackMember rfl)
-exact Ensures.done (by rivet_arith [inv.bound])
+exact Block.done (by rivet_arith [inv.bound])
 ```
 
 ## Restricting a tactic to chosen facts
@@ -177,15 +208,6 @@ unfold definitions, so a region given by a definition needs it unfolded or its f
   `littleEndianAt_self`: reading back a stored value, or part of it.
 - `toNat_ofNat_of_lt`: `(BitVec.ofNat w n).toNat = n` when `n < 2^w`, as for an offset inside
   an address. `rivet_arith` uses it.
-- `Memory.SameOutside before after footprint`: memory changed only inside `footprint`;
-  `refl`, `trans`, `mono`, `storeBytes` (extend across a store inside the footprint),
-  `readBytes` (a read outside it is unchanged).
-
-## Registers
-
-- `MachineState.SameRegistersOutside before after written`: every register not in `written`
-  is unchanged; `refl`, `trans`, `mono`. Applied to a register:
-  `h .rsi (by decide) : after.registers .rsi = before.registers .rsi`.
 
 ## The `rivet` simp set
 
@@ -196,6 +218,8 @@ point reads of registers, and puts facts in one spelling. It contains:
   kind.
 - `Address.evaluate_*`: one per address shape. `Reg8.parent`, `Reg16.parent`, `Reg32.parent`,
   `Width.bytes`.
+- Registers: a read of a register a step did not write skips the ones it did, and a read of a
+  register the block's start state kept goes to the state it was kept from.
 - Spelling: `le_and_ne_iff_lt`, `lt_or_eq_iff_le`, `sub_ofNat_sub_ofNat`,
   `add_ofNat_add_ofNat`, `add_ofNat_sub_ofNat_of_le`, `add_ofNat_sub_ofNat_of_ge`,
   `sub_ofNat_add_ofNat_of_le`, `sub_ofNat_add_ofNat_of_ge`, `read_low_byte`,
