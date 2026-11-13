@@ -24,36 +24,24 @@ exhaust its recursion limit.
 - `t.Except s c`: every register outside `c.registers` and every byte outside `c.memory` is the
   same in `t` as in `s`. Flags, vector registers and the status are not compared: state what you
   need of them in `Q`. It compares the end with the start, so a register the block saves and
-  restores is not in the change.
-- Reading through it, with `kept : t.Except s c`:
-  `kept.registers .rsi : t.registers .rsi = s.registers .rsi` and
-  `kept.readBytes address size : readBytes t.memory address size = readBytes s.memory address size`
-  (give both: its bounds are proved where it is written, so `rw [kept.readBytes]` cannot find them).
-  `simp only [rivet]` reads registers through `kept` by itself.
+  restores is not in the change. Its fields, `sameRegisters` and `sameMemory`, are for proofs by hand.
 
 While you step through a block from `s`, the goal is `Block image s c Q t`: the same block, now
 at the state `t` reached so far. The code in between runs as nested blocks: each instruction is
 one, and so is any block you proved. Only the block's end is compared with its start, so a nested
 block may change what the block keeps, if the code after it restores it.
 
-- `Block.done holds`: the block ends here, where `holds : Q t`.
-- `Block.then inner fun next kept post => …`: runs the block `inner` from `t`, and goes on with
-  this block from the state `next` it ends in, with `kept : next.Except t c₁` for `inner`'s own
-  change `c₁`, and `post`, its postcondition. `rivet_step` does this with an instruction's contract.
+- `rivet_call block args (as q)?` runs a block you proved. Give it the block's arguments up to
+  its start state, which it takes from the goal. Each precondition is proved by reading back
+  (below); one that is not is an error naming it, and you give it by name:
+  `rivet_call copy a (room := by …)`. The proof goes on from the state the block ends in, with
+  `q_post`, its postcondition, and `q_kept`, what it left alone, in scope (hidden without `as q`).
+- `exact Block.done` ends the block at the current state. It proves `Q`, and that nothing outside
+  `c` changed, by reading back. `Block.done proof` takes your proof of `Q` instead.
 - `Block.loop invariant measure holds fun current kept inv => …`: a loop whose head is `t`, as a
-  block of its own, `Block image t c exit`; a caller runs it with `Block.then`. Each pass goes on
-  with that block from a `current` in the invariant, with `kept : current.Except t c`, and ends
-  either back in the invariant with a smaller `measure`, or in `exit`. The invariant holds only
-  what the loop changes: a fact about anything else is a fact about `t`, and stays one.
-
-`Block.done`'s `kept : t.Except s c` defaults to `by rivet_changes`. It proves that the steps and
-nested blocks since `s` changed nothing outside `c`: every register a step or nested block wrote is
-in `c` or holds its old value again, every store lies inside a range of `c`, and so does every range
-a nested block may change. A register pushed and popped needs nothing: it is read back from where
-it was saved. `rivet_changes` also proves `u.Except e c` for any state `e` since the block's start,
-and reads through every `Except` in scope. Its error names the register, the store or the nested
-block. A register restored in a way it cannot see through can be proved first:
-`have : t.registers .rbx = s.registers .rbx := …`. Bounds on ranges go to `rivet_arith`.
+  block of its own, `Block image t c exit`, where `holds : invariant t`. Each pass goes on from a
+  `current` in the invariant, and ends back in it with a smaller `measure`, or in `exit`.
+- `Block.then inner fun next kept post => …` is the law behind `rivet_call`.
 
 ```lean
 def copied (a : Arguments) : Changes :=
@@ -63,11 +51,35 @@ theorem copy (s : MachineState) (pre : AtCopy a s) (room : (s.registers .rdi).to
     Block (image a) s (copied a) (fun t => t.status = .running 0x4017b3) := by
   refine Block.loop (AtCopy a) (fun c => (s.registers .rdi).toNat - (c.registers .r8).toNat) pre
     fun c kept inv => ?_
-  -- step; each exit: `Block.done (.inl ⟨…, smaller⟩)` back to the head, or `Block.done (.inr …)`
-
--- in a caller, at state `u`:
-refine Block.then (copy a u ⟨u_status, …⟩ …) fun next kept status => ?_
+  -- step; each exit: `exact Block.done`
 ```
+
+## Reading back
+
+Rivet reads every value back to the block's start. A goal closes when, read that way, it follows
+from what you know. `Block.done` and `rivet_call` close their goals this way; `rivet_close` does
+it for any goal.
+
+What is read back:
+
+- a register, through each step that did not write it and each nested block whose change does
+  not list it;
+- memory (`readBytes m a n`, or a byte `m a`), through each store the read misses, each store
+  that wrote all of it (giving the bytes stored), and each nested block whose change it misses.
+  Each of these is a bound for `rivet_arith`;
+- a definition or record of yours that takes a state or a memory. A statement (`Globals a t`) is
+  taken apart into what it says; a value (`matchLength t`) is unfolded where `t` is a later state.
+  Definitions that take neither are left alone: unfold them yourself, or state what they equal.
+
+A goal is taken apart (`∧`, `∀`, your statements; of `∨`, either side), and a part closes when it
+is a hypothesis or a part of one, its two sides are the same, or `rivet_arith` proves it from the
+hypotheses in scope. For `∃`, give the witness: `Block.done ⟨status, 0, by rivet_close⟩`. The status
+and the flags are not read back through a nested block: a change says nothing of them, so the
+block's postcondition must.
+
+An error shows each part that did not close, as asked and as read back, and where each read
+stopped: at a store (named by its instruction and address) or a nested block it is not shown to
+miss, with the bound `rivet_arith` could not show. That bound is the fact to add.
 
 ## Stepping
 
@@ -75,32 +87,28 @@ refine Block.then (copy a u ⟨u_status, …⟩ …) fun next kept status => ?_
 `status = .running address` through its contract.
 
 - **Facts.** The new state gets one fact per field: `status`, `registers`, `memory`,
-  `signFlag`, `zeroFlag`, `carryFlag`, `xmmRegisters`.
-- **Names.** An unnamed state's facts are hidden. `as t` names the state and its facts
-  `t_status`, `t_registers`, … (the state's name, `_`, the field).
-- **Checkpoints.** `as t` also restates the facts over the block's start state and drops the
-  unnamed states before it. At the next checkpoint, `t`'s facts are used and removed; `t` itself
-  stays while one of your hypotheses mentions it.
-- **Unchanged registers.** In a loop body or after `Block.then`, a register a nested block kept is
-  read from the state it was kept from, so facts about that state apply.
-- **Memory.** Each store makes `mₙ` with `mₙ_def : mₙ = mₙ₋₁.storeBytes …`, and later facts
-  mention `mₙ`. Expand with `rw [m₂_def]`. A checkpoint removes a name nothing mentions.
+  `signFlag`, `zeroFlag`, `carryFlag`, `xmmRegisters`. They are stated over the block's start
+  state, or over the end of the last nested block for what that block changed. The previous
+  state is dropped, unless one of your hypotheses mentions it.
+- **Names.** `as t` names the new state and its facts `t_status`, `t_registers`, …. Unnamed,
+  they are hidden. Name a state to state a fact about it.
+- **Memory.** Each store makes `mₙ` with `mₙ_def : mₙ = mₙ₋₁.storeBytes …`.
 - **Branches.** A conditional jump gives two goals, `taken` and `fallthrough`. `if h` names the
   condition `h` in both (negated in `fallthrough`); otherwise it is hidden.
 - **Return.** After `ret` the status is `.running (readBytes m rsp 8)`: the 8 bytes at `rsp`
   before the return.
 - **Side conditions** (permissions, operand checks) are stated over the block's start state, so
   one hypothesis per region proves them. `rivet_step` tries `rfl`, `decide` and `assumption`, then
-  `disch`, or `simp [*, rivet]` without one. A `disch` that fails is an error at that step,
-  showing the goal it saw. Anything else stays open after the main goal.
-- Your own hypotheses are never rewritten. A checkpoint that cannot restate a fact is an error
-  naming the field.
+  `disch`, or `simp` without one. A `disch` that fails is an error at that step, showing the goal
+  it saw. Anything else stays open after the main goal.
+- Your own hypotheses are never rewritten.
 
 ## Arithmetic
 
 A step's facts are about words (`rdi + rax`, `rax < rdx`, `rsp - 8#64`); bounds and invariants are
 plain numbers over `x.toNat`. `rivet_arith [f₁, f₂, …]` proves goals that mix the two, with Lean's
-`lia`, from the hypotheses in scope and the listed facts.
+`lia`, from the hypotheses in scope and the listed facts, with the registers of the goal and of
+those facts read back first.
 
 - A fact is a statement about the goal's terms. `lia` does not look inside a structure, so list
   the fields a goal needs (`inv.bound`), and give a general lemma its arguments (`lemma x`).
@@ -153,26 +161,18 @@ Laws. A read of `size` bytes at `address` reads `address + i` as a word, so the 
 ask for `address.toNat + size ≤ 2^64`. Every bound a law asks for defaults to `by rivet_arith`, so
 a law takes only its other arguments (`exact Image.permits_writable member rfl`). `apply` and `rw`
 try the defaults at once. A default that fails is an error at that term; give the bound yourself,
-`(fits := by rivet_arith [region.fits])`, or keep it as a goal, `(fits := ?_)`. `lia` does not
-unfold definitions, so a region given by a definition needs it unfolded or its fields listed.
+`(fits := by rivet_arith [region.fits])`, or keep it as a goal, `(fits := ?_)`.
 
 - `Image.permits_readable`, `Image.permits_writable`: an access inside a region is permitted,
   given the region is in the image and grants the permission. Prove membership by `simp` with
   the region list's definitions unfolded.
 - `permits_iff`: what a permission means, address by address. `permits_inside`: a permission
   covers any part of its range.
-- `Memory.readBytes_storeBytes_inside`, `Memory.readBytes_storeBytes_outside`: a read inside a
-  store reads the stored bytes; a read outside it is unchanged.
-- `readBytes_littleEndianAt`, `readBytes_littleEndianAt_add`: reading back a stored value, or
-  part of it.
+- For a read the read-back stops at: `Memory.readBytes_storeBytes_inside` and `_outside` (a read
+  inside a store reads the stored bytes; one outside it is unchanged), `readBytes_littleEndianAt`
+  and `_add` (a stored value, or part of it).
 - `readBytes_succ`: a read in terms of its bytes. A read of known bytes:
   `simp only [readBytes_succ, BitVec.of_length_zero]; decide`.
-
-## The `rivet` simp set
-
-`simp only [rivet]` rewrites operand reads and writes, register parts and addresses into point
-reads of registers, reads a register through the steps that did not write it and through `kept`,
-and puts facts in one spelling.
 
 ## What a theorem means
 
