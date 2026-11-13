@@ -10,6 +10,16 @@ structure Changes where
   registers : List Reg := []
   memory : List (Nat × Nat) := []
 
+-- What writing an operand changes: its whole 64-bit register, or the bytes it stores.
+def Operand.changes (operand : Operand) (state : MachineState) : Changes :=
+  match operand with
+  | .reg8 register | .reg16 register | .reg32 register => { registers := [register.parent] }
+  | .reg64 register => { registers := [register] }
+  | .memory width address =>
+    let base := (address.evaluate state.registers).toNat
+    { memory := [(base, base + width.bytes)] }
+  | .immediate _ => {}
+
 def Changes.Misses (c : Changes) (low high : Nat) : Prop :=
   ∀ range ∈ c.memory, high ≤ range.1 ∨ range.2 ≤ low
 

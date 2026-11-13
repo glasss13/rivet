@@ -2,7 +2,7 @@ module
 public import Rivet.Laws.Instructions
 public import Rivet.Laws.Spelling
 public import Rivet.Tactics.Fetch
--- `rivet_step`: executes one instruction of an `Ensures` goal through its contract.
+-- `rivet_step`: executes one instruction of a `Block` goal through its contract.
 public meta import Lean
 
 -- The tactic implementation is public but not exposed; its helpers are private.
@@ -21,9 +21,9 @@ inductive Introduced {α : Sort u} (x : α) : Prop
 
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
-  unless type.isAppOfArity ``Ensures 3 do
-    throwError "rivet_step: goal is not `Ensures image s Q`"
-  let state := type.getAppArgs[1]!
+  unless type.isAppOfArity ``Block 5 do
+    throwError "rivet_step: goal is not a `Block`"
+  let state := type.getAppArgs[4]!
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
 
@@ -386,21 +386,21 @@ open Step in
         side.assign instructionProof
       | _ => if let some remaining ← discharge pc discharger side then unsolved := unsolved.push remaining
     instantiateMVars proof
-  -- 2. Continue from a fresh successor: build `Ensures.bind contract (fun next equation => ?_)`
+  -- 2. Continue from a fresh successor: build `Block.then contract (fun next equation => ?_)`
   --    directly, so no term is re-elaborated. Internal names are replaced at the end.
   let next ← mainGoal.withContext do
     let contractType ← whnfR (← inferType contract)
-    unless contractType.isAppOfArity ``Ensures 3 do
+    unless contractType.isAppOfArity ``Block 5 do
       throwError "rivet_step: unexpected contract type {contractType}"
-    let intermediate := contractType.getArg! 2
-    let postcondition := (← whnfR (← mainGoal.getType)).getArg! 2
+    let intermediate := contractType.getArg! 3
+    let goalArgs := (← whnfR (← mainGoal.getType)).getAppArgs
     let stateType := mkConst ``MachineState
     withLocalDeclD `rivet_next stateType fun successor => do
       withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
-        let target := mkApp3 (mkConst ``Ensures) image successor postcondition
+        let target := mkApp5 (mkConst ``Block) image goalArgs[1]! goalArgs[2]! goalArgs[3]! successor
         let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
         let continuation ← mkLambdaFVars #[successor, equation] goal
-        mainGoal.assign (← mkAppM ``Ensures.bind #[contract, continuation])
+        mainGoal.assign (← mkAppM ``Block.then #[contract, continuation])
         return goal.mvarId!
   setGoals [next]
   let equation := mkIdent `rivet_step_equation

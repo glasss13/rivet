@@ -1,7 +1,7 @@
 module
 public import Rivet.Interpreter.Memory
 public import Rivet.Laws.Program
--- `rivet_fetch`: proves which instruction a concrete program holds at an address.
+-- Proves which instruction a concrete program holds at an address, for `rivet_step`.
 public meta import Lean
 -- The lookup routine is public but not exposed; its helpers are private.
 public section
@@ -68,27 +68,6 @@ meta def prove (original address : Expr) (pc : Nat) : MetaM (Option (Expr × Exp
   return some (← restate instruction (← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetched result)))
 
 end Fetch
-
-syntax (name := rivetFetch) "rivet_fetch" : tactic
-
-@[tactic rivetFetch] meta def Fetch.evalRivetFetch : Tactic := fun _ => withMainContext do
-  let goal ← getMainGoal
-  let type ← whnfR (← instantiateMVars (← goal.getType))
-  let some (_, fetched, expected) := type.eq?
-    | throwError "rivet_fetch: goal is not `program.fetch address = some instruction`"
-  unless fetched.isAppOfArity ``Program.fetch 2 do
-    throwError "rivet_fetch: goal is not `program.fetch address = some instruction`"
-  let program := fetched.getArg! 0
-  let address := fetched.getArg! 1
-  let some pc ← Fetch.addressValue? address
-    | evalTactic (← `(tactic| assumption))
-  match ← Fetch.prove program address pc with
-  | some (instruction, proof) =>
-    unless ← isDefEq expected (← mkAppM ``Option.some #[instruction]) do
-      throwError "rivet_fetch: the instruction at address {pc} is `{instruction.getArg! 2}`"
-    goal.assign proof
-    replaceMainGoal []
-  | none => evalTactic (← `(tactic| assumption))
 
 end Rivet
 end
