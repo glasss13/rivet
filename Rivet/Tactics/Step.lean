@@ -386,8 +386,9 @@ open Step in
         side.assign instructionProof
       | _ => if let some remaining ← discharge pc discharger side then unsolved := unsolved.push remaining
     instantiateMVars proof
-  -- 2. Continue from a fresh successor: build `Block.then contract (fun next equation => ?_)`
-  --    directly, so no term is re-elaborated. Internal names are replaced at the end.
+  -- 2. Continue from a fresh successor: build `Block.then contract (fun next _ equation => ?_)`
+  --    directly, so no term is re-elaborated. Internal names are replaced at the end. The
+  --    contract's change is dropped: the equation says more.
   let next ← mainGoal.withContext do
     let contractType ← whnfR (← inferType contract)
     unless contractType.isAppOfArity ``Block 5 do
@@ -396,12 +397,14 @@ open Step in
     let goalArgs := (← whnfR (← mainGoal.getType)).getAppArgs
     let stateType := mkConst ``MachineState
     withLocalDeclD `rivet_next stateType fun successor => do
+      let kept := mkApp3 (mkConst ``MachineState.Except) successor (contractType.getArg! 1) (contractType.getArg! 2)
+      withLocalDeclD `rivet_kept kept fun kept => do
       withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
         let target := mkApp5 (mkConst ``Block) image goalArgs[1]! goalArgs[2]! goalArgs[3]! successor
         let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
-        let continuation ← mkLambdaFVars #[successor, equation] goal
+        let continuation ← mkLambdaFVars #[successor, kept, equation] goal
         mainGoal.assign (← mkAppM ``Block.then #[contract, continuation])
-        return goal.mvarId!
+        return (← goal.mvarId!.clear kept.fvarId!)
   setGoals [next]
   let equation := mkIdent `rivet_step_equation
   -- Unpack existential results (IMUL's unconstrained flags) down to the equation.
