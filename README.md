@@ -46,10 +46,10 @@ def sum : Program :=
 theorem add_body (regions : List Region) (s : MachineState) (entry : s.status = .running 0x1001) :
     Block ⟨sum, regions⟩ s { registers := [.rax, .rbx] }
       (fun t => t.status = .running 0x100a ∧ t.registers .rax = s.registers .rdi + s.registers .rsi) := by
-  rivet_step                                             -- mov rbx, rdi
-  rivet_step                                             -- add rbx, rsi
-  rivet_step as t                                        -- mov rax, rbx
-  exact Block.done ⟨t_status, by simp only [t_registers, rivet]⟩
+  rivet_step                                           -- mov rbx, rdi
+  rivet_step                                           -- add rbx, rsi
+  rivet_step                                           -- mov rax, rbx
+  exact Block.done
 
 theorem sum_correct (regions : List Region) (s : MachineState)
     (entry : s.status = .running 0x1000)
@@ -65,28 +65,32 @@ theorem sum_correct (regions : List Region) (s : MachineState)
         f.registers .rax = s.registers .rdi + s.registers .rsi ∧
         f.registers .rsp = s.registers .rsp + 8#64) := by
   have room := (permits_iff.mp write).1
-  rivet_step (disch := exact permits_inside write) as p  -- push rbx
-  refine Block.then (add_body regions p p_status) fun q kept ⟨q_status, q_rax⟩ => ?_
-  rivet_step (disch := exact permits_inside read)        -- pop rbx
-  rivet_step (disch := exact permits_inside read) as f   -- ret
-  refine Block.done ⟨?_, by simp only [f_registers, q_rax, p_registers, rivet], by simp only [f_registers, rivet]⟩
-  -- the body left the return address alone, and it sits above the saved rbx
-  rw [f_status, kept.readBytes (s.registers .rsp) 8, p_memory, m₁_def, Memory.readBytes_storeBytes_outside]
-  rfl
+  rivet_step (disch := exact permits_inside write)    -- push rbx
+  rivet_call add_body regions                          -- the body
+  rivet_step (disch := exact permits_inside read)     -- pop rbx
+  rivet_step (disch := exact permits_inside read)     -- ret
+  exact Block.done
 ```
 
-Each `rivet_step` executes one instruction and records what it changed. An instruction
-that touches memory asks for a permission; `disch` proves it by naming the permission
-the access falls in. The bounds a law asks for prove themselves with `rivet_arith`, which
-handles arithmetic about words and numbers.
+Each `rivet_step` executes one instruction. An instruction that touches memory asks for a
+permission; `disch` proves it by naming the permission the access falls in.
 
-`add_body` is a block of its own, and `sum_correct` runs it as a nested block with
-`Block.then`: it goes on from the state `q` the body ends in, with the body's postcondition
-and `kept`, which says everything outside the body's change is as it was. `Block.done` ends
-the block once `Q` holds of the current state, and checks the change against what the steps
-and the nested block recorded. `rbx` is not in it, although the body changed it, because
-`pop` reads back what `push` stored and the body left that slot alone; leaving out `rax` or
-the stack slot is an error naming it.
+Rivet reads every value back to the block's start: a register through the steps that did not
+write it, memory through the stores that missed it, and both through a nested block that left
+them alone. A goal closes when, read that way, it is one of your hypotheses, its two sides are
+the same, or arithmetic proves it from your hypotheses. So nothing is restated by hand.
+
+`Block.done` ends the block that way. It proves `Q` of the current state, and it proves the
+change: every register and byte the change does not list is as it was. `rbx` is not listed,
+although the body changed it, because `pop` reads back what `push` stored and the body left that
+slot alone. Leaving out `rax` or the stack slot is an error naming it. The return address is the
+same read: above the saved `rbx`, untouched by the body. That it does not wrap around the end of
+memory is arithmetic, from `room`.
+
+`rivet_call` runs a block you proved as a nested block. It starts it at the current state,
+proves its preconditions the same way (`add_body` asks only for its entry address), and goes on
+from the state it ends in, with its postcondition and what it left alone. A precondition it
+cannot prove is an error at the call naming it; give it by name, `rivet_call f a (room := …)`.
 
 To work on a real binary, generate the program instead of writing it by hand:
 
