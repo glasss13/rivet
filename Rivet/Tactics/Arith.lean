@@ -1,6 +1,8 @@
 module
+public import Rivet.Tactics.Registers
 -- `rivet_arith (only)? [facts]`: proves an arithmetic goal about words and numbers with `lia`, within
--- a fixed budget that `maxHeartbeats` does not change. With `only`, the other hypotheses are hidden.
+-- a fixed budget that `maxHeartbeats` does not change. The registers of the goal and of the facts it
+-- uses are read back to the block's start first. With `only`, the other hypotheses are hidden.
 public meta import Lean
 public section
 namespace Rivet
@@ -13,13 +15,14 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
 @[tactic rivetArith] meta def evalRivetArith : Tactic := fun stx => withMainContext do
   let only := !stx[1].isNone
   let facts := if stx[2].isNone then #[] else stx[2][1].getSepArgs
-  let mut goal ← getMainGoal
   let others := (← getGoals).tail
+  let mut goal ← getMainGoal
   let hidden ← if only then goal.withContext do
       (← getLCtx).foldlM (init := #[]) fun hidden decl => do
         if decl.isImplementationDetail then return hidden
         return if ← isProp decl.type then hidden.push decl.fvarId else hidden
     else pure #[]
+  let mut given := #[]
   for term in facts do
     let proof ← instantiateMVars (← Tactic.elabTerm term none)
     let type ← inferType proof
@@ -28,7 +31,22 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
       unless ← isProp domain do
         throwError "rivet_arith: the fact `{term}` is general: `{type}`. `lia` uses only facts about \
           the goal's terms; give it its arguments."
-    goal := (← (← goal.assert (← mkFreshUserName `fact) type proof).intro1P).2
+    let (fact, next) ← (← goal.assert (← mkFreshUserName `fact) type proof).intro1P
+    given := given.push fact
+    goal := next
+  -- The goal and the facts it may use, with their registers read back, so they meet.
+  setGoals [goal]
+  let moved ← goal.withContext do
+    let later ← ReadBack.later
+    let used ← if only then given.mapM (·.getDecl) else ReadBack.hypotheses
+    let moved ← used.filterM fun decl => return later.any ((← instantiateMVars decl.type).containsFVar ·)
+    let target ← instantiateMVars (← goal.getType)
+    if moved.isEmpty && !later.any (target.containsFVar ·) then pure none else
+      some <$> ReadBack.registersBack target (← moved.mapM fun decl => Term.exprToSyntax decl.toExpr)
+  if let some readBack := moved then
+    evalTactic (← `(tactic| try $readBack:tactic))
+    let [read] ← getGoals | setGoals others; return
+    goal := read
   for fact in hidden.reverse do
     goal ← goal.tryClear fact
   setGoals [goal]

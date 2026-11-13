@@ -54,9 +54,10 @@ private theorem Block.of_step {c : Changes} {post : MachineState → Prop}
     kept _ (transition (choices 0)), transition (choices 0)⟩⟩
 
 -- `done` and `then` prove a block from a state `t` it has reached, so they also apply at its start.
+-- `done` proves `Q` and the change by reading `t` back to `s`, unless given proofs.
 
 theorem Block.done {image : Image} {s t : MachineState} {c : Changes} {Q : MachineState → Prop}
-    (holds : Q t) (kept : t.Except s c := by rivet_changes) : Block image s c Q t :=
+    (holds : Q t := by rivet_close) (kept : t.Except s c := by rivet_close) : Block image s c Q t :=
   ⟨fun choices => ⟨t, ⟨0, execute_zero image t choices⟩, kept, holds⟩⟩
 
 -- A nested block from `t`, then the rest of this block from every state it can end in, knowing what

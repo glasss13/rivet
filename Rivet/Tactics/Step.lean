@@ -19,6 +19,10 @@ universe u
 inductive Introduced {α : Sort u} (x : α) : Prop
   | intro
 
+-- Which instruction made a store's memory, for errors that name the store.
+inductive StoredBy (memory : Memory) (address : Nat) (operation : Op) : Prop
+  | intro
+
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   unless type.isAppOfArity ``Block 5 do
@@ -125,12 +129,22 @@ private meta def markerOf? (subject : FVarId) : MetaM (Option FVarId) := do
     if type.isAppOfArity ``Introduced 2 && type.appArg! == .fvar subject then return some decl.fvarId
   return none
 
-private meta def mark (goal : MVarId) (subject : FVarId) : MetaM MVarId := goal.withContext do
-  let type ← mkAppM ``Introduced #[.fvar subject]
-  let proof ← mkAppOptM ``Introduced.intro #[none, Expr.fvar subject]
-  let (marker, goal) ← (← goal.assert (← ownName markModule) type proof).intro1P
+private meta def hide (goal : MVarId) (proof : Expr) : MetaM MVarId := goal.withContext do
+  let (marker, goal) ← (← goal.assert (← ownName markModule) (← inferType proof) proof).intro1P
   goal.setFVarKind marker .implDetail
   return goal
+
+private meta def mark (goal : MVarId) (subject : FVarId) : MetaM MVarId := goal.withContext do
+  hide goal (← mkAppOptM ``Introduced.intro #[none, Expr.fvar subject])
+
+private meta def markersOf (subject : FVarId) : MetaM (Array FVarId) := do
+  let mut found := #[]
+  for decl in ← getLCtx do
+    unless decl.isImplementationDetail do continue
+    let type ← instantiateMVars decl.type
+    if (type.isAppOfArity ``Introduced 2 && type.appArg! == .fvar subject) ||
+        (type.isAppOfArity ``StoredBy 3 && type.getArg! 0 == .fvar subject) then found := found.push decl.fvarId
+  return found
 
 -- A step's fact about a state: hidden for an unnamed state, `t_<field>` for a named one.
 private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
@@ -228,7 +242,7 @@ private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVar
       for (about, decl) in notes do
         if about == subject then uses := uses.push (← instantiateMVars decl.type)
   let dropped := subjects.filter (!kept.contains ·)
-  let markers ← dropped.filterMapM markerOf?
+  let markers ← dropped.flatMapM markersOf
   let goal ← goal.tryClearMany ((notes.filter (!kept.contains ·.1)).map (·.2.fvarId))
   let goal ← goal.tryClearMany markers
   goal.tryClearMany dropped
@@ -262,7 +276,7 @@ private meta def checkpoint : TacticM Unit := withMainContext do
 
 -- A store's result becomes a variable `mₙ`, defined over the start state and earlier names and
 -- placed before the new state, so later facts mention the name instead of repeating the stores.
-private meta def nameMemory : TacticM Unit := do
+private meta def nameMemory (pc : Nat) (operation : Expr) : TacticM Unit := do
   let fact := mkIdent `rivet_fact_memory
   let stored : TacticM (Option (FVarId × Expr)) := withMainContext do
     let some decl := (← getLCtx).findFromUserName? fact.getId | return none
@@ -286,7 +300,8 @@ private meta def nameMemory : TacticM Unit := do
       ∃ memory : Memory, memory = $(← Term.exprToSyntax value) := ⟨_, rfl⟩))
     let (_, goal) ← (← getMainGoal).introNP reverted.size
     let memory ← goal.withContext do return (← getLCtx).findFromUserName? (name index)
-    replaceMainGoal [← mark goal memory.get!.fvarId]
+    let goal ← mark goal memory.get!.fvarId
+    replaceMainGoal [← hide goal (mkApp3 (mkConst ``StoredBy.intro) (.fvar memory.get!.fvarId) (mkNatLit pc) operation)]
     return some definition
   let some definition := definition | return
   evalTactic (← `(tactic| replace $fact:ident := Eq.trans $fact (Eq.symm $definition)))
@@ -443,7 +458,7 @@ open Step in
       -- Operand equations, register parents, and addresses as point reads of registers
       -- (`r .rbx - 8#64`), never the whole register file.
       rivet] at $locations*))
-  nameMemory
+  nameMemory pc operation
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   let isBranch := operation.isAppOfArity ``Op.jcc 2
   if let some condition := condition? then
@@ -461,26 +476,15 @@ open Step in
       simp only [Condition.holds, rivet] at $path:ident <;>
       simp only [$path:ident, ↓reduceIte, rivet] at $status:ident))
     internal := internal.push `rivet_fact_path
-  -- 5. In each goal: compact if requested, then give the new state and
-  --    its facts their final names (yours, or inaccessible).
+  -- 5. In each goal: state the new state over the block's start, drop the old one, then give the new
+  --    state and its facts their final names (yours, or inaccessible).
   let finalName ← match named? with
     | some name => pure name
     | none => mkFreshUserName `s
   let mut finished := #[]
   for (branch, index) in (← getGoals).zipIdx do
     setGoals [branch]
-    -- Path conditions are stated in terms of named states right away (the facts of the
-    -- unnamed states, and of `old` if it is named); other facts refer to the previous
-    -- state until a state is named.
-    if isBranch then
-      withMainContext do
-        let oldNamed := !(← old.fvarId!.getUserName).hasMacroScopes
-        let mut states ← (← introducedStates).filterM fun state =>
-          return (← state.getUserName).hasMacroScopes
-        if oldNamed then states := states.push old.fvarId!
-        if let some path := (← getLCtx).findFromUserName? `rivet_fact_path then
-          replaceMainGoal (← restate (← getMainGoal) states #[path.fvarId]).toList
-    if named?.isSome then checkpoint
+    checkpoint
     -- A path condition that rewrites to `False` closes the goal.
     let some goal := (← getGoals).head? | continue
     let mut goal := goal
