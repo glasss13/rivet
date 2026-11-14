@@ -56,6 +56,8 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
     (evalTactic (← `(tactic| lia)))
   try
     tryCatchRuntimeEx attempt fun error => do
+      -- Its budget is its own; Lean's recursion limit is not, and stops the tactic.
+      if error.isMaxRecDepth then throw error
       -- `grind` reports its own timeout as an ordinary failure, so compare the work done.
       if error.isMaxHeartbeat || (← IO.getNumHeartbeats) - start ≥ arithBudget * 1000 then
         throwError "rivet_arith: no proof within its budget of {arithBudget} heartbeats; \

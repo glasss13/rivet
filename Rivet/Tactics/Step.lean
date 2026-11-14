@@ -10,6 +10,15 @@ public section
 namespace Rivet
 open Lean Meta Elab Tactic
 
+-- Lean's recursion and heartbeat limits stop a tactic wherever they are reached, and nothing in
+-- Rivet catches them on the way. Each tactic says, as they pass, what it was doing.
+meta def reporting {α} (doing : MessageData) (tactic : TacticM α) : TacticM α :=
+  tryCatchRuntimeEx tactic fun error => do
+    if error.isMaxHeartbeat then
+      throwError "{doing}: it ran out of heartbeats. Raise `maxHeartbeats` for this theorem, or prove this yourself."
+    if error.isMaxRecDepth then throwError "{doing}: it reached Lean's recursion limit."
+    throw error
+
 namespace Step
 
 universe u
@@ -372,6 +381,7 @@ open Step in
   let (image, old) ← goalParts (← getMainGoal)
   let program := mkApp (mkConst ``Image.program) image
   let (written, pc, location) ← findPc old
+  reporting m!"rivet_step, at the instruction at 0x{String.ofList (Nat.toDigits 16 pc)}" do
   -- An address given by a definition is passed as its value, so the next address is a literal too.
   let (address, location) ← if (← getBitVecValue? written).isSome then pure (written, location) else do
     let address := toExpr (BitVec.ofNat 64 pc)
