@@ -67,6 +67,7 @@ private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := 
     | ``Op.movzx => pure ``Rivet.movzx | ``Op.movsxd => pure ``Rivet.movsxd
     | ``Op.mov => pure ``Rivet.move | ``Op.shift => pure ``Rivet.shift
     | ``Op.imul => pure ``Rivet.imul | ``Op.not => pure ``Rivet.bitwise_not
+    | ``Op.mul => pure ``Rivet.mul | ``Op.tzcnt => pure ``Rivet.tzcnt
     | ``Op.inc => pure ``Rivet.inc | ``Op.dec => pure ``Rivet.dec
     | ``Op.jmp => pure ``Rivet.jump | ``Op.jcc => pure ``Rivet.branch
     | ``Op.setcc => pure ``Rivet.setcc | ``Op.cmovcc => pure ``Rivet.cmovcc

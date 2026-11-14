@@ -174,7 +174,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
   | .shift operation destination count =>
     if validShift destination count then
       let width := (destination.width.getD .qword).bits
-      -- For the supported widths, count masking is reduction modulo 32 or 64.
+      -- The count is masked to 5 bits, or 6 for qword; for the supported shifts that is reduction modulo the width.
       let count := count % width
       let value := (state.readOperand64 destination).setWidth width
       let result : BitVec width := match operation with
@@ -206,7 +206,28 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
         signFlag := undefinedFlags.signFlag
         zeroFlag := undefinedFlags.zeroFlag }
     else { state with status := .fault }
-  | .lea destination address => next nextAddress (state.write destination (address.evaluate state.registers))
+  | .mul source =>
+    let product := (state.registers .rax).setWidth 128 * (state.registers source).setWidth 128
+    let high := (product >>> 64).setWidth 64
+    next nextAddress { (state.write .rax (state.registers .rax * state.registers source)).write .rdx high with
+      carryFlag := high != 0
+      overflowFlag := high != 0
+      signFlag := undefinedFlags.signFlag
+      zeroFlag := undefinedFlags.zeroFlag }
+  | .tzcnt destination source =>
+    if validConditionalMove destination source && state.canRead image source then
+      let width := (destination.width.getD .qword).bits
+      let value := (state.readOperand64 source).setWidth width
+      let result := value.ctz
+      next nextAddress { state.writeOperand64 destination (result.setWidth 64) with
+        carryFlag := value.toNat == 0
+        zeroFlag := result.toNat == 0
+        signFlag := undefinedFlags.signFlag
+        overflowFlag := undefinedFlags.overflowFlag }
+    else { state with status := .fault }
+  | .lea destination address =>
+    if validLea destination then next nextAddress (state.writeOperand64 destination (address.evaluate state.registers))
+    else { state with status := .fault }
   | .movzx destination source =>
     if (source.width == some .byte || source.width == some .word) && state.canRead image source then
       next nextAddress (state.write destination.parent (state.readOperand64 source))
@@ -225,15 +246,21 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
       next nextAddress (state.writeOperand64 destination (~~~(state.readOperand64 destination)))
     else { state with status := .fault }
   | .inc destination =>
-    let result := state.registers destination + 1
-    next nextAddress { state.write destination result with
-      zeroFlag := result == 0, signFlag := result.msb,
-      overflowFlag := (state.registers destination).saddOverflow 1 }
+    if state.canRead image destination && state.canWrite image destination then
+      let width := (destination.width.getD .qword).bits
+      let value := (state.readOperand64 destination).setWidth width
+      let result := value + 1#width
+      next nextAddress { state.writeOperand64 destination (result.setWidth 64) with
+        zeroFlag := result.toNat == 0, signFlag := result.msb, overflowFlag := value.saddOverflow 1#width }
+    else { state with status := .fault }
   | .dec destination =>
-    let result := state.registers destination - 1
-    next nextAddress { state.write destination result with
-      zeroFlag := result == 0, signFlag := result.msb,
-      overflowFlag := (state.registers destination).ssubOverflow 1 }
+    if state.canRead image destination && state.canWrite image destination then
+      let width := (destination.width.getD .qword).bits
+      let value := (state.readOperand64 destination).setWidth width
+      let result := value - 1#width
+      next nextAddress { state.writeOperand64 destination (result.setWidth 64) with
+        zeroFlag := result.toNat == 0, signFlag := result.msb, overflowFlag := value.ssubOverflow 1#width }
+    else { state with status := .fault }
   | .jmp target => { state with status := .running target }
   | .jcc condition target =>
     if condition.holds state then { state with status := .running target } else next nextAddress state
