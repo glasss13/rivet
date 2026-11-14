@@ -11,7 +11,7 @@ open Lean Meta Elab Tactic
 syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Term.namedArgument <|> term:max))*
   (" as " ident)? : tactic
 
-@[tactic rivetCall] meta partial def evalRivetCall : Tactic := fun stx => withMainContext do
+@[tactic rivetCall] meta partial def evalRivetCall : Tactic := fun stx => withMainContext <| reporting m!"rivet_call" do
   let main ← getMainGoal
   let pending := (← getGoals).tail
   let goalArgs := (← whnfR (← main.getType)).getAppArgs

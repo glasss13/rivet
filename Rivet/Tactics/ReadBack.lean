@@ -357,7 +357,8 @@ meta def finish (goal : MVarId) (facts : Array (Expr × Expr)) : TacticM Bool :=
   if ← attempt (← `(tactic| with_reducible rfl)) then return true
   for (proof, part) in facts do
     if part.isForall then
-      if ← attempt (← `(tactic| apply $(← Term.exprToSyntax proof) <;> assumption)) then return true
+      let proof ← Term.exprToSyntax (← mkExpectedTypeHint proof part)
+      if ← attempt (← `(tactic| with_reducible apply $proof <;> with_reducible assumption)) then return true
   return false
 
 meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM (Option MessageData) :=
@@ -429,7 +430,7 @@ where
 end ReadBack
 
 open ReadBack in
-@[tactic rivetClose] meta def evalRivetClose : Tactic := fun _ => withMainContext do
+@[tactic rivetClose] meta def evalRivetClose : Tactic := fun _ => withMainContext <| reporting m!"rivet_close" do
   let start ← getMainGoal
   let others := (← getGoals).tail
   let wanted := (← instantiateMVars (← start.getType)).headBeta
@@ -438,14 +439,15 @@ open ReadBack in
   unless ← start.assumptionCore do
     let known ← facts start
     for (leaf, note) in ← leaves start do
-      let saved ← saveState
-      if (← close leaf known).isNone then continue
-      -- The hypotheses are read back only for a part that needs them: most parts do not.
-      saved.restore
-      let moved ← ReadBack.known leaf
-      if let some why ← close moved (← facts moved) then
-        let asked ← leaf.withContext do addMessageContext m!"{← instantiateMVars (← leaf.getType)}"
-        failures := failures.push m!"{note.getD asked}\nRead back,{why}"
+      let asked ← leaf.withContext do addMessageContext m!"{← instantiateMVars (← leaf.getType)}"
+      let failure ← reporting m!"rivet_close: the part{indentD (note.getD asked)}\nwas not closed" do
+        let saved ← saveState
+        if (← close leaf known).isNone then return none
+        -- The hypotheses are read back only for a part that needs them: most parts do not.
+        saved.restore
+        let moved ← ReadBack.known leaf
+        return (← close moved (← facts moved)).map fun why => m!"{note.getD asked}\nRead back,{why}"
+      if let some failure := failure then failures := failures.push failure
   unless failures.isEmpty do
     throwError "rivet_close: {failures.size} part(s) of{indentExpr wanted}\ndo not follow from what is known.\n\
       {MessageData.joinSep (failures.toList.map fun why => m!"• {why}") "\n"}"
