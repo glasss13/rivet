@@ -53,24 +53,18 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
         )?;
     }
     writeln!(source, "]")?;
+    // One number per segment, read by shifting: Lean computes on number literals in one step, where a
+    // literal list of thousands of bytes overflows its recursion limit to compile or to index.
     for segment in segments {
+        let digits: String = segment.bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
         writeln!(
             source,
-            "\n-- The bytes of the segment at {:#x}.\ndef segment_{:x} : Rivet.Memory :=\n  let bytes : ByteArray := ⟨#[",
-            segment.address, segment.address
-        )?;
-        for chunk in segment.bytes.chunks(16) {
-            let bytes = chunk
-                .iter()
-                .map(|byte| format!("{byte:#04x}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln!(source, "    {bytes},")?;
-        }
-        writeln!(
-            source,
-            "  ]⟩\n  fun address => (bytes[(address - {:#x}#64).toNat]?.getD 0).toFin",
-            segment.address
+            "\n-- The bytes of the segment at {:#x}: byte `i` is digit `i`, base 256, of `bytes`; zero past the\n-- file's data.\ndef segment_{:x} : Rivet.Memory := fun address =>\n  let offset := (address - {:#x}#64).toNat\n  if offset < {} then Fin.ofNat 256 (bytes >>> (8 * offset)) else 0\nwhere bytes : Nat := 0x{}",
+            segment.address,
+            segment.address,
+            segment.address,
+            segment.bytes.len(),
+            if digits.is_empty() { "0" } else { &digits }
         )?;
     }
     // One field per segment, named after the segment's bytes, so a proof reads
