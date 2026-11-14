@@ -162,10 +162,10 @@ and facts about ranges are plain numbers over `address.toNat`.
 
 Laws. A read of `size` bytes at `address` reads `address + i` as a word, so the laws about reads
 ask for `address.toNat + size ≤ 2^64`. Every bound a law asks for defaults to `by rivet_arith`, so
-a law takes only its other arguments (`exact Image.permits_writable member rfl`). `exact` and `rw`
-try the defaults at once; `apply` leaves them as goals. A default that fails is an error at that
-term; give the bound yourself, `(fits := by rivet_arith [region.fits])`, or keep it as a goal,
-`(fits := ?_)`.
+a law takes only its other arguments (`exact Image.permits_writable member rfl`). `exact`, `rw`, and
+`apply` given the law's arguments try the defaults at once; `apply law` alone leaves them as goals.
+A default that fails is an error at that term; give the bound yourself,
+`(fits := by rivet_arith [region.fits])`, or keep it as a goal, `(fits := ?_)`.
 
 - `Image.permits_readable`, `Image.permits_writable`: an access inside a region is permitted,
   given the region is in the image and grants the permission. Prove membership by `simp` with

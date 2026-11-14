@@ -9,7 +9,7 @@ namespace Rivet
 
 -- An offset is a plain number; inside an address it is `BitVec.ofNat 64 offset`, which `lia` reads
 -- through this theorem.
-@[lia] theorem toNat_ofNat_of_lt {w n : Nat} (small : n < 2^w) : (BitVec.ofNat w n).toNat = n := by
+@[lia =] theorem toNat_ofNat_of_lt {w n : Nat} (small : n < 2^w) : (BitVec.ofNat w n).toNat = n := by
   rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt small]
 
 theorem permits_iff {permission : BitVec 64 → Bool} {base : BitVec 64} {length : Nat} :

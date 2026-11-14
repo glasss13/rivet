@@ -10,6 +10,21 @@ open Lean Meta Elab Tactic
 
 meta def arithBudget : Nat := 20000
 
+-- `lia`'s report without `grind`'s restatements of the goal's facts (asserted facts, equivalence
+-- classes): on a large context they are nearly all of it.
+meta partial def withoutRestatements : MessageData → MessageData
+  | .trace data header children =>
+    .trace data header <| (children.filter fun
+      | .trace part _ _ => part.cls != `facts && part.cls != `eqc
+      | _ => true).map withoutRestatements
+  | .withContext context message => .withContext context (withoutRestatements message)
+  | .withNamingContext naming message => .withNamingContext naming (withoutRestatements message)
+  | .nest indent message => .nest indent (withoutRestatements message)
+  | .group message => .group (withoutRestatements message)
+  | .compose first second => .compose (withoutRestatements first) (withoutRestatements second)
+  | .tagged tag message => .tagged tag (withoutRestatements message)
+  | message => message
+
 syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tactic
 
 @[tactic rivetArith] meta def evalRivetArith : Tactic := fun stx => withMainContext do
@@ -71,7 +86,7 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
         - A goal that adds or subtracts a shifted value may need `grind`.\n\
         - `lia` does not unfold definitions: unfold them, or list facts about them.\n\
         - A law's bound that fails by default can be given, or kept as a goal: `(fits := ?_)`.\
-        {indentD error.toMessageData}"
+        {indentD (withoutRestatements error.toMessageData)}"
   finally
     IO.setNumHeartbeats start
   setGoals others
