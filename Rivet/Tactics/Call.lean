@@ -11,7 +11,7 @@ open Lean Meta Elab Tactic
 syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Term.namedArgument <|> term:max))*
   (" as " ident)? : tactic
 
-@[tactic rivetCall] meta def evalRivetCall : Tactic := fun stx => withMainContext do
+@[tactic rivetCall] meta partial def evalRivetCall : Tactic := fun stx => withMainContext do
   let main ← getMainGoal
   let pending := (← getGoals).tail
   let goalArgs := (← whnfR (← main.getType)).getAppArgs
@@ -46,19 +46,32 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
     if stx[3].getNumArgs > 0 then pure (stx[3][1].getId.appendAfter suffix) else mkFreshUserName `h
   let call ← instantiateMVars (mkAppN given holes)
   let args := (← whnfR (← inferType call)).getAppArgs
+  let postName ← name "_post"
   let rest ← main.withContext do
     withLocalDeclD (← name "") (mkConst ``MachineState) fun next => do
     withLocalDeclD (← name "_kept") (mkApp3 (mkConst ``MachineState.Except) next args[1]! args[2]!) fun kept => do
-    withLocalDeclD (← name "_post") (args[3]!.beta #[next]) fun post => do
+    withLocalDeclD postName (args[3]!.beta #[next]) fun post => do
       let target := mkApp5 (mkConst ``Block) goalArgs[0]! goalArgs[1]! goalArgs[2]! goalArgs[3]! next
       let rest ← mkFreshExprSyntheticOpaqueMVar target (← main.getTag)
       main.assign (← mkAppM ``Block.then #[call, ← mkLambdaFVars #[next, kept, post] rest])
-      -- The status on its own, where the next step looks for it.
-      let mut goal := rest.mvarId!
-      for (proof, part) in ← ReadBack.parts post (← inferType post) do
-        if proof != post && (part.eq?.map fun (_, lhs, _) => lhs.isAppOfArity ``MachineState.status 1).getD false then
-          goal := (← (← goal.assert (← mkFreshUserName `h) part proof).intro1P).2
-      return goal
-  setGoals ([rest] ++ pending)
+      (← ways rest.mvarId! post.fvarId! postName).mapM fun (goal, post) => goal.withContext do
+        -- The status on its own, where the next step looks for it.
+        let mut goal := goal
+        for (proof, part) in ← ReadBack.parts (.fvar post) (← post.getType) do
+          if proof != .fvar post && (part.eq?.map fun (_, lhs, _) => lhs.isAppOfArity ``MachineState.status 1).getD false then
+            goal := (← (← goal.assert (← mkFreshUserName `h) part proof).intro1P).2
+        return goal
+  setGoals (rest.toList ++ pending)
+where
+  -- A postcondition that is an `∨` is one way out per side: a goal for each.
+  ways (goal : MVarId) (post : FVarId) (name : Name) : MetaM (Array (MVarId × FVarId)) := goal.withContext do
+    let mut type := (← instantiateMVars (← post.getType)).headBeta
+    while ← ReadBack.opens type do
+      let some unfolded ← unfoldDefinition? type | break
+      type := unfolded.headBeta
+    unless type.isAppOfArity ``Or 2 do return #[(goal, post)]
+    let goal ← goal.replaceLocalDeclDefEq post type
+    (← goal.cases post #[{ varNames := [name] }, { varNames := [name] }]).flatMapM fun case =>
+      ways case.mvarId case.fields[0]!.fvarId! name
 
 end Rivet

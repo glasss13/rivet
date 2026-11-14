@@ -36,6 +36,8 @@ block may change what the block keeps, if the code after it restores it.
   (below); one that is not is an error naming it, and you give it by name:
   `rivet_call copy a (room := by …)`. The proof goes on from the state the block ends in, with
   `q_post`, its postcondition, and `q_kept`, what it left alone, in scope (hidden without `as q`).
+  A postcondition that is an `∨` is one way out per side, as a branch is: one goal for each, in
+  order, with that side as `q_post`.
 - `exact Block.done` ends the block at the current state. It proves `Q`, and that nothing outside
   `c` changed, by reading back. `Block.done proof` takes your proof of `Q` instead.
 - `Block.loop invariant measure holds fun current kept inv => …`: a loop whose head is `t`, as a
