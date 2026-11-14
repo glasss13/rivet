@@ -14,12 +14,14 @@ structure MachineState where
   signFlag : Bool := false
   zeroFlag : Bool
   carryFlag : Bool := false
+  overflowFlag : Bool := false
   memory : Memory
   status : ExecutionStatus
 
 structure FlagValues where
   signFlag : Bool
   zeroFlag : Bool
+  overflowFlag : Bool
 
 abbrev FlagChoices := Nat → FlagValues
 
@@ -103,6 +105,13 @@ private def BinaryOp.carry (operation : BinaryOp) (left right result : BitVec wi
   | .sbb => left < right || (carryIn && left == right)
   | _ => false
 
+private def BinaryOp.overflow (operation : BinaryOp) (left right result : BitVec width) (carryIn : Bool) : Bool :=
+  match operation with
+  | .add => left.saddOverflow right
+  | .sub | .cmp => left.ssubOverflow right
+  | .sbb => result.toInt != left.toInt - right.toInt - (if carryIn then 1 else 0)
+  | _ => false
+
 private def MachineState.binary (state : MachineState) (image : Image) (operation : BinaryOp) (destination source : Operand) (nextAddress : BitVec 64) : MachineState :=
   if validBinary operation destination source && state.canRead image destination && state.canRead image source &&
       (!operation.writes || state.canWrite image destination) then
@@ -114,7 +123,8 @@ private def MachineState.binary (state : MachineState) (image : Image) (operatio
     next nextAddress { updated with
       zeroFlag := result == 0
       signFlag := result.msb
-      carryFlag := operation.carry left right result state.carryFlag }
+      carryFlag := operation.carry left right result state.carryFlag
+      overflowFlag := operation.overflow left right result state.carryFlag }
   else { state with status := .fault }
 
 def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
@@ -126,6 +136,10 @@ def Condition.holds (condition : Condition) (state : MachineState) : Bool :=
   | .belowOrEqual => state.carryFlag || state.zeroFlag
   | .above => !state.carryFlag && !state.zeroFlag
   | .sign => state.signFlag
+  | .less => state.signFlag != state.overflowFlag
+  | .greaterOrEqual => state.signFlag == state.overflowFlag
+  | .lessOrEqual => state.signFlag != state.overflowFlag || state.zeroFlag
+  | .greater => state.signFlag == state.overflowFlag && !state.zeroFlag
 
 private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match operation with
@@ -172,7 +186,10 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
         next nextAddress { updated with
           carryFlag := value.getLsbD (match operation with | .shl => width - count | .shr => count - 1)
           zeroFlag := result.toNat == 0
-          signFlag := result.msb }
+          signFlag := result.msb
+          overflowFlag := if count == 1 then
+              match operation with | .shl => result.msb != value.msb | .shr => value.msb
+            else undefinedFlags.overflowFlag }
     else { state with status := .fault }
   | .imul destination source immediate =>
     if validImul destination source immediate && state.canRead image source then
@@ -185,6 +202,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
       let result := BitVec.ofInt width product
       next nextAddress { state.writeOperand64 destination (result.setWidth 64) with
         carryFlag := result.toInt != product
+        overflowFlag := result.toInt != product
         signFlag := undefinedFlags.signFlag
         zeroFlag := undefinedFlags.zeroFlag }
     else { state with status := .fault }
@@ -208,10 +226,14 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
     else { state with status := .fault }
   | .inc destination =>
     let result := state.registers destination + 1
-    next nextAddress { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
+    next nextAddress { state.write destination result with
+      zeroFlag := result == 0, signFlag := result.msb,
+      overflowFlag := (state.registers destination).saddOverflow 1 }
   | .dec destination =>
     let result := state.registers destination - 1
-    next nextAddress { state.write destination result with zeroFlag := result == 0, signFlag := result.msb }
+    next nextAddress { state.write destination result with
+      zeroFlag := result == 0, signFlag := result.msb,
+      overflowFlag := (state.registers destination).ssubOverflow 1 }
   | .jmp target => { state with status := .running target }
   | .jcc condition target =>
     if condition.holds state then { state with status := .running target } else next nextAddress state

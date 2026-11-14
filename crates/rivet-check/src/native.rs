@@ -101,6 +101,7 @@ fn snapshot(
         sign_flag: registers.eflags & (1 << 7) != 0,
         zero_flag: registers.eflags & (1 << 6) != 0,
         carry_flag: registers.eflags & 1 != 0,
+        overflow_flag: registers.eflags & (1 << 11) != 0,
         status,
         memory,
     })
@@ -113,9 +114,10 @@ pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snap
     let mut registers = ptrace::getregs(child.pid)?;
     set_registers(&mut registers, input.registers);
     registers.rip = code_base;
-    // Preserve OS-required flags; initialize SF/ZF/CF and clear tracing/direction/resume bits.
+    // Preserve OS-required flags; initialize SF/ZF/CF/OF and clear tracing/direction/resume bits.
     registers.eflags = (registers.eflags
-        & !(1 | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 10) | (1 << 16)))
+        & !(1 | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 10) | (1 << 11) | (1 << 16)))
+        | ((input.overflow_flag as u64) << 11)
         | ((input.sign_flag as u64) << 7)
         | ((input.zero_flag as u64) << 6)
         | input.carry_flag as u64;

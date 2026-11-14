@@ -41,6 +41,10 @@ pub enum Condition {
     BelowOrEqual,
     Above,
     Sign,
+    Less,
+    GreaterOrEqual,
+    LessOrEqual,
+    Greater,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

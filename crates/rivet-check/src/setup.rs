@@ -126,6 +126,7 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
         sign_flag: case.sign_flag,
         zero_flag: case.zero_flag,
         carry_flag: case.carry_flag,
+        overflow_flag: case.overflow_flag,
         memory_base: base,
         writable_base: if case.read_only_data {
             base + page as u64

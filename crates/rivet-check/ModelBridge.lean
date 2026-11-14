@@ -40,6 +40,7 @@ structure Request where
   signFlag : Bool
   zeroFlag : Bool
   carryFlag : Bool
+  overflowFlag : Bool
   memoryBase : Nat
   writableBase : Nat
   memory : Array Nat
@@ -53,6 +54,7 @@ structure SnapshotOutput where
   signFlag : Bool
   zeroFlag : Bool
   carryFlag : Bool
+  overflowFlag : Bool
   status : ExecutionStatus
   memory : Array Nat
   deriving ToJson
@@ -68,6 +70,7 @@ def snapshot (memoryBase memorySize : Nat) (state : MachineState) : SnapshotOutp
   signFlag := state.signFlag
   zeroFlag := state.zeroFlag
   carryFlag := state.carryFlag
+  overflowFlag := state.overflowFlag
   status := state.status
   memory := (Array.range memorySize).map (fun offset => (state.memory (BitVec.ofNat 64 (memoryBase + offset))).val) }
 
@@ -103,6 +106,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     signFlag := request.signFlag
     zeroFlag := request.zeroFlag
     carryFlag := request.carryFlag
+    overflowFlag := request.overflowFlag
     memory
     status := .running first.address }
   let mut current := initial

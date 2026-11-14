@@ -90,9 +90,9 @@ the fact to add.
 `status = .running address` through its contract.
 
 - **Facts.** The new state gets one fact per field: `status`, `registers`, `memory`,
-  `signFlag`, `zeroFlag`, `carryFlag`, `xmmRegisters`. They are stated over the block's start
-  state, or over the end of the last nested block for what that block changed. The previous
-  state is dropped, unless one of your hypotheses mentions it.
+  `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `xmmRegisters`. They are stated over the
+  block's start state, or over the end of the last nested block for what that block changed. The
+  previous state is dropped, unless one of your hypotheses mentions it.
 - **Names.** `as t` names the new state and its facts `t_status`, `t_registers`, …. Unnamed,
   they are hidden. Name a state to state a fact about it.
 - **Memory.** Each store makes `mₙ` with `mₙ_def : mₙ = mₙ₋₁.storeBytes …`.
@@ -135,9 +135,10 @@ those facts read back first.
 
 ## Machine and programs
 
-- `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `memory`,
-  `status`. `ExecutionStatus`: `running address` or `fault`. `MachineState.returnAddress`: the 8
-  bytes at `rsp`. `Condition.holds`: whether a jump condition holds in a state.
+- `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`,
+  `overflowFlag`, `memory`, `status`. `ExecutionStatus`: `running address` or `fault`.
+  `MachineState.returnAddress`: the 8 bytes at `rsp`. `Condition.holds`: whether a jump condition
+  holds in a state.
 - `Reg`, `Reg32`, `Reg16`, `Reg8` (with `.parent`), `Xmm`, `Width`, `Address`, `Operand`, `Op`,
   `Instruction`, `Program`.
 
@@ -185,8 +186,8 @@ A default that fails is an error at that term; give the bound yourself,
 (`FlagChoices`). Proofs never mention them; they are what a theorem's meaning rests on.
 
 What a proof does not cover: the decoder (instructions come from the importer and iced-x86), the
-CPU (the model is tested against hardware, not proved equal to it), flags other than ZF, CF and
-SF, instructions outside the supported subset, and concurrency.
+CPU (the model is tested against hardware, not proved equal to it), flags other than ZF, CF, SF
+and OF, instructions outside the supported subset, and concurrency.
 
 ## Importer and checker
 

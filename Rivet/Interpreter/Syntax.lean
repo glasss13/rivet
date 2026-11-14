@@ -141,6 +141,7 @@ def validBinary (operation : BinaryOp) (destination source : Operand) : Bool :=
 
 inductive Condition where
   | equal | notEqual | below | aboveOrEqual | belowOrEqual | above | sign
+  | less | greaterOrEqual | lessOrEqual | greater
   deriving DecidableEq
 
 def validConditionalMove (destination source : Operand) : Bool :=

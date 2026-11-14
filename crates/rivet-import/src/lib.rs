@@ -46,6 +46,10 @@ fn condition(instruction: &Decoded) -> Result<Condition> {
         ConditionCode::be => Condition::BelowOrEqual,
         ConditionCode::a => Condition::Above,
         ConditionCode::s => Condition::Sign,
+        ConditionCode::l => Condition::Less,
+        ConditionCode::ge => Condition::GreaterOrEqual,
+        ConditionCode::le => Condition::LessOrEqual,
+        ConditionCode::g => Condition::Greater,
         other => bail!("unsupported condition {other:?}"),
     })
 }
@@ -252,16 +256,19 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
                 },
             }
         }
-        Sete | Setne | Setb | Setae | Setbe | Seta | Sets => Operation::Setcc {
-            condition: condition(instruction)?,
-            destination: first()?,
-        },
-        Cmove | Cmovne | Cmovb | Cmovae | Cmovbe | Cmova | Cmovs => Operation::Cmovcc {
+        Sete | Setne | Setb | Setae | Setbe | Seta | Sets | Setl | Setge | Setle | Setg => {
+            Operation::Setcc {
+                condition: condition(instruction)?,
+                destination: first()?,
+            }
+        }
+        Cmove | Cmovne | Cmovb | Cmovae | Cmovbe | Cmova | Cmovs | Cmovl | Cmovge | Cmovle
+        | Cmovg => Operation::Cmovcc {
             condition: condition(instruction)?,
             destination: first()?,
             source: second()?,
         },
-        Jmp | Je | Jne | Jb | Jae | Jbe | Ja | Js => {
+        Jmp | Je | Jne | Jb | Jae | Jbe | Ja | Js | Jl | Jge | Jle | Jg => {
             ensure!(
                 instruction.op0_kind() == OpKind::NearBranch64,
                 "only direct 64-bit-mode jumps are supported"

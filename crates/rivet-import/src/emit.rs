@@ -191,6 +191,10 @@ fn condition(value: rivet_import::program::Condition) -> &'static str {
         BelowOrEqual => ".belowOrEqual",
         Above => ".above",
         Sign => ".sign",
+        Less => ".less",
+        GreaterOrEqual => ".greaterOrEqual",
+        LessOrEqual => ".lessOrEqual",
+        Greater => ".greater",
     }
 }
 
