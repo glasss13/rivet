@@ -81,6 +81,8 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
       throwError "rivet_arith: `lia` did not prove the goal from the facts in scope. Below is where it \
         stopped. Its assignment may or may not be a counterexample: `lia` drops what it does not read, \
         and may stop before it has tried everything.\n\
+        - Facts the goal does not need, such as `%` or `/` facts and large `∨`s, can keep `lia` from a \
+        proof: give it only those it needs, `rivet_arith only [facts]`.\n\
         - A term `lia` does not read, such as a mask, needs its meaning as an equation, e.g. \
         `x &&& 15#64 = x % 16#64`, proved through `toNat`.\n\
         - A goal that adds or subtracts a shifted value may need `grind`.\n\
