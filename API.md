@@ -112,7 +112,8 @@ plain numbers over `x.toNat`. `rivet_arith [f₁, f₂, …]` proves goals that 
 those facts read back first.
 
 - A fact is a statement about the goal's terms. A listed record (`inv`) is given field by field;
-  `lia` does not look inside one in scope. Give a general lemma its arguments (`lemma x`).
+  `lia` does not look inside one in scope. A general fact (`∀ x, …`) is ignored: give it its
+  arguments (`lemma x`).
 - It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
   `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
   `-x - 1` and `movsxd` as a sum with an `if`, in these terms.
