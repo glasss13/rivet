@@ -57,7 +57,7 @@ pub enum Operation {
         source: Operand,
     },
     Lea {
-        destination: Register64,
+        destination: Operand,
         source: Address,
     },
     Movzx {
@@ -89,10 +89,10 @@ pub enum Operation {
         source: Operand,
     },
     Inc {
-        destination: Register64,
+        destination: Operand,
     },
     Dec {
-        destination: Register64,
+        destination: Operand,
     },
     Ret,
     Call {

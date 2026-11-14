@@ -219,7 +219,7 @@ fn operation(value: &Operation) -> String {
         Lea {
             destination,
             source,
-        } => format!(".lea {} {}", name(destination), address(source)),
+        } => format!(".lea {} {}", operand(destination), address(source)),
         Movzx {
             destination,
             source,
@@ -247,8 +247,8 @@ fn operation(value: &Operation) -> String {
             operand(destination),
             operand(source)
         ),
-        Inc { destination } => format!(".inc {}", name(destination)),
-        Dec { destination } => format!(".dec {}", name(destination)),
+        Inc { destination } => format!(".inc {}", operand(destination)),
+        Dec { destination } => format!(".dec {}", operand(destination)),
         Ret => ".ret".into(),
         Call { target } => format!(".call {target:#x}#64"),
         Not { destination } => format!(".not {}", operand(destination)),

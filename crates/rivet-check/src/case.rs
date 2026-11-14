@@ -225,7 +225,11 @@ fn random_instruction(
             2 => binary!(REGISTERS32, dword_ptr, i32, i32),
             _ => binary!(REGISTERS, qword_ptr, i64, i64),
         },
-        1 => assembler.lea(REGISTERS[destination], address)?,
+        1 => match generator.usize(..3) {
+            0 => assembler.lea(REGISTERS16[destination], address)?,
+            1 => assembler.lea(REGISTERS32[destination], address)?,
+            _ => assembler.lea(REGISTERS[destination], address)?,
+        },
         2 => {
             if generator.bool() {
                 source!(
@@ -305,16 +309,26 @@ fn random_instruction(
             }
             condition!(emit; cmove, cmovne, cmovb, cmovae, cmovbe, cmova, cmovs, cmovl, cmovge, cmovle, cmovg);
         }
-        8 => assembler.inc(if whole_program {
-            rdi
-        } else {
-            REGISTERS[destination]
-        })?,
-        9 => assembler.dec(if whole_program {
-            rsi
-        } else {
-            REGISTERS[destination]
-        })?,
+        8 if whole_program => assembler.inc(rdi)?,
+        9 if whole_program => assembler.dec(rsi)?,
+        kind @ (8 | 9) => {
+            macro_rules! emit {
+                ($registers:ident, $memory:ident) => {
+                    match (kind == 8, generator.bool()) {
+                        (true, true) => assembler.inc($registers[destination])?,
+                        (true, false) => assembler.inc($memory(address))?,
+                        (false, true) => assembler.dec($registers[destination])?,
+                        (false, false) => assembler.dec($memory(address))?,
+                    }
+                };
+            }
+            match generator.usize(..4) {
+                0 => emit!(REGISTERS8, byte_ptr),
+                1 => emit!(REGISTERS16, word_ptr),
+                2 => emit!(REGISTERS32, dword_ptr),
+                _ => emit!(REGISTERS, qword_ptr),
+            }
+        }
         10 => assembler.ret()?,
         11 => {
             macro_rules! emit {
@@ -366,11 +380,15 @@ fn random_instruction(
             } else {
                 generator.u8(..) as u32
             };
-            match (generator.bool(), generator.bool()) {
-                (true, true) => assembler.shl(REGISTERS32[destination], count)?,
-                (true, false) => assembler.shr(REGISTERS32[destination], count)?,
-                (false, true) => assembler.shl(REGISTERS[destination], count)?,
-                (false, false) => assembler.shr(REGISTERS[destination], count)?,
+            // Byte shifts are supported for masked counts below 8.
+            let byte_count = count / 32 * 32 + count % 8;
+            match (generator.usize(..3), generator.bool()) {
+                (0, true) => assembler.shl(REGISTERS8[destination], byte_count)?,
+                (0, false) => assembler.shr(REGISTERS8[destination], byte_count)?,
+                (1, true) => assembler.shl(REGISTERS32[destination], count)?,
+                (1, false) => assembler.shr(REGISTERS32[destination], count)?,
+                (_, true) => assembler.shl(REGISTERS[destination], count)?,
+                (_, false) => assembler.shr(REGISTERS[destination], count)?,
             }
         }
         kind @ (14 | 15) => {

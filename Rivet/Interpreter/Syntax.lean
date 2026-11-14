@@ -160,7 +160,12 @@ inductive ShiftOp where
   deriving DecidableEq
 
 def validShift (destination : Operand) (count : Nat) : Bool :=
-  (match destination with | .reg32 _ | .reg64 _ => true | _ => false) && count < 256
+  (match destination with | .reg8 _ => count % 32 < 8 | .reg32 _ | .reg64 _ => true | _ => false) && count < 256
+
+def validLea (destination : Operand) : Bool :=
+  match destination with
+  | .reg16 _ | .reg32 _ | .reg64 _ => true
+  | _ => false
 
 inductive Op where
   | nop
@@ -169,7 +174,7 @@ inductive Op where
   | loadXmm (operation : XmmMove) (destination : Xmm) (source : Address)
   | storeXmm (operation : XmmMove) (destination : Address) (source : Xmm)
   | binary (operation : BinaryOp) (destination source : Operand)
-  | lea (destination : Reg) (source : Address)
+  | lea (destination : Operand) (source : Address)
   | movzx (destination : Reg32) (source : Operand)
   | movsxd (destination : Reg) (source : Operand)
   | mov (destination source : Operand)
@@ -178,8 +183,8 @@ inductive Op where
   | mul (source : Reg)
   | tzcnt (destination source : Operand)
   | not (destination : Operand)
-  | inc (destination : Reg)
-  | dec (destination : Reg)
+  | inc (destination : Operand)
+  | dec (destination : Operand)
   | jmp (target : BitVec 64)
   | jcc (condition : Condition) (target : BitVec 64)
   | setcc (condition : Condition) (destination : Operand)

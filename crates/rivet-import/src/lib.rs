@@ -200,7 +200,7 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
             destination: first()?,
         },
         Lea => Operation::Lea {
-            destination: register(instruction.op0_register())?,
+            destination: first()?,
             source: address(instruction)?,
         },
         Movzx => Operation::Movzx {
@@ -212,10 +212,10 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
             source: second()?,
         },
         Inc => Operation::Inc {
-            destination: register(instruction.op0_register())?,
+            destination: first()?,
         },
         Dec => Operation::Dec {
-            destination: register(instruction.op0_register())?,
+            destination: first()?,
         },
         Push => Operation::Push {
             source: register(instruction.op0_register())?,
@@ -227,9 +227,12 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
             ensure!(
                 instruction.op0_kind() == OpKind::Register
                     && (instruction.op0_register().is_gpr32()
-                        || instruction.op0_register().is_gpr64())
+                        || instruction.op0_register().is_gpr64()
+                        || (instruction.op0_register().is_gpr8()
+                            && instruction.immediate8() % 32 < 8))
                     && instruction.op1_kind() == OpKind::Immediate8,
-                "shifts require a 32/64-bit register and an immediate count"
+                "shifts require a 32/64-bit register, or an 8-bit one and a masked count below 8, \
+                 and an immediate count"
             );
             Operation::Shift {
                 operation: if instruction.mnemonic() == Shl {

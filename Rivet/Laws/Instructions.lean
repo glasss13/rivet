@@ -192,17 +192,24 @@ theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
   rw [one code location undefinedFlags]
   simp only [stepOp, writable, ite_true, next, location]
 
-theorem lea (image : Image) (address : BitVec 64) (destination : Reg) (source : Address)
+theorem lea (image : Image) (address : BitVec 64) (destination : Operand) (source : Address)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt image.program address length (.lea destination source)) :
-    Block image initial { registers := [destination] } (· = { initial.write destination (source.evaluate initial.registers) with
+    (code : InstructionAt image.program address length (.lea destination source))
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validLea destination = true := by first | rfl | assumption) :
+    Block image initial (destination.changes initial) (· = { initial.writeOperand width destination
+        ((source.evaluate initial.registers).setWidth width.bits) with
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr (write_except _ _ _))
+  apply Block.of_step (by rintro _ rfl; exact except_congr (writeOperand_except _ _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp [stepOp, next, MachineState.write, location]
+  simp [stepOp, next, location, valid, MachineState.writeOperand,
+    MachineState.writeOperand64_setWidth initial destination _ hasWidth]
 
 theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (source : Operand)
     (initial : MachineState)
@@ -679,31 +686,53 @@ theorem cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (de
     MachineState.writeOperand64_setWidth initial destination _ hasWidth]
   simp [next, location]
 
-theorem inc (image : Image) (address : BitVec 64) (register : Reg) (initial : MachineState)
+theorem inc (image : Image) (address : BitVec 64) (destination : Operand) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt image.program address length (.inc register)) :
-    let result := initial.registers register + 1#64
-    Block image initial { registers := [register] } (· = { initial.write register result with
-      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#64, signFlag := result.msb,
-      overflowFlag := (initial.registers register).saddOverflow 1#64 }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr (write_except _ _ _))
+    (code : InstructionAt image.program address length (.inc destination))
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (readable : initial.canRead image destination = true := by simp only [rivet, *])
+    (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
+    let value := initial.readOperand width destination
+    let result := value + 1#width.bits
+    Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
+      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
+      signFlag := result.msb, overflowFlag := value.saddOverflow 1#width.bits }) := by
+  apply Block.of_step (by rintro _ rfl; exact except_congr (writeOperand_except _ _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp_all [MachineState.write, stepOp, next] <;> try rfl
+  simp only [stepOp, readable, writable, Bool.and_self, ite_true]
+  rw [hasWidth]
+  simp only [Option.getD_some, next, MachineState.writeOperand64_status, location, MachineState.readOperand,
+    MachineState.writeOperand, toNat_beq_zero]
+  rfl
 
-theorem dec (image : Image) (address : BitVec 64) (register : Reg) (initial : MachineState)
+theorem dec (image : Image) (address : BitVec 64) (destination : Operand) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address := by first | rfl | assumption)
-    (code : InstructionAt image.program address length (.dec register)) :
-    let result := initial.registers register - 1#64
-    Block image initial { registers := [register] } (· = { initial.write register result with
-      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#64, signFlag := result.msb,
-      overflowFlag := (initial.registers register).ssubOverflow 1#64 }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr (write_except _ _ _))
+    (code : InstructionAt image.program address length (.dec destination))
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (readable : initial.canRead image destination = true := by simp only [rivet, *])
+    (writable : initial.canWrite image destination = true := by simp only [rivet, *]) :
+    let value := initial.readOperand width destination
+    let result := value - 1#width.bits
+    Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
+      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
+      signFlag := result.msb, overflowFlag := value.ssubOverflow 1#width.bits }) := by
+  apply Block.of_step (by rintro _ rfl; exact except_congr (writeOperand_except _ _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]
-  simp_all [MachineState.write, stepOp, next] <;> try rfl
+  simp only [stepOp, readable, writable, Bool.and_self, ite_true]
+  rw [hasWidth]
+  simp only [Option.getD_some, next, MachineState.writeOperand64_status, location, MachineState.readOperand,
+    MachineState.writeOperand, toNat_beq_zero]
+  rfl
 
 theorem nop (image : Image) (address : BitVec 64) (initial : MachineState)
     {length : Nat}
