@@ -46,9 +46,10 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
       unless ← isProp domain do
         throwError "rivet_arith: the fact `{term}` is general: `{type}`. `lia` uses only facts about \
           the goal's terms; give it its arguments."
-    let (fact, next) ← (← goal.assert (← mkFreshUserName `fact) type proof).intro1P
-    given := given.push fact
-    goal := next
+    for (part, partType) in ← ReadBack.parts proof type do
+      let (fact, next) ← (← goal.assert (← mkFreshUserName `fact) partType part).intro1P
+      given := given.push fact
+      goal := next
   -- The goal and the facts it may use, with their registers read back, so they meet.
   setGoals [goal]
   let moved ← goal.withContext do

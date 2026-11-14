@@ -81,27 +81,24 @@ meta def hypotheses : MetaM (Array LocalDecl) := do
     if !(← isProp type) || type.isAppOf ``MachineState.Except || type.isAppOf `Rivet.Block then return found
     return found.push decl
 
--- A definition or record declared outside Rivet that takes a state or a memory. Such a definition is
--- opened where it is read back, so that what it reads is read back too.
-meta def takesState (name : Name) : MetaM Bool := do
-  let env ← getEnv
-  if let some index := env.getModuleIdxFor? name then
-    if [`Init, `Std, `Lean, `Rivet].contains env.header.moduleNames[index]!.getRoot then return false
-  let some info := env.find? name | return false
-  unless info matches .defnInfo _ || isStructure env name do return false
-  forallTelescope info.type fun arguments _ => arguments.anyM fun argument => do
-    let type ← inferType argument
-    return type.isConstOf ``MachineState || type.isConstOf ``Memory
+-- What a fact says, part by part: an `abbrev`'s body, and a record's fields.
+meta partial def parts (proof type : Expr) : MetaM (Array (Expr × Expr)) := do
+  let type ← whnfR (← instantiateMVars type)
+  let some name := type.getAppFn.constName? | return #[(proof, type)]
+  unless isStructure (← getEnv) name do return #[(proof, type)]
+  (getStructureFields (← getEnv) name).flatMapM fun field => do
+    let part ← mkProjection proof field
+    parts part (← inferType part)
 
--- The definitions with a value, not a statement, that `e` applies to a later state.
+-- The `abbrev`s `e` applies to a later state, unfolded where it is read back so that what they read
+-- is read back too.
 meta def opened (e : Expr) : MetaM (Array Name) := do
   let later ← later
   let found ← IO.mkRef (#[] : Array Name)
   forEachExpr (← instantiateMVars e) fun e => do
     let some name := e.getAppFn.constName? | return
-    if (← found.get).contains name || isStructure (← getEnv) name then return
-    unless e.getAppArgs.any fun argument => later.any (argument.containsFVar ·) do return
-    if (← takesState name) && !(← isProp (← inferType e)) then found.modify (·.push name)
+    if (← found.get).contains name || (← isProjectionFn name) || !(← isReducible name) then return
+    if e.getAppArgs.any fun argument => later.any (argument.containsFVar ·) then found.modify (·.push name)
   found.get
 
 meta def lemmas (names : Array Name) (facts : Array Expr) (fixed : Array (TSyntax `Lean.Parser.Tactic.simpLemma)) :

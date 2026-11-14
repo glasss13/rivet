@@ -60,7 +60,8 @@ theorem copy (s : MachineState) (pre : AtCopy a s) (room : (s.registers .rdi).to
 
 Rivet reads every value back to the block's start. A goal closes when, read that way, it follows
 from what you know. `Block.done` and `rivet_call` close their goals this way; `rivet_close` does
-it for any goal.
+it for any goal. Rivet sees through an `abbrev` and a record's fields (a record is a `structure`
+in `Prop`), never a `def`.
 
 What is read back:
 
@@ -68,17 +69,13 @@ What is read back:
   not list it;
 - memory (`readBytes m a n`, or a byte `m a`), through each store the read misses, each store
   that wrote all of it (giving the bytes stored), and each nested block whose change it misses.
-  Each of these is a bound for `rivet_arith`;
-- a definition or record of yours that takes a state or a memory. A statement (`Globals a t`) is
-  taken apart into what it says; a value (`matchLength t`) is unfolded where `t` is a later state.
-  Definitions that take neither are left alone: unfold them yourself, or state what they equal.
+  Each of these is a bound for `rivet_arith`.
 
-A goal is taken apart (`∧`, `∀`, your statements; of `∨`, either side), and a part closes when it
-is a hypothesis or a part of one, compared as written, through `abbrev`s only (a `∀` one applies
-when its premises are hypotheses), its two sides are the same, or `rivet_arith` proves it from the
-hypotheses in scope. For `∃`, give the witness: `Block.done ⟨status, 0, by rivet_close⟩`. The status
-and the flags are not read back through a nested block: a change says nothing of them, so the
-block's postcondition must.
+A goal is taken apart (`∧`, `∀`, records; of `∨`, either side), and a part closes when it is a
+hypothesis or a part of one (a `∀` one applies when its premises are hypotheses), its two sides are
+the same, or `rivet_arith` proves it from the hypotheses in scope. For `∃`, give the witness:
+`Block.done ⟨status, 0, by rivet_close⟩`. The status and the flags are not read back through a
+nested block: a change says nothing of them, so the block's postcondition must.
 
 An error shows each part that did not close, as asked and as read back, and where each read
 stopped: at a store (named by its instruction and address) or a nested block it is not shown to
@@ -114,8 +111,8 @@ plain numbers over `x.toNat`. `rivet_arith [f₁, f₂, …]` proves goals that 
 `lia`, from the hypotheses in scope and the listed facts, with the registers of the goal and of
 those facts read back first.
 
-- A fact is a statement about the goal's terms. `lia` does not look inside a structure, so list
-  the fields a goal needs (`inv.bound`), and give a general lemma its arguments (`lemma x`).
+- A fact is a statement about the goal's terms. A listed record (`inv`) is given field by field;
+  `lia` does not look inside one in scope. Give a general lemma its arguments (`lemma x`).
 - It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
   `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
   `-x - 1` and `movsxd` as a sum with an `if`, in these terms.

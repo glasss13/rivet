@@ -65,10 +65,7 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
 where
   -- A postcondition that is an `∨` is one way out per side: a goal for each.
   ways (goal : MVarId) (post : FVarId) (name : Name) : MetaM (Array (MVarId × FVarId)) := goal.withContext do
-    let mut type := (← instantiateMVars (← post.getType)).headBeta
-    while ← ReadBack.opens type do
-      let some unfolded ← unfoldDefinition? type | break
-      type := unfolded.headBeta
+    let type ← whnfR (← instantiateMVars (← post.getType))
     unless type.isAppOfArity ``Or 2 do return #[(goal, post)]
     let goal ← goal.replaceLocalDeclDefEq post type
     (← goal.cases post #[{ varNames := [name] }, { varNames := [name] }]).flatMapM fun case =>
