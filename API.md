@@ -74,10 +74,11 @@ What is read back:
   Definitions that take neither are left alone: unfold them yourself, or state what they equal.
 
 A goal is taken apart (`∧`, `∀`, your statements; of `∨`, either side), and a part closes when it
-is a hypothesis or a part of one (a `∀` one applies when its premises are hypotheses), its two sides
-are the same, or `rivet_arith` proves it from the hypotheses in scope. For `∃`, give the witness:
-`Block.done ⟨status, 0, by rivet_close⟩`. The status and the flags are not read back through a
-nested block: a change says nothing of them, so the block's postcondition must.
+is a hypothesis or a part of one, compared as written, through `abbrev`s only (a `∀` one applies
+when its premises are hypotheses), its two sides are the same, or `rivet_arith` proves it from the
+hypotheses in scope. For `∃`, give the witness: `Block.done ⟨status, 0, by rivet_close⟩`. The status
+and the flags are not read back through a nested block: a change says nothing of them, so the
+block's postcondition must.
 
 An error shows each part that did not close, as asked and as read back, and where each read
 stopped: at a store (named by its instruction and address) or a nested block it is not shown to

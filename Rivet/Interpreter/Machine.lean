@@ -314,7 +314,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
   | 0 => state
   | remainingSteps+1 => execute image remainingSteps (step image state (choices 0)) (choices.drop 1)
 
-def MachineState.returnAddress (state : MachineState) : BitVec 64 :=
+abbrev MachineState.returnAddress (state : MachineState) : BitVec 64 :=
   readBytes state.memory (state.registers .rsp) 8
 
 end Rivet

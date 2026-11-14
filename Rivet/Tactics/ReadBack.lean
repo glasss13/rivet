@@ -344,10 +344,33 @@ meta def stops (type : Expr) : MetaM MessageData := do
           nested block. A change says nothing of them: only the block's postcondition does."
   return why
 
+-- For an error only: where two statements first differ.
+meta partial def differ (a b : Expr) : MetaM (Expr × Expr) := do
+  if a.isApp && b.isApp && a.getAppFn == b.getAppFn && a.getAppNumArgs == b.getAppNumArgs then
+    let pairs ← (a.getAppArgs.zip b.getAppArgs).filterM fun (x, y) => return !(← withReducible <| isDefEq x y)
+    if let #[(x, y)] := pairs then return ← differ x y
+  return (a, b)
+
+-- For an error only: a hypothesis that says `type` once definitions are unfolded. Never used to close.
+meta def unfolded (type : Expr) (facts : Array (Expr × Expr)) : MetaM MessageData := do
+  for (proof, part) in facts do
+    unless part.getAppFn == type.getAppFn do continue
+    let start ← IO.getNumHeartbeats
+    let same ← tryCatchRuntimeEx
+      (withTheReader Core.Context (fun context => { context with initHeartbeats := start, maxHeartbeats := 200 * 1000 })
+        (withNewMCtxDepth <| isDefEq part type))
+      (fun _ => pure false)
+    if same then
+      let (theirs, ours) ← differ part type
+      return m!"\nThe hypothesis{indentD m!"{proof} : {part}"}\nsays this with{indentExpr theirs}\nfor{indentExpr ours}\n\
+        which are the same only by unfolding a definition. Rivet compares statements as written, through \
+        `abbrev`s only: state both one way."
+  return m!""
+
 -- A part closes when it is a hypothesis or part of one, an instance of a general one, or has two
 -- equal sides.
 meta def finish (goal : MVarId) (facts : Array (Expr × Expr)) : TacticM Bool := goal.withContext do
-  if ← goal.assumptionCore then return true
+  if ← withReducible goal.assumptionCore then return true
   let type ← instantiateMVars (← goal.getType)
   for (proof, part) in facts do
     if ← withReducible <| isDefEq part type then
@@ -429,7 +452,8 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
       let reason ← stops shown
       unless (← reason.format).isEmpty do
         return some (← addMessageContext m!"{indentExpr shown}\nA read in it stopped short of the block's start.{reason}")
-      addMessageContext m!"{indentExpr shown}\nis not a hypothesis and its sides are not the same.\n{error.toMessageData}"
+      addMessageContext m!"{indentExpr shown}\nis not a hypothesis and its sides are not the same.\
+        {← unfolded shown facts}\n{error.toMessageData}"
 where
   closeAll (goal : MVarId) : TacticM (Option MessageData) := do
     for (leaf, _) in ← leaves goal do
@@ -445,7 +469,7 @@ open ReadBack in
   let wanted := (← instantiateMVars (← start.getType)).headBeta
   let start ← start.replaceTargetDefEq wanted
   let mut failures := #[]
-  unless ← start.assumptionCore do
+  unless ← withReducible start.assumptionCore do
     let known ← facts start
     for (leaf, note) in ← leaves start do
       let asked ← leaf.withContext do addMessageContext m!"{← instantiateMVars (← leaf.getType)}"
