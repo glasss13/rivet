@@ -49,6 +49,8 @@ Caller assumptions (Spec.lean is authoritative):
   low 32 bits of RCX=output capacity, RSP=stack pointer.
 - Both sizes are BitVec 32 values below 2^31; upper halves of these argument
   registers and other registers/flags are unrestricted unless Spec says otherwise.
+- The stack pointer is aligned as the System V ABI guarantees at a function's
+  entry: RSP + 8 is a multiple of 16.
 - A region is a base and a length in bytes, both natural numbers. Arguments
   carries the buffer bounds: input/output bases and the bottom of the 16624-byte
   stack workspace are at least decimal 65536; buffer ends and the eight-byte

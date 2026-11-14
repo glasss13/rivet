@@ -54,6 +54,8 @@ structure Preconditions (arguments : Arguments) (initial : MachineState) : Prop 
   inputSizeRegister : (initial.registers .rdx).setWidth 32 = arguments.inputSize
   outputCapacityRegister : (initial.registers .rcx).setWidth 32 = arguments.outputCapacity
   stackRegister : initial.registers .rsp = arguments.stackPointer
+  -- The System V ABI's alignment at a function's entry: the stack pointer plus 8 is a multiple of 16.
+  stackAligned : (arguments.stackPointer.toNat + 8) % 16 = 0
   inputSizeFits : arguments.inputSize.toNat < 2^31
   outputCapacityFits : arguments.outputCapacity.toNat < 2^31
   -- The ELF's segments, the buffers and the stack do not overlap.
