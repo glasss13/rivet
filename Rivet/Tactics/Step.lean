@@ -15,7 +15,8 @@ open Lean Meta Elab Tactic
 meta def reporting {α} (doing : MessageData) (tactic : TacticM α) : TacticM α :=
   tryCatchRuntimeEx tactic fun error => do
     if error.isMaxHeartbeat then
-      throwError "{doing}: it ran out of heartbeats. Raise `maxHeartbeats` for this theorem, or prove this yourself."
+      throwError "{doing}: it ran out of heartbeats. This part costs too much: split the block, or give \
+        `rivet_arith` only the facts it needs. Raising `maxHeartbeats` hides the cost; it does not remove it."
     if error.isMaxRecDepth then throwError "{doing}: it reached Lean's recursion limit."
     throw error
 
