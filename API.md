@@ -144,9 +144,9 @@ those facts read back first.
 
 One contract per instruction, each a `Block` whose change is what the instruction writes:
 `move`, `movzx`, `movsxd`, `lea`, `add`, `sub`, `sbb`, `compare`, `test`, `bitwise_and`,
-`bitwise_or`, `bitwise_xor`, `bitwise_not`, `imul`, `shift`, `inc`, `dec`, `setcc`, `cmovcc`,
-`push`, `pop`, `call`, `return_`, `jump`, `branch`, `nop`, `movd`, `pshufd`, `load_xmm`,
-`store_xmm`. `rivet_step` applies them; read one to see exactly what an instruction does.
+`bitwise_or`, `bitwise_xor`, `bitwise_not`, `imul`, `mul`, `tzcnt`, `shift`, `inc`, `dec`,
+`setcc`, `cmovcc`, `push`, `pop`, `call`, `return_`, `jump`, `branch`, `nop`, `movd`, `pshufd`,
+`load_xmm`, `store_xmm`. `rivet_step` applies them; read one to see exactly what an instruction does.
 
 ## Memory
 
