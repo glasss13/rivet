@@ -119,8 +119,10 @@ those facts read back first.
   `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
   `-x - 1` and `movsxd` as a sum with an `if`, in these terms.
 - It has a fixed budget of 20000 heartbeats that `maxHeartbeats` does not change, and its work
-  does not count against the declaration. When the budget runs out, give it only the facts the
-  goal needs: `rivet_arith only [f₁, f₂, …]` hides every other hypothesis.
+  does not count against the declaration. When the budget runs out, or `lia` fails on a goal you
+  believe true, give it only the facts the goal needs: `rivet_arith only [f₁, f₂, …]` hides every
+  other hypothesis. Facts the goal does not need, such as `%` or `/` facts and large `∨`s, can
+  keep `lia` from a proof it finds without them.
 - A term it does not read, such as a mask, needs its meaning as an equation, proved through
   `toNat`. Not with `bv_decide`: its proofs depend on an axiom that trusts compiled code.
 
