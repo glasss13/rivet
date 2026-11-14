@@ -27,6 +27,30 @@ attribute [rivet] BitVec.ofInt_ofNat BitVec.ofInt_neg BitVec.ofInt_natCast BitVe
 @[rivet] theorem lt_or_eq_iff_le {a b : BitVec w} : (a < b ∨ a = b) ↔ a ≤ b := by
   bv_omega
 
+-- Signed conditions after a subtraction or comparison: SF = OF is `y ≤ x` as signed numbers.
+attribute [rivet] bne_iff_ne Int.not_lt Int.not_le
+
+@[rivet] theorem msb_sub_eq_ssubOverflow_iff (x y : BitVec w) :
+    ((x - y).msb = x.ssubOverflow y) ↔ y.toInt ≤ x.toInt := by
+  rcases w with _ | w
+  · simp [BitVec.of_length_zero, BitVec.ssubOverflow]
+  have below := @BitVec.toInt_sub_toInt_lt_twoPow_iff (w + 1) x y
+  have above := @BitVec.twoPow_le_toInt_sub_toInt_iff (w + 1) x y
+  have inside (low : -(2 : Int) ^ w ≤ x.toInt - y.toInt) (high : x.toInt - y.toInt < 2 ^ w) :
+      (x - y).toInt = x.toInt - y.toInt := by
+    rw [BitVec.toInt_sub]
+    apply Int.bmod_eq_of_le_mul_two <;> push_cast [Nat.pow_succ] <;> omega
+  rw [← BitVec.toInt_sub, Nat.add_one_sub_one] at below above
+  rw [BitVec.msb_eq_toInt, BitVec.ssubOverflow, Nat.add_one_sub_one]
+  by_cases low : -(2 : Int) ^ w ≤ x.toInt - y.toInt <;> by_cases high : x.toInt - y.toInt < 2 ^ w
+  all_goals rw [Bool.eq_iff_iff]; simp only [decide_eq_true_eq, Bool.or_eq_true]
+  · rw [inside low high]; omega
+  all_goals omega
+@[rivet] theorem toInt_lt_or_eq_iff_le {x y : BitVec w} : (x.toInt < y.toInt ∨ x = y) ↔ x.toInt ≤ y.toInt := by
+  rw [← BitVec.toInt_inj]; omega
+@[rivet] theorem toInt_le_and_ne_iff_lt {x y : BitVec w} : (y.toInt ≤ x.toInt ∧ ¬x = y) ↔ y.toInt < x.toInt := by
+  rw [← BitVec.toInt_inj]; omega
+
 @[rivet] theorem sub_ofNat_sub_ofNat (x : BitVec w) (a b : Nat) :
     x - BitVec.ofNat w a - BitVec.ofNat w b = x - BitVec.ofNat w (a + b) := by
   rw [BitVec.sub_sub, BitVec.ofNat_add_ofNat]

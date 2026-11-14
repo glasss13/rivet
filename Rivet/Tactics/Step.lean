@@ -112,7 +112,7 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
   return (proof, sides)
 
 private meta def fields : List Name :=
-  [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `memory, `status]
+  [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `overflowFlag, `memory, `status]
 
 private meta def noteModule : Name := `Rivet.Step.note
 

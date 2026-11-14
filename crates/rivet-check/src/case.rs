@@ -36,6 +36,7 @@ pub struct Case {
     pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
+    pub overflow_flag: bool,
     pub data: Vec<u8>,
     pub fault_memory: bool,
     pub read_only_data: bool,
@@ -52,6 +53,7 @@ pub struct ExecutionInput {
     pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
+    pub overflow_flag: bool,
     pub memory_base: u64,
     pub writable_base: u64,
     pub memory: Vec<u8>,
@@ -74,6 +76,7 @@ pub struct Snapshot {
     pub sign_flag: bool,
     pub zero_flag: bool,
     pub carry_flag: bool,
+    pub overflow_flag: bool,
     pub status: Status,
     pub memory: Vec<u8>,
 }
@@ -198,15 +201,20 @@ fn random_instruction(
         };
     }
     macro_rules! condition {
-        ($emit:ident; $equal:ident, $not_equal:ident, $below:ident, $above_equal:ident, $below_equal:ident, $above:ident, $sign:ident) => {
-            match generator.usize(..7) {
+        ($emit:ident; $equal:ident, $not_equal:ident, $below:ident, $above_equal:ident, $below_equal:ident, $above:ident, $sign:ident,
+            $less:ident, $greater_equal:ident, $less_equal:ident, $greater:ident) => {
+            match generator.usize(..11) {
                 0 => $emit!($equal),
                 1 => $emit!($not_equal),
                 2 => $emit!($below),
                 3 => $emit!($above_equal),
                 4 => $emit!($below_equal),
                 5 => $emit!($above),
-                _ => $emit!($sign),
+                6 => $emit!($sign),
+                7 => $emit!($less),
+                8 => $emit!($greater_equal),
+                9 => $emit!($less_equal),
+                _ => $emit!($greater),
             }
         };
     }
@@ -250,7 +258,7 @@ fn random_instruction(
                     assembler.$method(target)?
                 };
             }
-            condition!(emit; je, jne, jb, jae, jbe, ja, js);
+            condition!(emit; je, jne, jb, jae, jbe, ja, js, jl, jge, jle, jg);
         }
         6 => {
             macro_rules! emit {
@@ -262,7 +270,7 @@ fn random_instruction(
                     }
                 };
             }
-            condition!(emit; sete, setne, setb, setae, setbe, seta, sets);
+            condition!(emit; sete, setne, setb, setae, setbe, seta, sets, setl, setge, setle, setg);
         }
         7 => {
             macro_rules! emit {
@@ -295,7 +303,7 @@ fn random_instruction(
                     }
                 };
             }
-            condition!(emit; cmove, cmovne, cmovb, cmovae, cmovbe, cmova, cmovs);
+            condition!(emit; cmove, cmovne, cmovb, cmovae, cmovbe, cmova, cmovs, cmovl, cmovge, cmovle, cmovg);
         }
         8 => assembler.inc(if whole_program {
             rdi
@@ -353,7 +361,11 @@ fn random_instruction(
             }
         }
         13 => {
-            let count = generator.u8(..) as u32;
+            let count = if generator.bool() {
+                sample(generator, &[0u32, 1, 2, 31, 32, 33, 63, 64, 65])
+            } else {
+                generator.u8(..) as u32
+            };
             match (generator.bool(), generator.bool()) {
                 (true, true) => assembler.shl(REGISTERS32[destination], count)?,
                 (true, false) => assembler.shr(REGISTERS32[destination], count)?,
@@ -476,6 +488,7 @@ pub fn generate(generator: &mut fastrand::Rng) -> Result<Case> {
         sign_flag: generator.bool(),
         zero_flag: generator.bool(),
         carry_flag: generator.bool(),
+        overflow_flag: generator.bool(),
         data: (0..generator.usize(1..=MAX_DATA_BYTES))
             .map(|_| generator.u8(..))
             .collect(),

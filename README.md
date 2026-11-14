@@ -22,7 +22,7 @@ What a proof does not cover:
 - The decoder. Instructions come from the importer and iced-x86, not from Lean.
 - The CPU. The model is tested against real hardware (`cargo run -p rivet-check -- --cases 1000`),
   not proved equal to it.
-- Flags other than ZF, CF and SF, instructions outside the supported subset, and concurrency.
+- Flags other than ZF, CF, SF and OF, instructions outside the supported subset, and concurrency.
 
 ## An example
 

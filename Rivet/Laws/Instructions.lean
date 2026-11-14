@@ -23,7 +23,8 @@ private theorem MachineState.writeOperand64_flags (state : MachineState) (operan
     (value : BitVec 64) :
     (state.writeOperand64 operand value).carryFlag = state.carryFlag ∧
       (state.writeOperand64 operand value).zeroFlag = state.zeroFlag ∧
-      (state.writeOperand64 operand value).signFlag = state.signFlag := by
+      (state.writeOperand64 operand value).signFlag = state.signFlag ∧
+      (state.writeOperand64 operand value).overflowFlag = state.overflowFlag := by
   cases operand <;> simp [MachineState.writeOperand64, MachineState.write, MachineState.writeMemory]
 
 -- A store of the instruction's width keeps only that many low bytes of the value.
@@ -268,7 +269,8 @@ private theorem binary (operation : BinaryOp) (image : Image) (address : BitVec 
     let updated := if operation.writes then initial.writeOperand width destination result else initial
     Block image initial (if operation.writes then destination.changes initial else {}) (· = { updated with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := operation.carry left right result initial.carryFlag, signFlag := result.msb }) := by
+      carryFlag := operation.carry left right result initial.carryFlag,
+      overflowFlag := operation.overflow left right result initial.carryFlag, signFlag := result.msb }) := by
   apply Block.of_step (by rintro _ rfl; by_cases writes : operation.writes = true <;> simp only [writes, ↓reduceIte] <;>
     first | exact except_congr (writeOperand_except _ _ _ _) | exact except_congr .refl)
   intro undefinedFlags
@@ -306,7 +308,8 @@ theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
     let result := left + right
     Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := result < left, signFlag := result.msb }) := by
+      carryFlag := result < left, overflowFlag := left.saddOverflow right,
+      signFlag := result.msb }) := by
   exact binary .add image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -331,7 +334,8 @@ theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
     let result := left - right
     Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := left < right, signFlag := result.msb }) := by
+      carryFlag := left < right, overflowFlag := left.ssubOverflow right,
+      signFlag := result.msb }) := by
   exact binary .sub image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -356,7 +360,9 @@ theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
     let result := left - right - (if initial.carryFlag then 1#width.bits else 0#width.bits)
     Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := left < right || (initial.carryFlag && left == right), signFlag := result.msb }) := by
+      carryFlag := left < right || (initial.carryFlag && left == right),
+      overflowFlag := result.toInt != left.toInt - right.toInt - (if initial.carryFlag then 1 else 0),
+      signFlag := result.msb }) := by
   exact binary .sbb image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -380,8 +386,10 @@ theorem compare (image : Image) (address : BitVec 64) (destination source : Oper
     let result := left - right
     Block image initial {} (· = { initial with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := left == right,
-      carryFlag := left < right, signFlag := result.msb }) := by
-  simpa only [BinaryOp.writes, Bool.false_eq_true, ite_false, BinaryOp.result, BinaryOp.carry, sub_beq_zero] using
+      carryFlag := left < right, overflowFlag := left.ssubOverflow right,
+      signFlag := result.msb }) := by
+  simpa only [BinaryOp.writes, Bool.false_eq_true, ite_false, BinaryOp.result, BinaryOp.carry, BinaryOp.overflow,
+    sub_beq_zero] using
     binary .cmp image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
 
@@ -405,7 +413,7 @@ theorem test (image : Image) (address : BitVec 64) (destination source : Operand
     let result := left &&& right
     Block image initial {} (· = { initial with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := false, signFlag := result.msb }) := by
+      carryFlag := false, overflowFlag := false, signFlag := result.msb }) := by
   exact binary .test image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
 
@@ -430,7 +438,7 @@ theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : 
     let result := left &&& right
     Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := false, signFlag := result.msb }) := by
+      carryFlag := false, overflowFlag := false, signFlag := result.msb }) := by
   exact binary .and image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -455,7 +463,7 @@ theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : O
     let result := left ||| right
     Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := false, signFlag := result.msb }) := by
+      carryFlag := false, overflowFlag := false, signFlag := result.msb }) := by
   exact binary .or image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -480,7 +488,7 @@ theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : 
     let result := left ^^^ right
     Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
       status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#width.bits,
-      carryFlag := false, signFlag := result.msb }) := by
+      carryFlag := false, overflowFlag := false, signFlag := result.msb }) := by
   exact binary .xor image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
@@ -508,7 +516,8 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
     Block image initial (destination.changes initial) (fun final => ∃ sign zero : Bool,
       final = { initial.writeOperand width destination result with
         status := .running (address + BitVec.ofNat 64 length)
-        carryFlag := result.toInt != product, signFlag := sign, zeroFlag := zero }) := by
+        carryFlag := result.toInt != product, overflowFlag := result.toInt != product,
+        signFlag := sign, zeroFlag := zero }) := by
   apply Block.of_step (by rintro _ ⟨_, _, rfl⟩; exact except_congr (writeOperand_except _ _ _ _))
   intro undefinedFlags
   refine ⟨undefinedFlags.signFlag, undefinedFlags.zeroFlag, ?_⟩
@@ -535,14 +544,19 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     let result : BitVec width.bits := match operation with
       | .shl => value <<< amount
       | .shr => value >>> amount
-    Block image initial (destination.changes initial) (· = { initial.writeOperand width destination result with
-      status := .running (address + BitVec.ofNat 64 length)
-      carryFlag := if amount = 0 then initial.carryFlag else
-        value.getLsbD (match operation with | .shl => width.bits - amount | .shr => amount - 1)
-      zeroFlag := if amount = 0 then initial.zeroFlag else result == 0#width.bits
-      signFlag := if amount = 0 then initial.signFlag else result.msb }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr (writeOperand_except _ _ _ _))
+    Block image initial (destination.changes initial) (fun final => ∃ overflow : Bool,
+      final = { initial.writeOperand width destination result with
+        status := .running (address + BitVec.ofNat 64 length)
+        carryFlag := if amount = 0 then initial.carryFlag else
+          value.getLsbD (match operation with | .shl => width.bits - amount | .shr => amount - 1)
+        zeroFlag := if amount = 0 then initial.zeroFlag else result == 0#width.bits
+        signFlag := if amount = 0 then initial.signFlag else result.msb
+        overflowFlag := if amount = 0 then initial.overflowFlag else if amount = 1 then
+            (match operation with | .shl => result.msb != value.msb | .shr => value.msb)
+          else overflow }) := by
+  apply Block.of_step (by rintro _ ⟨_, rfl⟩; exact except_congr (writeOperand_except _ _ _ _))
   intro undefinedFlags
+  refine ⟨undefinedFlags.overflowFlag, ?_⟩
   rw [one code location undefinedFlags]
   have zero (value : BitVec width.bits) : (value.toNat == 0) = (value == 0) := by
     apply Bool.eq_iff_iff.mpr
@@ -625,7 +639,8 @@ theorem inc (image : Image) (address : BitVec 64) (register : Reg) (initial : Ma
     (code : InstructionAt image.program address length (.inc register)) :
     let result := initial.registers register + 1#64
     Block image initial { registers := [register] } (· = { initial.write register result with
-      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#64, signFlag := result.msb }) := by
+      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#64, signFlag := result.msb,
+      overflowFlag := (initial.registers register).saddOverflow 1#64 }) := by
   apply Block.of_step (by rintro _ rfl; exact except_congr (write_except _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]
@@ -637,7 +652,8 @@ theorem dec (image : Image) (address : BitVec 64) (register : Reg) (initial : Ma
     (code : InstructionAt image.program address length (.dec register)) :
     let result := initial.registers register - 1#64
     Block image initial { registers := [register] } (· = { initial.write register result with
-      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#64, signFlag := result.msb }) := by
+      status := .running (address + BitVec.ofNat 64 length), zeroFlag := result == 0#64, signFlag := result.msb,
+      overflowFlag := (initial.registers register).ssubOverflow 1#64 }) := by
   apply Block.of_step (by rintro _ rfl; exact except_congr (write_except _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]

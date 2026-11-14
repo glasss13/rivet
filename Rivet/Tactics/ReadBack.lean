@@ -307,7 +307,8 @@ meta def stops (type : Expr) : MetaM MessageData := do
     if e.hasLooseBVars then return
     if e.isAppOfArity ``MachineState.registers 2 || e.isAppOfArity ``readBytes 3 || (← isByteRead e) ||
         ((e.isAppOfArity ``MachineState.status 1 || e.isAppOfArity ``MachineState.zeroFlag 1 ||
-          e.isAppOfArity ``MachineState.carryFlag 1 || e.isAppOfArity ``MachineState.signFlag 1) && e.appArg!.isFVar) then
+          e.isAppOfArity ``MachineState.carryFlag 1 || e.isAppOfArity ``MachineState.signFlag 1 ||
+          e.isAppOfArity ``MachineState.overflowFlag 1) && e.appArg!.isFVar) then
       unless (← reads.get).contains e do reads.modify (·.push e)
   let mut why := m!""
   for read in ← reads.get do

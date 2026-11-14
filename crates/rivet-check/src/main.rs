@@ -41,6 +41,7 @@ enum Response {
 struct FlagValues {
     sign_flag: bool,
     zero_flag: bool,
+    overflow_flag: bool,
 }
 
 #[derive(Serialize)]
@@ -84,6 +85,7 @@ fn check(model: &Path, case: &Case) -> Result<Option<String>> {
             .map(|snapshot| FlagValues {
                 sign_flag: snapshot.sign_flag,
                 zero_flag: snapshot.zero_flag,
+                overflow_flag: snapshot.overflow_flag,
             })
             .collect(),
     };
