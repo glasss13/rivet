@@ -242,8 +242,7 @@ meta def known (goal : MVarId) : TacticM MVarId := goal.withContext do
   return goal
 
 meta def facts (goal : MVarId) : MetaM (Array (Expr × Expr)) := goal.withContext do
-  (← hypotheses).flatMapM fun decl => do
-    return (← parts decl.toExpr decl.type).filter (·.1 != decl.toExpr)
+  (← hypotheses).flatMapM fun decl => parts decl.toExpr decl.type
 
 -- A goal's parts, each with what it is for when that is not what it says.
 meta partial def leaves (goal : MVarId) : TacticM (Array (MVarId × Option MessageData)) := goal.withContext do
