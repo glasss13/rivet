@@ -175,6 +175,8 @@ inductive Op where
   | mov (destination source : Operand)
   | shift (operation : ShiftOp) (destination : Operand) (count : Nat)
   | imul (destination source : Operand) (immediate : Option Int)
+  | mul (source : Reg)
+  | tzcnt (destination source : Operand)
   | not (destination : Operand)
   | inc (destination : Reg)
   | dec (destination : Reg)

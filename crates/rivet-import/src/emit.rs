@@ -262,6 +262,11 @@ fn operation(value: &Operation) -> String {
             operand(source),
             immediate.map_or("none".into(), |value| format!("(some ({value}))"))
         ),
+        Mul { source } => format!(".mul {}", name(source)),
+        Tzcnt {
+            destination,
+            source,
+        } => format!(".tzcnt {} {}", operand(destination), operand(source)),
         Shift {
             operation,
             destination,

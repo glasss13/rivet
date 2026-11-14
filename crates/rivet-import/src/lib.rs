@@ -256,6 +256,19 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
                 },
             }
         }
+        Mul => {
+            ensure!(
+                instruction.code() == Code::Mul_rm64 && instruction.op0_kind() == OpKind::Register,
+                "MUL requires a 64-bit register source"
+            );
+            Operation::Mul {
+                source: register(instruction.op0_register())?,
+            }
+        }
+        Tzcnt => Operation::Tzcnt {
+            destination: first()?,
+            source: second()?,
+        },
         Sete | Setne | Setb | Setae | Setbe | Seta | Sets | Setl | Setge | Setle | Setg => {
             Operation::Setcc {
                 condition: condition(instruction)?,

@@ -206,6 +206,25 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
         signFlag := undefinedFlags.signFlag
         zeroFlag := undefinedFlags.zeroFlag }
     else { state with status := .fault }
+  | .mul source =>
+    let product := (state.registers .rax).setWidth 128 * (state.registers source).setWidth 128
+    let high := (product >>> 64).setWidth 64
+    next nextAddress { (state.write .rax (state.registers .rax * state.registers source)).write .rdx high with
+      carryFlag := high != 0
+      overflowFlag := high != 0
+      signFlag := undefinedFlags.signFlag
+      zeroFlag := undefinedFlags.zeroFlag }
+  | .tzcnt destination source =>
+    if validConditionalMove destination source && state.canRead image source then
+      let width := (destination.width.getD .qword).bits
+      let value := (state.readOperand64 source).setWidth width
+      let result := value.ctz
+      next nextAddress { state.writeOperand64 destination (result.setWidth 64) with
+        carryFlag := value.toNat == 0
+        zeroFlag := result.toNat == 0
+        signFlag := undefinedFlags.signFlag
+        overflowFlag := undefinedFlags.overflowFlag }
+    else { state with status := .fault }
   | .lea destination address => next nextAddress (state.write destination (address.evaluate state.registers))
   | .movzx destination source =>
     if (source.width == some .byte || source.width == some .word) && state.canRead image source then

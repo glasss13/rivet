@@ -528,6 +528,58 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
     MachineState.writeOperand]
   cases immediate <;> rfl
 
+private theorem toNat_beq_zero (value : BitVec w) : (value.toNat == 0) = (value == 0) := by
+  apply Bool.eq_iff_iff.mpr
+  simp only [beq_iff_eq]
+  constructor
+  · intro equal; exact BitVec.eq_of_toNat_eq equal
+  · intro equal; rw [equal]; rfl
+
+theorem mul (image : Image) (address : BitVec 64) (source : Reg) (initial : MachineState)
+    {length : Nat}
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt image.program address length (.mul source)) :
+    let product := (initial.registers .rax).setWidth 128 * (initial.registers source).setWidth 128
+    let high := (product >>> 64).setWidth 64
+    Block image initial { registers := [.rax, .rdx] } (fun final => ∃ sign zero : Bool,
+      final = { (initial.write .rax (initial.registers .rax * initial.registers source)).write .rdx high with
+        status := .running (address + BitVec.ofNat 64 length)
+        carryFlag := high != 0#64, overflowFlag := high != 0#64, signFlag := sign, zeroFlag := zero }) := by
+  apply Block.of_step (by rintro _ ⟨_, _, rfl⟩; exact except_congr (write_write_except _ _ _ _ _))
+  intro undefinedFlags
+  refine ⟨undefinedFlags.signFlag, undefinedFlags.zeroFlag, ?_⟩
+  rw [one code location undefinedFlags]
+  simp [stepOp, next, MachineState.write, location]
+
+theorem tzcnt (image : Image) (address : BitVec 64) (destination source : Operand)
+    (initial : MachineState)
+    {length : Nat}
+    (location : initial.status = .running address := by first | rfl | assumption)
+    (code : InstructionAt image.program address length (.tzcnt destination source))
+    (width : Width := match destination.width with
+      | some width => width
+      | none => .qword)
+    (hasWidth : destination.width = some width := by rfl)
+    (valid : validConditionalMove destination source = true := by
+      first | assumption | simp [validConditionalMove])
+    (readable : initial.canRead image source = true := by simp only [rivet, *]) :
+    let value := initial.readOperand width source
+    let result := value.ctz
+    Block image initial (destination.changes initial) (fun final => ∃ sign overflow : Bool,
+      final = { initial.writeOperand width destination result with
+        status := .running (address + BitVec.ofNat 64 length)
+        carryFlag := value == 0#width.bits, zeroFlag := result == 0#width.bits,
+        signFlag := sign, overflowFlag := overflow }) := by
+  apply Block.of_step (by rintro _ ⟨_, _, rfl⟩; exact except_congr (writeOperand_except _ _ _ _))
+  intro undefinedFlags
+  refine ⟨undefinedFlags.signFlag, undefinedFlags.overflowFlag, ?_⟩
+  rw [one code location undefinedFlags]
+  simp only [stepOp, valid, readable, Bool.true_and, ite_true]
+  rw [hasWidth]
+  simp only [Option.getD_some, next, MachineState.writeOperand64_status, location, MachineState.readOperand,
+    MachineState.writeOperand, toNat_beq_zero]
+  rfl
+
 theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     (destination : Operand) (count : Nat) (initial : MachineState)
     {length : Nat}
@@ -558,17 +610,11 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
   intro undefinedFlags
   refine ⟨undefinedFlags.overflowFlag, ?_⟩
   rw [one code location undefinedFlags]
-  have zero (value : BitVec width.bits) : (value.toNat == 0) = (value == 0) := by
-    apply Bool.eq_iff_iff.mpr
-    simp only [beq_iff_eq]
-    constructor
-    · intro equal; exact BitVec.eq_of_toNat_eq equal
-    · intro equal; rw [equal]; rfl
   simp only [stepOp, valid, ite_true]
   rw [hasWidth]
   simp only [Option.getD_some, MachineState.readOperand, MachineState.writeOperand]
   cases operation <;> split <;>
-    simp only [zero] <;> simp_all [next, MachineState.writeOperand64_flags]
+    simp only [toNat_beq_zero] <;> simp_all [next, MachineState.writeOperand64_flags]
 
 theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand)
     (initial : MachineState)

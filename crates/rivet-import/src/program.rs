@@ -106,6 +106,13 @@ pub enum Operation {
         source: Operand,
         immediate: Option<i128>,
     },
+    Mul {
+        source: Register64,
+    },
+    Tzcnt {
+        destination: Operand,
+        source: Operand,
+    },
     Shift {
         operation: ShiftOp,
         destination: Operand,
