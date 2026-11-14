@@ -205,6 +205,19 @@ simproc_decl readBackByte (MachineState.memory _ _) := fun e => do
 
 namespace ReadBack
 
+-- Each byte of a memory a store named (`m₅ a`) in the goal, read back. No simproc can match a
+-- variable's application, so these go to `simp` as equations.
+meta def namedBytes : TacticM (Array Expr) := withMainContext do
+  let named := (← storeFacts).map (·.1)
+  if named.isEmpty then return #[]
+  let reads ← IO.mkRef (#[] : Array Expr)
+  forEachExpr (← instantiateMVars (← (← getMainGoal).getType)) fun e => do
+    if let .app (.fvar memory) _ := e then
+      if named.contains memory && !e.hasLooseBVars && !(← reads.get).contains e then reads.modify (·.push e)
+  (← reads.get).filterMapM fun read => do
+    let (_, proof?, _) ← walk read.appFn! read.appArg! none none
+    return proof?
+
 -- The read-back of the goal, or of hypotheses: registers, then memory.
 meta def readBackTactic (locations : Array Term := #[]) : TacticM (TSyntax `tactic) := withMainContext do
   let mut names ← opened (← (← getMainGoal).getType)
@@ -212,7 +225,7 @@ meta def readBackTactic (locations : Array Term := #[]) : TacticM (TSyntax `tact
     unless decl.isImplementationDetail do
       for name in ← opened decl.type do
         unless names.contains name do names := names.push name
-  let all ← lemmas names (← stepFacts) #[
+  let all ← lemmas names ((← stepFacts) ++ (← if locations.isEmpty then namedBytes else pure #[])) #[
     ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| reduceCtorEq),
     ← `(Lean.Parser.Tactic.simpLemma| ↓reduceIte), ← `(Lean.Parser.Tactic.simpLemma| readBack),
     ← `(Lean.Parser.Tactic.simpLemma| ↓readBackByte), ← `(Lean.Parser.Tactic.simpLemma| readBytes_littleEndianAt),
