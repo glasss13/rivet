@@ -47,10 +47,7 @@ meta def arith (type : Expr) : MetaM (Except MessageData Expr) := do
     return .ok (← instantiateMVars goal)
   catch error =>
     saved.restore
-    let budget := if (toString (← error.toMessageData.format)).startsWith "rivet_arith: no proof within" then
-      m!", within its budget" else m!""
-    return .error (← addMessageContext
-      m!"`rivet_arith` does not show, from the hypotheses in scope{budget}:{indentExpr type}")
+    return .error (← addMessageContext m!"The bound{indentExpr type}\nis not proved. {error.toMessageData}")
 
 -- A state by its name, or by where it is when no step named it.
 meta def describe (state : Expr) : MetaM MessageData := do
@@ -418,9 +415,7 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
       let reason ← stops shown
       unless (← reason.format).isEmpty do
         return some (← addMessageContext m!"{indentExpr shown}\nA read in it stopped short of the block's start.{reason}")
-      let arithmetic := if (toString (← error.toMessageData.format)).startsWith "rivet_arith: no proof within" then
-        m!"`rivet_arith` ran out of its budget on it" else m!"`rivet_arith` does not prove it from the hypotheses in scope"
-      addMessageContext m!"{indentExpr shown}\nis not a hypothesis, its sides are not the same, and {arithmetic}."
+      addMessageContext m!"{indentExpr shown}\nis not a hypothesis and its sides are not the same.\n{error.toMessageData}"
 where
   closeAll (goal : MVarId) : TacticM (Option MessageData) := do
     for (leaf, _) in ← leaves goal do

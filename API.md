@@ -81,7 +81,8 @@ nested block: a change says nothing of them, so the block's postcondition must.
 
 An error shows each part that did not close, as asked and as read back, and where each read
 stopped: at a store (named by its instruction and address) or a nested block it is not shown to
-miss, with the bound `rivet_arith` could not show. That bound is the fact to add.
+miss, with the bound `rivet_arith` could not show and what `rivet_arith` said of it. That bound is
+the fact to add.
 
 ## Stepping
 

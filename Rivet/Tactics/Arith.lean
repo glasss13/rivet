@@ -63,8 +63,9 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
         throwError "rivet_arith: no proof within its budget of {arithBudget} heartbeats; \
           `maxHeartbeats` does not change it. Give it only the facts the goal needs: \
           `rivet_arith only [facts]`."
-      throwError "rivet_arith: `lia` did not prove the goal from the facts in scope. The goal is not \
-        necessarily false: an assignment below satisfies what `lia` understood of it.\n\
+      throwError "rivet_arith: `lia` did not prove the goal from the facts in scope. Below is where it \
+        stopped. Its assignment may or may not be a counterexample: `lia` drops what it does not read, \
+        and may stop before it has tried everything.\n\
         - A term `lia` does not read, such as a mask, needs its meaning as an equation, e.g. \
         `x &&& 15#64 = x % 16#64`, proved through `toNat`.\n\
         - A goal that adds or subtracts a shifted value may need `grind`.\n\
