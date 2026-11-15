@@ -1,6 +1,5 @@
 module
 public import Rivet.Interpreter.Memory
-public import Rivet.Tactics.Arith
 import all Rivet.Interpreter.Memory
 -- Laws of flat memory: stores and little-endian reads. A range is an interval of `toNat` values. A
 -- read that ends past 2^64 wraps around, so the laws about reads ask it not to. Every bound is an

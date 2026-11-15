@@ -100,14 +100,14 @@ meta def lemmas (names : Array Name) (facts : Array Expr) (fixed : Array (TSynta
   let facts ← facts.mapM fun fact => do `(Lean.Parser.Tactic.simpLemma| $(← Term.exprToSyntax fact):term)
   return fixed ++ names ++ facts
 
--- Reads the registers and addresses of `target`, or of hypotheses, back. No arithmetic.
-meta def registersBack (target : Expr) (locations : Array Term := #[]) : TermElabM (TSyntax `tactic) := do
+-- Reads the registers and addresses of `target` back. No arithmetic.
+meta def registersBack (target : Expr) : TermElabM (TSyntax `tactic) := do
   let all ← lemmas (← opened target) (← stepFacts) #[
     ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| reduceCtorEq),
     ← `(Lean.Parser.Tactic.simpLemma| ↓reduceIte), ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceSub),
     ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceAdd), ← `(Lean.Parser.Tactic.simpLemma| BitVec.reduceOfNat),
     ← `(Lean.Parser.Tactic.simpLemma| BitVec.sub_zero), ← `(Lean.Parser.Tactic.simpLemma| BitVec.add_zero)]
-  if locations.isEmpty then `(tactic| simp only [$all,*]) else `(tactic| simp only [$all,*] at $[$locations]* ⊢)
+  `(tactic| simp only [$all,*])
 
 end ReadBack
 

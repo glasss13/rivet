@@ -26,9 +26,6 @@ def Changes.Misses (c : Changes) (low high : Nat) : Prop :=
 -- equal sides. Rivet's own: `Block.done` and `rivet_call` use it, and it starts no arithmetic.
 syntax (name := rivetKnown) "rivet_known" : tactic
 
--- `rivet_known`, then `rivet_arith` on each part left: your arithmetic, on your goal.
-syntax (name := rivetClose) "rivet_close" : tactic
-
 -- `t` is `s` except for `c`. Flags, vector registers and the status are not compared.
 structure MachineState.Except (t s : MachineState) (c : Changes) : Prop where
   sameRegisters : ∀ register, register ∉ c.registers → t.registers register = s.registers register

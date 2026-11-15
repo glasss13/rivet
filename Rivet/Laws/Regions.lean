@@ -34,29 +34,6 @@ def Image.Reads (image : Image) (r : Region) : Prop := ∀ address, r.Contains a
 
 def Image.Writes (image : Image) (r : Region) : Prop := ∀ address, r.Contains address → image.writable address = true
 
--- The image grants the region the permissions the region states.
-def Image.Grants (image : Image) (r : Region) : Prop :=
-  (r.readable = true → image.Reads r) ∧ (r.writable = true → image.Writes r)
-
--- The regions a proof names: each granted by the image, and pairwise apart.
-structure Image.Layout (image : Image) (regions : List Region) : Prop where
-  granted : ∀ r ∈ regions, image.Grants r
-  apart : regions.Pairwise Region.Apart
-
-theorem Image.Layout.apart_at {image : Image} {regions : List Region} (layout : image.Layout regions) (i j : Nat)
-    (first : i < regions.length) (second : j < regions.length) (differ : i ≠ j) : regions[i].Apart regions[j] := by
-  rcases Nat.lt_or_gt_of_ne differ with lt | gt
-  · exact List.pairwise_iff_getElem.mp layout.apart i j first second lt
-  · exact Or.symm (List.pairwise_iff_getElem.mp layout.apart j i second first gt)
-
-theorem Image.Layout.reads_at {image : Image} {regions : List Region} (layout : image.Layout regions) (i : Nat)
-    (bound : i < regions.length) (readable : regions[i].readable = true) : image.Reads regions[i] :=
-  (layout.granted _ (List.getElem_mem bound)).1 readable
-
-theorem Image.Layout.writes_at {image : Image} {regions : List Region} (layout : image.Layout regions) (i : Nat)
-    (bound : i < regions.length) (writable : regions[i].writable = true) : image.Writes regions[i] :=
-  (layout.granted _ (List.getElem_mem bound)).2 writable
-
 theorem Region.Apart.symm {first second : Region} (apart : first.Apart second) : second.Apart first :=
   Or.symm apart
 
@@ -134,22 +111,32 @@ theorem Region.Has.apart {r other : Region} {pointer stored : BitVec 64} {size l
   have := store.fits
   bv_omega
 
-theorem Image.grants_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) : image.Grants r := by
-  constructor <;> intro permission address inside
-  · simp only [Image.readable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-    exact ⟨r, member, permission, inside⟩
-  · simp only [Image.writable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-    exact ⟨r, member, permission, inside⟩
+-- A permission, from the image's own list and for a part of a region that has it.
+theorem Image.reads_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) (readable : r.readable = true) :
+    image.Reads r := by
+  intro address inside
+  simp only [Image.readable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  exact ⟨r, member, readable, inside⟩
 
-theorem Image.Grants.part {image : Image} {r : Region} (granted : image.Grants r) (offset length : Nat)
-    (inside : offset + length ≤ r.length) : image.Grants (r.part offset length inside) := by
-  constructor <;> intro permission address within
-  · apply granted.1 permission
-    simp only [Region.Contains] at within ⊢
-    omega
-  · apply granted.2 permission
-    simp only [Region.Contains] at within ⊢
-    omega
+theorem Image.writes_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) (writable : r.writable = true) :
+    image.Writes r := by
+  intro address inside
+  simp only [Image.writable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  exact ⟨r, member, writable, inside⟩
+
+theorem Image.Reads.part {image : Image} {r : Region} (reads : image.Reads r) (offset length : Nat)
+    (inside : offset + length ≤ r.length) : image.Reads (r.part offset length inside) := by
+  intro address within
+  apply reads
+  simp only [Region.Contains] at within ⊢
+  omega
+
+theorem Image.Writes.part {image : Image} {r : Region} (writes : image.Writes r) (offset length : Nat)
+    (inside : offset + length ≤ r.length) : image.Writes (r.part offset length inside) := by
+  intro address within
+  apply writes
+  simp only [Region.Contains] at within ⊢
+  omega
 
 theorem Image.Reads.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
     (reads : image.Reads r) (placed : r.Has pointer size) : permits image.readable pointer size = true := by

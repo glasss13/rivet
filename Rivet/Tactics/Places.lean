@@ -4,8 +4,8 @@ public import Rivet.Tactics.Registers
 public meta import Lean
 -- Pointers and regions, compared without arithmetic on the hypotheses. A pointer is placed by a
 -- hypothesis `r.Has q n`. Two pointers that are one expression plus or minus literals are a literal
--- number of bytes apart, and what a place covers and whether two places meet is then evaluated. Two regions are apart, and the image grants one, by a
--- hypothesis as written or a layout's list.
+-- number of bytes apart, and what a place covers and whether two places meet is then evaluated. That
+-- two regions are apart, and that the image grants one, are hypotheses as written.
 public section
 namespace Rivet
 open Lean Meta
@@ -55,7 +55,7 @@ where
   visit (proof type : Expr) (found : Array (Expr × Expr)) : MetaM (Array (Expr × Expr)) := do
     let type ← instantiateMVars type
     let some name := type.getAppFn.constName? | return found
-    if [``Region.Has, ``Region.Apart, ``Image.Layout, ``Image.Reads, ``Image.Writes].contains name then
+    if [``Region.Has, ``Region.Apart, ``Image.Reads, ``Image.Writes].contains name then
       return found.push (proof, type)
     if isStructure (← getEnv) name && (← isProp type) then
       return ← (getStructureFields (← getEnv) name).foldlM (init := found) fun found field => do
@@ -66,50 +66,20 @@ where
       if opened != type then return ← visit proof opened found
     return found
 
--- Every layout in scope: its proof, its image, and the regions it names.
-meta def layouts : MetaM (Array (Expr × Expr × Array Expr)) := do
-  (← known).filterMapM fun (proof, type) => do
-    let_expr Image.Layout image regions := type | return none
-    return some (proof, image, ← ReadBack.listItems regions)
-
--- `r.Apart other`: a hypothesis as written, either way round, or two entries of a layout.
+-- `r.Apart other`: a hypothesis as written, either way round.
 meta def apart? (r other : Expr) : MetaM (Option Expr) := do
-  let wanted := mkApp2 (mkConst ``Region.Apart) r other
   for (proof, type) in ← known do
     let_expr Region.Apart first second := type | continue
     if (← same first r) && (← same second other) then return some proof
     if (← same first other) && (← same second r) then return some (← mkAppM ``Region.Apart.symm #[proof])
-  for (layout, _, regions) in ← layouts do
-    let some i ← regions.findIdxM? (same · r) | continue
-    let some j ← regions.findIdxM? (same · other) | continue
-    if i == j then continue
-    let list ← mkListLit (mkConst ``Region) regions.toList
-    let length ← mkAppM ``List.length #[list]
-    let first ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit i, length])
-    let second ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit j, length])
-    let differ ← mkDecideProof (mkNot (← mkEq (mkNatLit i) (mkNatLit j)))
-    return some (← mkExpectedTypeHint
-      (← mkAppOptM ``Image.Layout.apart_at #[none, list, layout, mkNatLit i, mkNatLit j, first, second, differ]) wanted)
   return none
 
--- `image.Reads r` or `image.Writes r`: a hypothesis as written, or an entry of a layout that has
--- the permission.
+-- `image.Reads r` or `image.Writes r`: a hypothesis as written.
 meta def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
   let name := if writes then ``Image.Writes else ``Image.Reads
-  let wanted := mkApp2 (mkConst name) image r
   for (proof, type) in ← known do
     unless type.isAppOfArity name 2 do continue
     if (← same (type.getArg! 0) image) && (← same (type.getArg! 1) r) then return some proof
-  for (layout, layoutImage, regions) in ← layouts do
-    unless ← same layoutImage image do continue
-    let some i ← regions.findIdxM? (same · r) | continue
-    let permission := mkApp (mkConst (if writes then ``Region.writable else ``Region.readable)) r
-    unless (← whnfR permission).isConstOf ``true do continue
-    let list ← mkListLit (mkConst ``Region) regions.toList
-    let bound ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit i, ← mkAppM ``List.length #[list]])
-    let law := if writes then ``Image.Layout.writes_at else ``Image.Layout.reads_at
-    return some (← mkExpectedTypeHint
-      (← mkAppOptM law #[none, list, layout, mkNatLit i, bound, ← mkEqRefl (mkConst ``true)]) wanted)
   return none
 
 -- `r.Has pointer size`, where `r` may be unknown: a hypothesis as written, or one that covers it: the
@@ -141,7 +111,7 @@ meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
 meta def placed? (pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
   has? (← mkFreshExprMVar (mkConst ``Region)) pointer size
 
--- For an error only: the regions named in scope, by a layout, a place, a permission or apartness.
+-- For an error only: the regions named in scope, by a place, a permission or apartness.
 meta def named : MetaM MessageData := do
   let mut found : Array Expr := #[]
   let mut candidates := #[]
@@ -151,11 +121,10 @@ meta def named : MetaM MessageData := do
     | Region.Apart r other => candidates := candidates ++ #[r, other]
     | Image.Reads _ r => candidates := candidates.push r
     | Image.Writes _ r => candidates := candidates.push r
-    | Image.Layout _ regions => candidates := candidates ++ (← ReadBack.listItems regions)
     | _ => pure ()
   for r in candidates do
     unless ← found.anyM (same · r) do found := found.push r
-  if found.isEmpty then return m!"No region is named in scope: carry a layout, or state a place."
+  if found.isEmpty then return m!"No region is named in scope."
   return m!"The regions named in scope: {MessageData.joinSep (found.toList.map fun r => m!"`{r}`") ", "}."
 
 end Places
