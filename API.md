@@ -66,9 +66,8 @@ What is read back, each step a lookup and none of them arithmetic:
 
 - a register, through each step that did not write it and each nested block whose change does
   not list it;
-- a read (`readBytes m p n`; a byte is `n = 1`), by the rule under Memory: past a store off its own
-  pointer by the literals, and past any other store or a nested block by its region. Where it
-  stops, the error states what to prove;
+- a read (`readBytes m p n`; a byte is `n = 1`) that is placed, by the rule under Memory: past a
+  store or a nested block by its region. Where it stops, the error states what to prove;
 - a goal `r.Same s.memory t.memory`: every store since `s` is placed in a region apart from `r`,
   and every nested block's change lists only such regions.
 
@@ -107,7 +106,7 @@ stopped: at a store (named by its instruction and address) or a nested block, an
 - **Return.** After `ret` the status is `.running (readBytes m rsp 8)`: the 8 bytes at `rsp`
   before the return.
 - **Places.** A memory access asks where its pointer is: `r.Has pointer size`, for a region the
-  image grants. A hypothesis that covers it answers (see Memory); otherwise `disch` proves it:
+  image grants. A hypothesis that places it answers (see Memory); otherwise `disch` proves it:
   `rivet_step (disch := exact left.first positive)`, and the place is kept as a hypothesis
   (`t_place0`). An access that is not placed is an error at that step.
 - **Other side conditions** (operand checks) are stated over the block's start state. `rivet_step`
@@ -164,24 +163,25 @@ One contract per instruction, each a `Block` whose change is what the instructio
 Memory is named regions, as the state is named registers. A step writes into one region, at a
 place you prove. A fact about a region crosses anything that does not name it.
 
-**The rule.** Two pointers that are the same expression plus or minus literals (`rsp + 56#64` and
-`rsp - 8#64`; two literal addresses) are compared by the literals. Any other two are apart only
-when they are placed in regions that are apart. It is the same for every read and store, and
-Rivet never searches.
+**The rule.** A read passes a store, or a nested block, when its region is apart from the store's,
+or from every region the block's change lists. At a store into its own region, how the two
+pointers lie is a goal for you. Rivet never searches.
 
-- **A read at a store.** Off the same expression: the read passes the store when its bytes are
-  outside the store's, is those bytes of the value stored when they are inside, and stops when
-  they straddle its edge. The bytes between the two are counted as words, so wraparound is
-  never a question. Off another expression: the read passes when its region is apart from the store's,
-  and stops otherwise.
-- **A read at a nested block** passes when its region is apart from every region the block's
-  change lists.
-- **A place** is a hypothesis `r.Has q n`. It places `q`, and every pointer that is `q` plus or
-  minus literals with its bytes inside those `n`: `stack.Has (s.registers .rsp - 8#64) 16` places
-  the 8 bytes at `rsp - 8` and the 8 at `rsp`. Sizes are compared as literals, or are the same as
-  written.
+- **A place** is a hypothesis `r.Has q n`: it places `q`. A read or an access that is not placed
+  stops, and the error names the `Has` to state.
 - **Apart, and granted.** `r.Apart r'`, `image.Reads r` and `image.Writes r` are hypotheses as
   written, or follow from a layout in scope that lists the regions.
+- **Where a read stops,** the error states the goal: that the read is outside the store, for
+  `Memory.readBytes_storeBytes_outside`, or where it is inside it, for `placed.readBytes_stored`.
+  A place you need and do not have is `placed.part start finish`, from its two bounds.
+
+**Evaluated for you.** When two pointers are the same expression plus or minus literals
+(`rsp + 56#64` and `rsp - 8#64`; two literal addresses) and the sizes are literals, those goals
+are numbers, and Rivet evaluates them instead of handing them over. So
+`stack.Has (s.registers .rsp - 8#64) 16` places the 8 bytes at `rsp - 8` and the 8 at `rsp`; a
+read at `rsp` passes a store of 8 bytes at `rsp - 8`; and a read inside a store is those bytes
+of the value stored. This never crosses a nested block: a change lists regions, so what must
+survive a call is in a region the callee does not list.
 
 The model is flat, and so is what a theorem means: `Memory` is a byte per 64-bit address, and
 `Memory.storeBytes memory base length bytes` writes the addresses whose value lies in
@@ -204,7 +204,6 @@ The model is flat, and so is what a theorem means: `Memory` is a byte per 64-bit
 Laws, for where the read-back stops. Every bound is an argument you give.
 
 - `Memory.readBytes_storeBytes_outside`: a read outside a store is unchanged.
-  `Memory.readBytes_storeBytes_past` is the same for a read a number of bytes past the store, as words.
 - `placed.readBytes_stored offset start inside`: a read inside a store, `offset` bytes from its
   start, reads those bytes of the value stored. For other stored bytes:
   `Memory.readBytes_storeBytes_inside`, `readBytes_littleEndianAt`.
