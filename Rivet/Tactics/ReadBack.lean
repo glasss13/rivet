@@ -534,7 +534,19 @@ end ReadBack
 
 @[tactic rivetKnown] meta def evalRivetKnown : Tactic := fun _ => ReadBack.closeTactic
 
-@[tactic rivetArith] meta def evalRivetArith : Tactic := fun stx => withMainContext do
+meta partial def ReadBack.arith (stx : Syntax) : TacticM Unit := withMainContext do
+  -- A record is proved field by field, as a listed record is given field by field. `lia` reads `∧` itself.
+  let record ← do
+    let type ← whnfR (← instantiateMVars (← getMainTarget))
+    let env ← getEnv
+    pure (type.getAppFn.constName?.any fun name => name != ``And && isStructure env name)
+  if record then
+    let others := (← getGoals).tail
+    for field in ← (← getMainGoal).constructor do
+      setGoals [field]
+      arith stx
+    setGoals others
+    return
   let only := !stx[1].isNone
   let facts := if stx[2].isNone then #[] else stx[2][1].getSepArgs
   let others := (← getGoals).tail
@@ -605,5 +617,7 @@ end ReadBack
   finally
     IO.setNumHeartbeats start
   setGoals others
+
+@[tactic rivetArith] meta def evalRivetArith : Tactic := ReadBack.arith
 
 end Rivet

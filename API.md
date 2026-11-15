@@ -150,8 +150,9 @@ written `rivet_arith`, `rivet_arith [f₁, f₂]` (the hypotheses in scope and t
 `rivet_arith only [f₁, f₂]` (the listed facts alone). It first reads the goal and those facts
 back, registers and memory, as `rivet_known` does.
 
-- A fact is a statement about the goal's terms. A listed record (`inv`) is given field by field;
-  `lia` does not look inside one in scope. A general fact (`∀ x, …`) is ignored: give it its
+- A fact is a statement about the goal's terms. A listed record (`inv`) is given field by field,
+  and a goal that is a record (`r.Has p n`) is proved field by field; `lia` does not look inside
+  a record in scope. A general fact (`∀ x, …`) is ignored: give it its
   arguments (`lemma x`).
 - It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
   `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
