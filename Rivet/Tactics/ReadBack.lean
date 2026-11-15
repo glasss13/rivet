@@ -315,7 +315,7 @@ meta def stops (type : Expr) : MetaM MessageData := do
               let misses := mkOr (← mkAppM ``LE.le #[← ends address size, ← number base])
                 (← mkAppM ``LE.le #[← ends base length, ← number address])
               why := why ++ m!"\nRivet compares two pointers into one region only when they are a literal number of bytes apart. \
-                Prove how these two lie, and rewrite the read with the law:{indentExpr misses}\n\
+                Place the two in regions that are apart, or prove how they lie and rewrite the read with the law:{indentExpr misses}\n\
                 for `Memory.readBytes_storeBytes_outside`, or\
                 {indentD m!"{← number address} = {← number base} + offset"}\n\
                 for `Region.Has.readBytes_stored`."
