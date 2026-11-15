@@ -419,6 +419,9 @@ meta def finish (goal : MVarId) (facts : Array (Expr × Expr)) : TacticM Bool :=
       return false
   -- Not full `rfl`: it unfolds word arithmetic.
   if ← attempt (← `(tactic| with_reducible rfl)) then return true
+  -- Literals alone, however spelled (`4106#64 = 4106`): evaluated.
+  if !type.hasFVar && !type.hasMVar then
+    if ← attempt (← `(tactic| decide)) then return true
   for (proof, part) in facts do
     if part.isForall then
       let proof ← Term.exprToSyntax (← mkExpectedTypeHint proof part)
