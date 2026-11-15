@@ -398,8 +398,8 @@ meta def finish (goal : MVarId) (facts : Array (Expr × Expr)) : TacticM Bool :=
     catch _ =>
       saved.restore
       return false
-  -- Not full `rfl`: it unfolds word arithmetic.
-  if ← attempt (← `(tactic| with_reducible rfl)) then return true
+  -- Not full `rfl`: it unfolds word arithmetic. `x ≤ x` has two equal sides too.
+  if ← attempt (← `(tactic| with_reducible first | rfl | exact Nat.le_refl _ | exact BitVec.le_refl _)) then return true
   -- Literals alone, however spelled (`4106#64 = 4106`): evaluated.
   if !type.hasFVar && !type.hasMVar then
     if ← attempt (← `(tactic| decide)) then return true
