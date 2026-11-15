@@ -5,8 +5,8 @@ public import Rivet.Tactics.Arith
 public meta import Lean
 -- The read-back: every value of a later state, read back to the block's start. `rivet_known` closes a
 -- goal that, read that way, is a hypothesis or has two equal sides; `rivet_close` then gives what is
--- left to `rivet_arith`. The read-back itself asks no arithmetic: a read placed in a region passes a
--- store or a nested block by the names of the regions.
+-- left to `rivet_arith`. The read-back itself asks no arithmetic: a read and a store off one pointer are
+-- compared by their literals, and any other store or a nested block by the names of the regions.
 public section
 namespace Rivet
 open Lean Meta Elab Tactic
@@ -103,51 +103,34 @@ meta partial def regionBack (r memory : Expr) : MetaM (Expr × Option Expr × Op
         (← mkAppOptM ``MachineState.Except.same #[state, earlier, c, kept, r, misses])
   return (memory, none, none)
 
--- A read placed in `r`, at a store into `r`: the value stored, when the read is at the store's pointer
--- as written or at the same literal offset; the read before the store, when the two are at literal
--- offsets off one base that do not meet.
-meta def readStored (r memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
+-- A read at a store off the same pointer, by the literal number of bytes between the two: the read
+-- before the store when it misses it, those bytes of the value stored when it is inside it. A read that
+-- straddles the store's edge stops.
+meta def atStore (memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
   let some (earlier, base, length, bytes, fact?) ← store? memory | return none
-  let some (other, placed) ← Places.placed? base length | return none
-  unless ← Places.same other r do return none
+  let some (distance, place) ← Places.between? address base | return none
   let (some bytesRead, some bytesStored) := (← getNatValue? size, ← getNatValue? length) | return none
   let renamed (step : Expr) : MetaM Expr := do
     let some fact := fact? | return step
     let motive ← withLocalDeclD `memory (mkConst ``Memory) fun x =>
       mkLambdaFVars #[x] (mkApp3 (mkConst ``readBytes) x address size)
     mkEqTrans (← mkCongrArg motive fact) step
-  let mut places := none
-  unless address == base do
-    let some read ← Places.literalPlace? address | return none
-    let some store ← Places.literalPlace? base | return none
-    unless ← Places.same read.1 store.1 do return none
-    places := some (read, store)
-  let hit ← match places with
-    | none => pure (some (← mkEqRefl address))
-    | some ((_, offset, read), (_, storedOffset, store)) =>
-      if offset == storedOffset then pure (some (← mkEqTrans read (← mkEqSymm store))) else pure none
-  if let some same := hit then
-    unless bytesRead ≤ bytesStored do return none
-    let_expr littleEndianAt _ value anchor := bytes | return none
-    unless anchor == base do return none
-    let le ← mkDecideProof (← mkAppM ``LE.le #[size, length])
-    let proof ← mkAppM ``Region.Has.readBytes_stored #[placed, same, le, earlier, value]
-    return some ((← inferType proof).eq?.get!.2.2, ← renamed proof)
-  let some ((whole, offset, read), (_, storedOffset, store)) := places | return none
-  let roomExpr := mkApp (mkConst ``Region.length) whole
-  let some room ← Places.literal? roomExpr | return none
-  unless offset + bytesRead ≤ room && storedOffset + bytesStored ≤ room && 0 < bytesRead && 0 < bytesStored &&
-    (offset + bytesRead ≤ storedOffset || storedOffset + bytesStored ≤ offset) do return none
   let sum (a b : Expr) := mkAppM ``HAdd.hAdd #[a, b]
   let le (a b : Expr) := mkAppM ``LE.le #[a, b]
-  let readInside ← mkDecideProof (← le (← sum (mkNatLit offset) size) roomExpr)
-  let storeInside ← mkDecideProof (← le (← sum (mkNatLit storedOffset) length) roomExpr)
-  let positive ← mkDecideProof (mkAnd (← mkAppM ``LT.lt #[mkNatLit 0, size]) (← mkAppM ``LT.lt #[mkNatLit 0, length]))
-  let apart ← mkDecideProof (mkOr (← le (← sum (mkNatLit offset) size) (mkNatLit storedOffset))
-    (← le (← sum (mkNatLit storedOffset) length) (mkNatLit offset)))
-  let proof ← mkAppOptM ``Region.readBytes_store_apart #[whole, address, base, mkNatLit offset, mkNatLit storedOffset,
-    size, length, read, store, readInside, storeInside, positive, apart, earlier, bytes]
-  return some (mkApp3 (mkConst ``readBytes) earlier address size, ← renamed proof)
+  if bytesStored ≤ distance && distance + bytesRead ≤ 2^64 then
+    let after ← mkDecideProof (← le length (mkNatLit distance))
+    let before ← mkDecideProof (← le (← sum (mkNatLit distance) size) (mkNatLit (2^64)))
+    let proof ← mkAppM ``Memory.readBytes_storeBytes_past #[earlier, bytes, place, after, before]
+    return some (mkApp3 (mkConst ``readBytes) earlier address size, ← renamed proof)
+  unless 0 < bytesRead && distance + bytesRead ≤ bytesStored do return none
+  let_expr littleEndianAt _ value anchor := bytes | return none
+  unless anchor == base do return none
+  let some (_, placed) ← Places.placed? base length | return none
+  let within ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit distance, length])
+  let inside ← mkDecideProof (← le (← sum (mkNatLit distance) size) length)
+  let start ← mkAppM ``Region.Has.toNat_past #[placed, place, within]
+  let proof ← mkAppM ``Region.Has.readBytes_stored #[placed, mkNatLit distance, start, inside, earlier, value]
+  return some ((← inferType proof).eq?.get!.2.2, ← renamed proof)
 
 -- Whether a memory is a later one: a store's, or a later state's.
 meta def moves (memory : Expr) : MetaM Bool := do
@@ -157,15 +140,15 @@ meta def moves (memory : Expr) : MetaM Bool := do
     | some state => return (← later).any (state.containsFVar ·)
     | none => return memory.isAppOfArity ``Memory.storeBytes 4
 
--- One step of reading a read back: the region it is placed in, then as far as that region is the same,
--- or through a store into it. A read no hypothesis places is left as it is.
+-- One step of reading a read back. At a store off the read's own pointer, the literals decide. Any
+-- other store, and a nested block, the read passes by its region, as far as that region is the same.
+-- A read no hypothesis places stops there.
 meta def readBack? (memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
   unless ← moves memory do return none
+  if let some back ← atStore memory address size then return some back
   let some (r, placed) ← Places.placed? address size | return none
-  if let (final, some same, _) ← regionBack r memory then
-    return some (mkApp3 (mkConst ``readBytes) final address size,
-      ← mkEqSymm (← mkAppM ``Region.Same.read #[same, placed]))
-  readStored r memory address size
+  let (final, some same, _) ← regionBack r memory | return none
+  return some (mkApp3 (mkConst ``readBytes) final address size, ← mkEqSymm (← mkAppM ``Region.Same.read #[same, placed]))
 
 -- `c.Same memory start`: every store between the two is placed in a region the change lists, and every
 -- nested block's change is within it. Each step is a lookup in the change's list.
@@ -320,8 +303,8 @@ meta def stops (type : Expr) : MetaM MessageData := do
       if ← moves memory then
         match ← Places.placed? address size with
         | none =>
-          why := why ++ m!"\nThe read{indentExpr read}\nis not placed, so it is not read back: no hypothesis says, \
-            as written, which region its pointer is in. State it:{indentExpr (mkApp3 (mkConst ``Region.Has)
+          why := why ++ m!"\nThe read{indentExpr read}\nis not placed, so it does not pass a nested block or a store off \
+            another pointer: no hypothesis `r.Has q n` covers it. State it:{indentExpr (mkApp3 (mkConst ``Region.Has)
               (mkConst `r) address size)}\nfor the region `r` it lies in. {← Places.named}"
         | some (r, _) =>
           if let (final, _, some (reason, own)) ← regionBack r memory then
@@ -331,9 +314,11 @@ meta def stops (type : Expr) : MetaM MessageData := do
               let ends (e n : Expr) := do mkAppM ``HAdd.hAdd #[← number e, n]
               let misses := mkOr (← mkAppM ``LE.le #[← ends address size, ← number base])
                 (← mkAppM ``LE.le #[← ends base length, ← number address])
-              why := why ++ m!"\nRivet compares two pointers into one region only when they are the same as written, \
-                or both a literal number of bytes off one base. Prove how these two lie, and rewrite the read with \
-                the law:{indentExpr misses}\nfor `Memory.readBytes_storeBytes_outside`, or{indentExpr (← mkEq address base)}\n\
+              let how ← match ← Places.between? address base with
+                | some (distance, _) => pure m!"The read starts {distance} bytes past the store, as words, and                     {size} bytes there are neither all inside its {length} bytes nor all outside them."
+                | none => pure m!"Rivet compares two pointers by their literals only when they are the same                     expression plus or minus literals, and these are not."
+              why := why ++ m!"\n{how} Prove how the two lie, and rewrite the read with the law:{indentExpr misses}\n\
+                for `Memory.readBytes_storeBytes_outside`, or{indentExpr (← mkEq (← number address) (← number base))}\n\
                 for `Region.Has.readBytes_stored`."
     | _ =>
       if !(← keptBy read.appArg!).isEmpty then
@@ -390,11 +375,6 @@ meta def finish (goal : MVarId) (facts : Array (Expr × Expr)) : TacticM Bool :=
   -- A place, a permission of the image, and two regions apart: lookups.
   let found ← match_expr type with
     | Region.Has r pointer size => pure ((← Places.has? r pointer size).map (·.2))
-    | Region.At r offset pointer => do
-      let some (base, value, proof) ← Places.literalPlace? pointer | pure none
-      if (← Places.same base r) && (← getNatValue? offset) == some value then
-        pure (some (← mkExpectedTypeHint proof type))
-      else pure none
     | Region.Apart r other => Places.apart? r other
     | Image.Reads image r => Places.grant? false image r
     | Image.Writes image r => Places.grant? true image r
@@ -491,8 +471,8 @@ meta partial def close (arith : Bool) (leaf : MVarId) (facts : Array (Expr × Ex
     let shown ← instantiateMVars (← rest.getType)
     if shown.isAppOf ``Region.Has then
       unless arith do
-        return some (← addMessageContext m!"{indentExpr shown}\nis not placed: no hypothesis says it as written, \
-          and its pointer is not a literal number of bytes into a region. Prove the place, from one you have \
+        return some (← addMessageContext m!"{indentExpr shown}\nis not placed: no hypothesis `r.Has q n` covers it, \
+          with `q` the same expression plus or minus literals. Prove the place, from one you have \
           (`placed.first`, `placed.part`) or from its two bounds, and give it.")
       for field in ← rest.constructor do
         if let some why ← close arith field facts then return some why

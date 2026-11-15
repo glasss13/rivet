@@ -7,13 +7,6 @@ import all Rivet.Interpreter.Memory
 @[expose] public section
 namespace Rivet
 
--- The word pointing `offset` bytes into the region.
-def Region.place (r : Region) (offset : Nat) : BitVec 64 := BitVec.ofNat 64 (r.base + offset)
-
--- `pointer` points `offset` bytes into the region: where a register that holds a frame is. A
--- statement of its own, so that nothing rewrites with it.
-def Region.At (r : Region) (offset : Nat) (pointer : BitVec 64) : Prop := pointer = r.place offset
-
 -- `size` bytes at `pointer` lie in the region.
 structure Region.Has (r : Region) (pointer : BitVec 64) (size : Nat) : Prop where
   start : r.base ≤ pointer.toNat
@@ -76,34 +69,52 @@ theorem Region.Has.part {r : Region} {pointer : BitVec 64} {size : Nat} (placed 
     (finish : inner.toNat + less ≤ pointer.toNat + size) : r.Has inner less :=
   ⟨by have := placed.start; omega, by have := placed.finish; omega⟩
 
-theorem Region.place_add {r : Region} {pointer : BitVec 64} {offset : Nat} (placed : pointer = r.place offset)
-    (literal : BitVec 64) (sum : Nat) (same : offset + literal.toNat = sum) : pointer + literal = r.place sum := by
+-- A pointer as an expression plus a literal number of bytes, as words: `rsp - 8#64` is `rsp` plus
+-- `2^64 - 8`. Two pointers off one expression are then a literal number of bytes apart.
+namespace Offset
+
+theorem refl (pointer : BitVec 64) : pointer = pointer + BitVec.ofNat 64 0 := by simp
+
+theorem literal (pointer : BitVec 64) : pointer = 0#64 + BitVec.ofNat 64 pointer.toNat := by simp
+
+theorem add {pointer base : BitVec 64} {offset : Nat} (placed : pointer = base + BitVec.ofNat 64 offset)
+    (literal : BitVec 64) (sum : Nat) (same : (offset + literal.toNat) % 2^64 = sum) :
+    pointer + literal = base + BitVec.ofNat 64 sum := by
   subst placed same
-  apply BitVec.eq_of_toNat_eq
-  simp [Region.place, Nat.add_assoc]
+  bv_omega
 
-theorem Region.place_sub {r : Region} {pointer : BitVec 64} {offset : Nat} (placed : pointer = r.place offset)
-    (literal : BitVec 64) (difference : Nat) (same : difference + literal.toNat = offset) :
-    pointer - literal = r.place difference := by
+theorem sub {pointer base : BitVec 64} {offset : Nat} (placed : pointer = base + BitVec.ofNat 64 offset)
+    (literal : BitVec 64) (sum : Nat) (same : (offset + (2^64 - literal.toNat)) % 2^64 = sum) :
+    pointer - literal = base + BitVec.ofNat 64 sum := by
   subst placed same
-  apply BitVec.eq_of_toNat_eq
-  have := literal.isLt
-  simp only [Region.place, BitVec.toNat_sub, BitVec.toNat_ofNat]
-  omega
+  bv_omega
 
-theorem Region.Has.of_place {r : Region} {pointer : BitVec 64} {offset size : Nat}
-    (placed : pointer = r.place offset) (inside : offset + size ≤ r.length) (positive : 0 < size) : r.Has pointer size := by
-  subst placed
-  have := r.fits
-  constructor <;> simp only [Region.place, BitVec.toNat_ofNat] <;> omega
+theorem between {pointer other base : BitVec 64} {offset otherOffset : Nat}
+    (placed : pointer = base + BitVec.ofNat 64 offset) (otherPlaced : other = base + BitVec.ofNat 64 otherOffset)
+    (distance : Nat) (same : (otherOffset + distance) % 2^64 = offset % 2^64) :
+    pointer = other + BitVec.ofNat 64 distance := by
+  subst placed otherPlaced
+  bv_omega
 
-theorem Region.Has.of_place_part {r : Region} {pointer : BitVec 64} {offset size start length : Nat}
-    {inside : start + length ≤ r.length} (placed : pointer = r.place offset)
-    (low : start ≤ offset) (high : offset + size ≤ start + length) (positive : 0 < size) :
-    (r.part start length inside).Has pointer size := by
-  subst placed
+end Offset
+
+-- A place covers the pointers a literal number of bytes past it that stay inside it.
+theorem Region.Has.cover {r : Region} {pointer inner : BitVec 64} {size less distance : Nat}
+    (placed : r.Has pointer size) (place : inner = pointer + BitVec.ofNat 64 distance)
+    (inside : distance + less ≤ size) (positive : 0 < less) : r.Has inner less := by
+  subst place
   have := r.fits
-  constructor <;> simp only [Region.place, Region.part, BitVec.toNat_ofNat] <;> omega
+  have := placed.start
+  have := placed.finish
+  constructor <;> bv_omega
+
+theorem Region.Has.toNat_past {r : Region} {pointer inner : BitVec 64} {size distance : Nat}
+    (placed : r.Has pointer size) (place : inner = pointer + BitVec.ofNat 64 distance)
+    (inside : distance < size) : inner.toNat = pointer.toNat + distance := by
+  subst place
+  have := r.fits
+  have := placed.finish
+  bv_omega
 
 theorem Image.grants_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) : image.Grants r := by
   constructor <;> intro permission address inside
@@ -171,31 +182,16 @@ theorem store {r other : Region} {earlier memory : Memory} {pointer : BitVec 64}
 
 end Region.Same
 
--- A read at the place of a store reads the value stored, or its low bytes.
+-- A read inside a store reads those bytes of the value stored.
 theorem Region.Has.readBytes_stored {r : Region} {pointer stored : BitVec 64} {size length : Nat}
-    (placed : r.Has stored length) (same : pointer = stored) (le : size ≤ length) (memory : Memory) (value : BitVec n) :
+    (placed : r.Has stored length) (offset : Nat) (start : pointer.toNat = stored.toNat + offset)
+    (inside : offset + size ≤ length) (memory : Memory) (value : BitVec n) :
     readBytes (memory.storeBytes stored length (littleEndianAt value stored)) pointer size =
-      value.extractLsb' 0 (8 * size) := by
-  subst same
+      value.extractLsb' (8 * offset) (8 * size) := by
   have := r.fits
   have := placed.finish
   rw [Memory.readBytes_storeBytes_inside _ _ (by omega) (by omega) (by omega),
-    readBytes_littleEndianAt value 0 (by omega) (by omega)]
-
--- Two places off one base at literal offsets: a read that misses a store.
-theorem Region.readBytes_store_apart {base : Region} {pointer stored : BitVec 64} {offset storedOffset size length : Nat}
-    (read : pointer = base.place offset) (store : stored = base.place storedOffset)
-    (readInside : offset + size ≤ base.length) (storeInside : storedOffset + length ≤ base.length)
-    (positive : 0 < size ∧ 0 < length)
-    (apart : offset + size ≤ storedOffset ∨ storedOffset + length ≤ offset) (memory bytes : Memory) :
-    readBytes (memory.storeBytes stored length bytes) pointer size = readBytes memory pointer size := by
-  subst read store
-  have := base.fits
-  have first : (base.place offset).toNat = base.base + offset := by
-    simp only [Region.place, BitVec.toNat_ofNat]; omega
-  have second : (base.place storedOffset).toNat = base.base + storedOffset := by
-    simp only [Region.place, BitVec.toNat_ofNat]; omega
-  exact Memory.readBytes_storeBytes_outside _ _ (by omega) (by omega)
+    readBytes_littleEndianAt value offset start (by omega)]
 
 -- A block leaves alone every byte of a region its change misses.
 theorem MachineState.Except.same {t s : MachineState} {c : Changes} (kept : t.Except s c) {r : Region}

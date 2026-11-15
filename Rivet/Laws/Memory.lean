@@ -85,6 +85,19 @@ theorem Memory.readBytes_storeBytes_outside (memory : Memory) (bytes : Memory)
   intro offset bound
   exact Memory.read_storeBytes_outside (by bv_omega)
 
+-- A read `distance` bytes past a store, as words, is past its end when `length ≤ distance`, and stops
+-- short of coming round to its start when `distance + size ≤ 2^64`. Nothing is asked of where either
+-- lies: a read below the store is a large `distance` past it.
+theorem Memory.readBytes_storeBytes_past (memory : Memory) (bytes : Memory)
+    {base address : BitVec 64} {length size distance : Nat}
+    (place : address = base + BitVec.ofNat 64 distance)
+    (after : length ≤ distance) (before : distance + size ≤ 2^64) :
+    readBytes (memory.storeBytes base length bytes) address size = readBytes memory address size := by
+  subst place
+  apply readBytes_offsets_congr
+  intro offset bound
+  exact Memory.read_storeBytes_outside (by bv_omega)
+
 private theorem foldr_littleEndian (value offset size : Nat) :
     (List.range size).foldr (fun index rest => value / 256^(offset + index) % 256 + 256 * rest) 0 =
       value / 256^offset % 256^size := by

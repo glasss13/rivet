@@ -352,8 +352,8 @@ private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) :
     goal := next
   return some (← dropStates goal states, rewritten)
 
--- A memory access is placed: `r.Has pointer size` for a region the image grants. The place is a
--- hypothesis as written or a literal place, or `disch` proves it, and then it is kept as a hypothesis,
+-- A memory access is placed: `r.Has pointer size` for a region the image grants. A hypothesis covers
+-- it, or `disch` proves it, and then it is kept as a hypothesis,
 -- so that reading back finds it again. It is never left open.
 private meta def place (pc : Nat) (tactic? : Option Syntax) (tag : Name) (goal : MVarId) (writes : Bool)
     (image pointer size : Expr) : TacticM (Option (Expr × Expr)) := goal.withContext do
@@ -383,8 +383,8 @@ private meta def place (pc : Nat) (tactic? : Option Syntax) (tag : Name) (goal :
         throwError "rivet_step: `disch` did not place the access `{tag}` of {at_}: {failure}\nThe place, as `disch` saw it:\
           {indentD (MessageData.ofGoal named)}"
     | none =>
-      throwError "rivet_step: the access `{tag}` of {at_} is not placed: no hypothesis says where its pointer is, \
-        as written, and it is not a literal number of bytes into a region. Prove the place with `disch`:\
+      throwError "rivet_step: the access `{tag}` of {at_} is not placed: no hypothesis `r.Has q n` covers it, \
+        with `q` the same expression plus or minus literals. State one, or prove the place with `disch`:\
         {indentD (MessageData.ofGoal named)}\n{← named.withContext Places.named}"
   if (← instantiateMVars placed).hasSorry then
     throwError "rivet_step: `disch` did not place the access `{tag}` of {at_}: a proof inside it failed."
