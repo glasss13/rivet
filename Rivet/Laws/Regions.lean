@@ -127,10 +127,10 @@ theorem Image.Grants.part {image : Image} {r : Region} (granted : image.Grants r
     (inside : offset + length ≤ r.length) : image.Grants (r.part offset length inside) := by
   constructor <;> intro permission address within
   · apply granted.1 permission
-    simp only [Region.Contains, Region.part] at within ⊢
+    simp only [Region.Contains] at within ⊢
     omega
   · apply granted.2 permission
-    simp only [Region.Contains, Region.part] at within ⊢
+    simp only [Region.Contains] at within ⊢
     omega
 
 theorem Image.Reads.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
