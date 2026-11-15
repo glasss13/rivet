@@ -98,7 +98,8 @@ theorem between {pointer other base : BitVec 64} {offset otherOffset : Nat}
 
 end Offset
 
--- A place covers the pointers a literal number of bytes past it that stay inside it.
+-- A place covers the pointers a literal number of bytes past it that stay inside it: `placed.part`,
+-- with its two bounds proved by evaluation.
 theorem Region.Has.cover {r : Region} {pointer inner : BitVec 64} {size less distance : Nat}
     (placed : r.Has pointer size) (place : inner = pointer + BitVec.ofNat 64 distance)
     (inside : distance + less ≤ size) (positive : 0 < less) : r.Has inner less := by
@@ -114,6 +115,23 @@ theorem Region.Has.toNat_past {r : Region} {pointer inner : BitVec 64} {size dis
   subst place
   have := r.fits
   have := placed.finish
+  bv_omega
+
+theorem Region.Has.fits {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size) :
+    pointer.toNat + size ≤ 2^64 := by
+  have := r.fits
+  have := placed.finish
+  omega
+
+-- Two places a literal number of bytes apart, as words, with room for both: their bytes do not meet.
+-- It is what `Memory.readBytes_storeBytes_outside` asks, proved by evaluation.
+theorem Region.Has.apart {r other : Region} {pointer stored : BitVec 64} {size length distance : Nat}
+    (read : r.Has pointer size) (store : other.Has stored length)
+    (place : pointer = stored + BitVec.ofNat 64 distance) (after : length ≤ distance) (before : distance + size ≤ 2^64) :
+    pointer.toNat + size ≤ stored.toNat ∨ stored.toNat + length ≤ pointer.toNat := by
+  subst place
+  have := read.fits
+  have := store.fits
   bv_omega
 
 theorem Image.grants_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) : image.Grants r := by

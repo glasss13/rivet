@@ -103,11 +103,13 @@ meta partial def regionBack (r memory : Expr) : MetaM (Expr × Option Expr × Op
         (← mkAppOptM ``MachineState.Except.same #[state, earlier, c, kept, r, misses])
   return (memory, none, none)
 
--- A read at a store's own pointer, once literals are folded: the value stored, or its low bytes.
-meta def atStore (memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
+-- A placed read at a store it did not pass by its region. When the two pointers are a literal number of
+-- bytes apart, what the laws ask is evaluated: the read misses the store, or is bytes of the value stored.
+meta def atStore (read memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
   let some (earlier, base, length, bytes, fact?) ← store? memory | return none
   let some (distance, place) ← Places.between? address base | return none
   let (some bytesRead, some bytesStored) := (← getNatValue? size, ← getNatValue? length) | return none
+  let some (_, placed) ← Places.placed? base length | return none
   let renamed (step : Expr) : MetaM Expr := do
     let some fact := fact? | return step
     let motive ← withLocalDeclD `memory (mkConst ``Memory) fun x =>
@@ -115,10 +117,15 @@ meta def atStore (memory address size : Expr) : MetaM (Option (Expr × Expr)) :=
     mkEqTrans (← mkCongrArg motive fact) step
   let sum (a b : Expr) := mkAppM ``HAdd.hAdd #[a, b]
   let le (a b : Expr) := mkAppM ``LE.le #[a, b]
-  unless distance == 0 && 0 < bytesRead && bytesRead ≤ bytesStored do return none
+  if bytesStored ≤ distance && distance + bytesRead ≤ 2^64 then
+    let after ← mkDecideProof (← le length (mkNatLit distance))
+    let before ← mkDecideProof (← le (← sum (mkNatLit distance) size) (mkNatLit (2^64)))
+    let outside ← mkAppM ``Region.Has.apart #[read, placed, place, after, before]
+    let proof ← mkAppM ``Memory.readBytes_storeBytes_outside #[earlier, bytes, outside, ← mkAppM ``Region.Has.fits #[read]]
+    return some (mkApp3 (mkConst ``readBytes) earlier address size, ← renamed proof)
+  unless 0 < bytesRead && distance + bytesRead ≤ bytesStored do return none
   let_expr littleEndianAt _ value anchor := bytes | return none
   unless anchor == base do return none
-  let some (_, placed) ← Places.placed? base length | return none
   let within ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit distance, length])
   let inside ← mkDecideProof (← le (← sum (mkNatLit distance) size) length)
   let start ← mkAppM ``Region.Has.toNat_past #[placed, place, within]
@@ -134,14 +141,14 @@ meta def moves (memory : Expr) : MetaM Bool := do
     | none => return memory.isAppOfArity ``Memory.storeBytes 4
 
 -- One step of reading a read back: the region it is placed in, as far as that region is the same; then,
--- at a store into that region, the value stored when the read is at the store's own pointer. A read no
--- hypothesis places stops there.
+-- at the store it stopped at, what the literals between the two pointers say. A read no hypothesis
+-- places stops there.
 meta def readBack? (memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
   unless ← moves memory do return none
   let some (r, placed) ← Places.placed? address size | return none
   if let (final, some same, _) ← regionBack r memory then
     return some (mkApp3 (mkConst ``readBytes) final address size, ← mkEqSymm (← mkAppM ``Region.Same.read #[same, placed]))
-  atStore memory address size
+  atStore placed memory address size
 
 -- `c.Same memory start`: every store between the two is placed in a region the change lists, and every
 -- nested block's change is within it. Each step is a lookup in the change's list.
@@ -307,7 +314,7 @@ meta def stops (type : Expr) : MetaM MessageData := do
               let ends (e n : Expr) := do mkAppM ``HAdd.hAdd #[← number e, n]
               let misses := mkOr (← mkAppM ``LE.le #[← ends address size, ← number base])
                 (← mkAppM ``LE.le #[← ends base length, ← number address])
-              why := why ++ m!"\nRivet compares two pointers into one region only when they are the same pointer. \
+              why := why ++ m!"\nRivet compares two pointers into one region only when they are a literal number of bytes apart. \
                 Prove how these two lie, and rewrite the read with the law:{indentExpr misses}\n\
                 for `Memory.readBytes_storeBytes_outside`, or\
                 {indentD m!"{← number address} = {← number base} + offset"}\n\
