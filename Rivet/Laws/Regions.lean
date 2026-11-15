@@ -16,7 +16,7 @@ def Region.Apart (first second : Region) : Prop :=
   first.base + first.length ≤ second.base ∨ second.base + second.length ≤ first.base
 
 -- `length` bytes of the region from `offset`, with its permissions.
-def Region.part (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length := by exact Nat.le_of_ble_eq_true rfl) :
+abbrev Region.part (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length := by exact Nat.le_of_ble_eq_true rfl) :
     Region :=
   { base := r.base + offset, length, readable := r.readable, writable := r.writable,
     fits := by have := r.fits; omega }

@@ -104,7 +104,7 @@ meta def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
     unless ← same layoutImage image do continue
     let some i ← regions.findIdxM? (same · r) | continue
     let permission := mkApp (mkConst (if writes then ``Region.writable else ``Region.readable)) r
-    unless (← whnfD permission).isConstOf ``true do continue
+    unless (← whnfR permission).isConstOf ``true do continue
     let list ← mkListLit (mkConst ``Region) regions.toList
     let bound ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit i, ← mkAppM ``List.length #[list]])
     let law := if writes then ``Image.Layout.writes_at else ``Image.Layout.reads_at

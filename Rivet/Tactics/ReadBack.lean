@@ -314,12 +314,15 @@ meta def stops (type : Expr) : MetaM MessageData := do
               let ends (e n : Expr) := do mkAppM ``HAdd.hAdd #[← number e, n]
               let misses := mkOr (← mkAppM ``LE.le #[← ends address size, ← number base])
                 (← mkAppM ``LE.le #[← ends base length, ← number address])
-              let how ← match ← Places.between? address base with
-                | some (distance, _) => pure m!"The read starts {distance} bytes past the store, as words, and                     {size} bytes there are neither all inside its {length} bytes nor all outside them."
-                | none => pure m!"Rivet compares two pointers by their literals only when they are the same                     expression plus or minus literals, and these are not."
-              why := why ++ m!"\n{how} Prove how the two lie, and rewrite the read with the law:{indentExpr misses}\n\
-                for `Memory.readBytes_storeBytes_outside`, or{indentExpr (← mkEq (← number address) (← number base))}\n\
-                for `Region.Has.readBytes_stored`."
+              why := why ++ (← match ← Places.between? address base with
+                | some (distance, _) => pure m!"\nThe read starts {distance} bytes past the store, as words: its \
+                    {size} bytes are partly inside the store's {length} and partly outside. Read the two parts \
+                    apart: `readBytes_succ` splits a read into its bytes."
+                | none => pure m!"\nThe two pointers are not one expression plus or minus literals, so Rivet does \
+                    not compare them. Prove how they lie, and rewrite the read with the law:{indentExpr misses}\n\
+                    for `Memory.readBytes_storeBytes_outside`, or\
+                    {indentD m!"{← number address} = {← number base} + offset"}\n\
+                    for `Region.Has.readBytes_stored`.")
     | _ =>
       if !(← keptBy read.appArg!).isEmpty then
         why := why ++ m!"\n`{read.getAppFn}` of {← describe read.appArg!} is the status or a flag after a \
