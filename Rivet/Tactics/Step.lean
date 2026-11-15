@@ -383,8 +383,8 @@ private meta def place (pc : Nat) (tactic? : Option Syntax) (tag : Name) (goal :
         throwError "rivet_step: `disch` did not place the access `{tag}` of {at_}: {failure}\nThe place, as `disch` saw it:\
           {indentD (MessageData.ofGoal named)}"
     | none =>
-      throwError "rivet_step: the access `{tag}` of {at_} is not placed: no hypothesis `r.Has q n` covers it, \
-        with `q` the same expression plus or minus literals. State one, or prove the place with `disch`:\
+      throwError "rivet_step: the access `{tag}` of {at_} is not placed: no hypothesis `r.Has q n` has its pointer. \
+        State one, or prove the place with `disch`:\
         {indentD (MessageData.ofGoal named)}\n{← named.withContext Places.named}"
   if (← instantiateMVars placed).hasSorry then
     throwError "rivet_step: `disch` did not place the access `{tag}` of {at_}: a proof inside it failed."

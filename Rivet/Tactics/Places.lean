@@ -2,9 +2,9 @@ module
 public import Rivet.Laws.Regions
 public import Rivet.Tactics.Registers
 public meta import Lean
--- Pointers and regions, compared without arithmetic on the hypotheses. Two pointers that are one
--- expression plus or minus literals are a literal number of bytes apart. A pointer is placed by a
--- hypothesis `r.Has q n` that covers it. Two regions are apart, and the image grants one, by a
+-- Pointers and regions, compared without arithmetic on the hypotheses. Two pointers are the same when
+-- they are one expression once literals are folded. A pointer is placed by a hypothesis `r.Has q n` at
+-- that pointer. Two regions are apart, and the image grants one, by a
 -- hypothesis as written or a layout's list.
 public section
 namespace Rivet
@@ -112,8 +112,8 @@ meta def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
       (← mkAppOptM law #[none, list, layout, mkNatLit i, bound, ← mkEqRefl (mkConst ``true)]) wanted)
   return none
 
--- `r.Has pointer size`, where `r` may be unknown: a hypothesis as written, or one that covers it: its
--- pointer the same expression, and the literal bytes asked for inside the literal bytes it has.
+-- `r.Has pointer size`, where `r` may be unknown: a hypothesis as written, or one at the same pointer,
+-- once literals are folded, that has at least as many literal bytes.
 -- Returns the region with the proof.
 meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
   let r ← instantiateMVars r
@@ -130,8 +130,9 @@ meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
     let_expr Region.Has candidate at_ length := type | continue
     let some room ← getNatValue? length | continue
     unless ← fits candidate do continue
-    let some (distance, place) ← between? pointer at_ | continue
-    unless distance + bytes ≤ room do continue
+    let some (0, place) ← between? pointer at_ | continue
+    unless bytes ≤ room do continue
+    let distance := 0
     let inside ← mkDecideProof (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit distance, size], length])
     let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
     return some (candidate, ← mkAppM ``Region.Has.cover #[proof, place, inside, positive])

@@ -5,8 +5,8 @@ public import Rivet.Tactics.Arith
 public meta import Lean
 -- The read-back: every value of a later state, read back to the block's start. `rivet_known` closes a
 -- goal that, read that way, is a hypothesis or has two equal sides; `rivet_close` then gives what is
--- left to `rivet_arith`. The read-back itself asks no arithmetic: a read and a store off one pointer are
--- compared by their literals, and any other store or a nested block by the names of the regions.
+-- left to `rivet_arith`. The read-back itself asks no arithmetic: a read placed in a region passes a
+-- store or a nested block by the names of the regions.
 public section
 namespace Rivet
 open Lean Meta Elab Tactic
@@ -103,9 +103,7 @@ meta partial def regionBack (r memory : Expr) : MetaM (Expr × Option Expr × Op
         (← mkAppOptM ``MachineState.Except.same #[state, earlier, c, kept, r, misses])
   return (memory, none, none)
 
--- A read at a store off the same pointer, by the literal number of bytes between the two: the read
--- before the store when it misses it, those bytes of the value stored when it is inside it. A read that
--- straddles the store's edge stops.
+-- A read at a store's own pointer, once literals are folded: the value stored, or its low bytes.
 meta def atStore (memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
   let some (earlier, base, length, bytes, fact?) ← store? memory | return none
   let some (distance, place) ← Places.between? address base | return none
@@ -117,12 +115,7 @@ meta def atStore (memory address size : Expr) : MetaM (Option (Expr × Expr)) :=
     mkEqTrans (← mkCongrArg motive fact) step
   let sum (a b : Expr) := mkAppM ``HAdd.hAdd #[a, b]
   let le (a b : Expr) := mkAppM ``LE.le #[a, b]
-  if bytesStored ≤ distance && distance + bytesRead ≤ 2^64 then
-    let after ← mkDecideProof (← le length (mkNatLit distance))
-    let before ← mkDecideProof (← le (← sum (mkNatLit distance) size) (mkNatLit (2^64)))
-    let proof ← mkAppM ``Memory.readBytes_storeBytes_past #[earlier, bytes, place, after, before]
-    return some (mkApp3 (mkConst ``readBytes) earlier address size, ← renamed proof)
-  unless 0 < bytesRead && distance + bytesRead ≤ bytesStored do return none
+  unless distance == 0 && 0 < bytesRead && bytesRead ≤ bytesStored do return none
   let_expr littleEndianAt _ value anchor := bytes | return none
   unless anchor == base do return none
   let some (_, placed) ← Places.placed? base length | return none
@@ -140,15 +133,15 @@ meta def moves (memory : Expr) : MetaM Bool := do
     | some state => return (← later).any (state.containsFVar ·)
     | none => return memory.isAppOfArity ``Memory.storeBytes 4
 
--- One step of reading a read back. At a store off the read's own pointer, the literals decide. Any
--- other store, and a nested block, the read passes by its region, as far as that region is the same.
--- A read no hypothesis places stops there.
+-- One step of reading a read back: the region it is placed in, as far as that region is the same; then,
+-- at a store into that region, the value stored when the read is at the store's own pointer. A read no
+-- hypothesis places stops there.
 meta def readBack? (memory address size : Expr) : MetaM (Option (Expr × Expr)) := do
   unless ← moves memory do return none
-  if let some back ← atStore memory address size then return some back
   let some (r, placed) ← Places.placed? address size | return none
-  let (final, some same, _) ← regionBack r memory | return none
-  return some (mkApp3 (mkConst ``readBytes) final address size, ← mkEqSymm (← mkAppM ``Region.Same.read #[same, placed]))
+  if let (final, some same, _) ← regionBack r memory then
+    return some (mkApp3 (mkConst ``readBytes) final address size, ← mkEqSymm (← mkAppM ``Region.Same.read #[same, placed]))
+  atStore memory address size
 
 -- `c.Same memory start`: every store between the two is placed in a region the change lists, and every
 -- nested block's change is within it. Each step is a lookup in the change's list.
@@ -303,8 +296,8 @@ meta def stops (type : Expr) : MetaM MessageData := do
       if ← moves memory then
         match ← Places.placed? address size with
         | none =>
-          why := why ++ m!"\nThe read{indentExpr read}\nis not placed, so it does not pass a nested block or a store off \
-            another pointer: no hypothesis `r.Has q n` covers it. State it:{indentExpr (mkApp3 (mkConst ``Region.Has)
+          why := why ++ m!"\nThe read{indentExpr read}\nis not placed, so it is not read back: no hypothesis `r.Has q n` \
+            has its pointer. State it:{indentExpr (mkApp3 (mkConst ``Region.Has)
               (mkConst `r) address size)}\nfor the region `r` it lies in. {← Places.named}"
         | some (r, _) =>
           if let (final, _, some (reason, own)) ← regionBack r memory then
@@ -314,15 +307,11 @@ meta def stops (type : Expr) : MetaM MessageData := do
               let ends (e n : Expr) := do mkAppM ``HAdd.hAdd #[← number e, n]
               let misses := mkOr (← mkAppM ``LE.le #[← ends address size, ← number base])
                 (← mkAppM ``LE.le #[← ends base length, ← number address])
-              why := why ++ (← match ← Places.between? address base with
-                | some (distance, _) => pure m!"\nThe read starts {distance} bytes past the store, as words: its \
-                    {size} bytes are partly inside the store's {length} and partly outside. Read the two parts \
-                    apart: `readBytes_succ` splits a read into its bytes."
-                | none => pure m!"\nThe two pointers are not one expression plus or minus literals, so Rivet does \
-                    not compare them. Prove how they lie, and rewrite the read with the law:{indentExpr misses}\n\
-                    for `Memory.readBytes_storeBytes_outside`, or\
-                    {indentD m!"{← number address} = {← number base} + offset"}\n\
-                    for `Region.Has.readBytes_stored`.")
+              why := why ++ m!"\nRivet compares two pointers into one region only when they are the same pointer. \
+                Prove how these two lie, and rewrite the read with the law:{indentExpr misses}\n\
+                for `Memory.readBytes_storeBytes_outside`, or\
+                {indentD m!"{← number address} = {← number base} + offset"}\n\
+                for `Region.Has.readBytes_stored`."
     | _ =>
       if !(← keptBy read.appArg!).isEmpty then
         why := why ++ m!"\n`{read.getAppFn}` of {← describe read.appArg!} is the status or a flag after a \
@@ -474,8 +463,8 @@ meta partial def close (arith : Bool) (leaf : MVarId) (facts : Array (Expr × Ex
     let shown ← instantiateMVars (← rest.getType)
     if shown.isAppOf ``Region.Has then
       unless arith do
-        return some (← addMessageContext m!"{indentExpr shown}\nis not placed: no hypothesis `r.Has q n` covers it, \
-          with `q` the same expression plus or minus literals. Prove the place, from one you have \
+        return some (← addMessageContext m!"{indentExpr shown}\nis not placed: no hypothesis `r.Has q n` has its pointer. \
+          Prove the place, from one you have \
           (`placed.first`, `placed.part`) or from its two bounds, and give it.")
       for field in ← rest.constructor do
         if let some why ← close arith field facts then return some why
