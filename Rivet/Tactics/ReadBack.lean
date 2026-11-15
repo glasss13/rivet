@@ -110,7 +110,11 @@ meta partial def walk (memory address size fits : Expr) (name? : Option FVarId :
         if let .ok finish ← arith (← mkAppM ``LE.le #[high, stored]) then
           let inside ← mkAppOptM ``Memory.readBytes_storeBytes_inside
             (#[earlier, bytes, base, address, length, size, start, finish, fits].map some)
-          return (read bytes, some inside, none)
+          let_expr littleEndianAt _ value anchor := bytes | return (read bytes, some inside, none)
+          let .ok same ← arith (← mkEq low (← mkAppM ``HAdd.hAdd #[← mkAppM ``BitVec.toNat #[anchor], mkNatLit 0]))
+            | return (read bytes, some inside, none)
+          let stored ← mkAppOptM ``readBytes_littleEndianAt #[none, value, anchor, address, size, mkNatLit 0, same, fits]
+          return ((← inferType stored).eq?.get!.2.2, some (← mkEqTrans inside stored), none)
       let instruction ← match name? with
         | some name => storedBy name
         | none => pure m!""
@@ -165,7 +169,6 @@ meta def readBackTactic (locations : Array Term := #[]) : TacticM (TSyntax `tact
   let all ← lemmas names (← stepFacts) #[
     ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| reduceCtorEq),
     ← `(Lean.Parser.Tactic.simpLemma| ↓reduceIte), ← `(Lean.Parser.Tactic.simpLemma| readBack),
-    ← `(Lean.Parser.Tactic.simpLemma| readBytes_littleEndianAt),
     ← `(Lean.Parser.Tactic.simpLemma| BitVec.setWidth_eq), ← `(Lean.Parser.Tactic.simpLemma| BitVec.extractLsb'_eq_self),
     ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceMul), ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceSub),
     ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceAdd), ← `(Lean.Parser.Tactic.simpLemma| Nat.reducePow),
