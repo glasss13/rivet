@@ -2,7 +2,8 @@ module
 public import Rivet.Tactics.Registers
 -- `rivet_arith (only)? [facts]`: proves an arithmetic goal about words and numbers with `lia`, within
 -- a fixed budget that `maxHeartbeats` does not change. The registers of the goal and of the facts it
--- uses are read back to the block's start first. With `only`, the other hypotheses are hidden.
+-- uses are read back to the block's start first. General (`∀`) facts in scope are hidden, and with
+-- `only`, every other hypothesis.
 public meta import Lean
 public section
 namespace Rivet
@@ -32,10 +33,10 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
   let facts := if stx[2].isNone then #[] else stx[2][1].getSepArgs
   let others := (← getGoals).tail
   let mut goal ← getMainGoal
-  let hidden ← if only then goal.withContext do
-      (← getLCtx).foldlM (init := #[]) fun hidden decl => do
-        if decl.isImplementationDetail then return hidden
-        return if ← isProp decl.type then hidden.push decl.fvarId else hidden
+  let unlisted ← if only then goal.withContext do
+      (← getLCtx).foldlM (init := #[]) fun unlisted decl => do
+        if decl.isImplementationDetail then return unlisted
+        return if ← isProp decl.type then unlisted.push decl.fvarId else unlisted
     else pure #[]
   let mut given := #[]
   for term in facts do
@@ -46,9 +47,10 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
       unless ← isProp domain do
         throwError "rivet_arith: the fact `{term}` is general: `{type}`. `lia` uses only facts about \
           the goal's terms; give it its arguments."
-    let (fact, next) ← (← goal.assert (← mkFreshUserName `fact) type proof).intro1P
-    given := given.push fact
-    goal := next
+    for (part, partType) in ← ReadBack.parts proof type do
+      let (fact, next) ← (← goal.assert (← mkFreshUserName `fact) partType part).intro1P
+      given := given.push fact
+      goal := next
   -- The goal and the facts it may use, with their registers read back, so they meet.
   setGoals [goal]
   let moved ← goal.withContext do
@@ -62,6 +64,13 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
     evalTactic (← `(tactic| try $readBack:tactic))
     let [read] ← getGoals | setGoals others; return
     goal := read
+  -- `lia` never instantiates a general fact, but `grind` still prepares each one, within the budget.
+  let hidden ← goal.withContext do
+    (← getLCtx).foldlM (init := #[]) fun hidden decl => do
+      if decl.isImplementationDetail then return hidden
+      if unlisted.contains decl.fvarId then return hidden.push decl.fvarId
+      let .forallE _ domain _ _ ← whnfR (← instantiateMVars decl.type) | return hidden
+      return if (← isProp decl.type) && !(← isProp domain) then hidden.push decl.fvarId else hidden
   for fact in hidden.reverse do
     goal ← goal.tryClear fact
   setGoals [goal]

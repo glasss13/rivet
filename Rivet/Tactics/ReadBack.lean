@@ -19,25 +19,6 @@ theorem MachineState.Except.readBytes {t s : MachineState} {c : Changes} (same :
 
 namespace ReadBack
 
-meta def opens (type : Expr) : MetaM Bool := do
-  let some name := type.getAppFn.constName? | return false
-  takesState name
-
--- What a fact says, part by part: conjuncts, and the fields or body of what `takesState` opens.
-meta partial def parts (proof type : Expr) : MetaM (Array (Expr × Expr)) := do
-  let type := (← instantiateMVars type).headBeta
-  if let some (left, right) := type.and? then
-    return (← parts (← mkAppM ``And.left #[proof]) left) ++ (← parts (← mkAppM ``And.right #[proof]) right)
-  if ← opens type then
-    if isStructure (← getEnv) type.getAppFn.constName! then
-      let mut found := #[]
-      for field in getStructureFields (← getEnv) type.getAppFn.constName! do
-        let part ← mkProjection proof field
-        found := found ++ (← parts part (← inferType part))
-      return found
-    if let some unfolded ← unfoldDefinition? type then return ← parts proof unfolded.headBeta
-  return #[(proof, type)]
-
 -- A bound the read-back needs, from the hypotheses in scope.
 meta def arith (type : Expr) : MetaM (Except MessageData Expr) := do
   let goal ← mkFreshExprSyntheticOpaqueMVar type
@@ -234,7 +215,6 @@ meta def readBackTactic (locations : Array Term := #[]) : TacticM (TSyntax `tact
     ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceAdd), ← `(Lean.Parser.Tactic.simpLemma| Nat.reducePow),
     ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceLeDiff), ← `(Lean.Parser.Tactic.simpLemma| BitVec.reduceOfNat),
     ← `(Lean.Parser.Tactic.simpLemma| BitVec.sub_zero), ← `(Lean.Parser.Tactic.simpLemma| BitVec.add_zero),
-    ← `(Lean.Parser.Tactic.simpLemma| MachineState.returnAddress),
     ← `(Lean.Parser.Tactic.simpLemma| ExecutionStatus.running.injEq)]
   if locations.isEmpty then `(tactic| simp only [$all,*]) else `(tactic| simp only [$all,*] at $[$locations]*)
 
@@ -256,17 +236,8 @@ meta def facts (goal : MVarId) : MetaM (Array (Expr × Expr)) := goal.withContex
 
 -- A goal's parts, each with what it is for when that is not what it says.
 meta partial def leaves (goal : MVarId) : TacticM (Array (MVarId × Option MessageData)) := goal.withContext do
-  let type := (← instantiateMVars (← goal.getType)).cleanupAnnotations.headBeta
-  if let some (left, right) := type.and? then
-    let left ← mkFreshExprSyntheticOpaqueMVar left
-    let right ← mkFreshExprSyntheticOpaqueMVar right
-    goal.assign (← mkAppM ``And.intro #[left, right])
-    return (← leaves left.mvarId!) ++ (← leaves right.mvarId!)
+  let type ← whnfR (← instantiateMVars (← goal.getType))
   if type.isForall then return ← leaves (← goal.intro1P).2
-  if ← opens type then
-    if isStructure (← getEnv) type.getAppFn.constName! then
-      return ← (← goal.constructor).toArray.flatMapM leaves
-    if let some unfolded ← unfoldDefinition? type then return ← leaves (← goal.replaceTargetDefEq unfolded.headBeta)
   -- `t.Except s c`: each register outside `c`, and each byte outside its ranges, is as it was.
   if let some (t, s, c) := type.app3? ``MachineState.Except then
     if t == s then
@@ -311,6 +282,8 @@ meta partial def leaves (goal : MVarId) : TacticM (Array (MVarId × Option Messa
     goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registersGoal, memoryGoal])
     return found.push (bytes, some m!"A byte `address` outside the change's memory{indentExpr c}\n\
       must end as it started. If a store or a nested block may change it, list its range.")
+  if type.getAppFn.constName?.any (isStructure (← getEnv)) then
+    return ← (← goal.constructor).toArray.flatMapM leaves
   return #[(← goal.replaceTargetDefEq type, none)]
 
 -- Where each read of a part stopped short of the block's start.
