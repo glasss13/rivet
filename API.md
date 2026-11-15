@@ -21,7 +21,7 @@ exhaust its recursion limit.
 - `Changes`: what a block may change. `registers` is a list of registers; `memory` is a list
   of ranges `(low, high)`, the addresses whose value lies in `[low, high)`. Both default to
   empty. A change may mention the block's start state, not a later one.
-- `t.Except s c`: every register outside `c.registers` and every byte outside `c.memory` is the
+- `t.Except s c`: every register outside `c.registers` and every read outside `c.memory` is the
   same in `t` as in `s`. Flags, vector registers and the status are not compared: state what you
   need of them in `Q`. It compares the end with the start, so a register the block saves and
   restores is not in the change. Its fields, `sameRegisters` and `sameMemory`, are for proofs by hand.
@@ -67,7 +67,7 @@ What is read back:
 
 - a register, through each step that did not write it and each nested block whose change does
   not list it;
-- memory (`readBytes m a n`, or a byte `m a`), through each store the read misses, each store
+- memory (`readBytes m a n`; a byte is `n = 1`), through each store the read misses, each store
   that wrote all of it (giving the bytes stored), and each nested block whose change it misses.
   Each of these is a bound for `rivet_arith`.
 

@@ -9,14 +9,6 @@ public section
 namespace Rivet
 open Lean Meta Elab Tactic
 
-theorem MachineState.Except.readBytes {t s : MachineState} {c : Changes} (same : t.Except s c)
-    (address : BitVec 64) (size : Nat) (away : c.Misses address.toNat (address.toNat + size))
-    (fits : address.toNat + size ≤ 2^64) :
-    Rivet.readBytes t.memory address size = Rivet.readBytes s.memory address size :=
-  readBytes_congr (fits := fits) fun other _ _ => same.sameMemory other fun range inside => by
-    have := away range inside
-    omega
-
 namespace ReadBack
 
 -- A bound the read-back needs, from the hypotheses in scope.
@@ -79,22 +71,19 @@ structure Stop where
   read : Expr
   reason : MessageData
 
--- Reads `size` bytes at `address` (one byte, `memory address`, without `size`) back through the
--- stores and the nested blocks, to the earliest memory it is the same in. A store the read misses is
--- passed; a store that wrote all of it gives the bytes stored; a nested block whose change the read
--- misses is passed. Returns the read there, a proof, and where it stopped short of a start.
+-- Reads `size` bytes at `address` back through the stores and the nested blocks, to the earliest
+-- memory it is the same in. A store the read misses is passed; a store that wrote all of it gives the
+-- bytes stored; a nested block whose change the read misses is passed. Returns the read there, a proof, and where it stopped short of a start.
 -- A store's definition is followed here, one read at a time, and never rewritten with: the bytes a
 -- store writes mention earlier memories, and expanding them all is exponential.
-meta partial def walk (memory address : Expr) (size? fits? : Option Expr) (name? : Option FVarId := none) :
+meta partial def walk (memory address size fits : Expr) (name? : Option FVarId := none) :
     MetaM (Expr × Option Expr × Option Stop) := do
-  let read (memory : Expr) : Expr := match size? with
-    | some size => mkApp3 (mkConst ``readBytes) memory address size
-    | none => mkApp memory address
+  let read (memory : Expr) : Expr := mkApp3 (mkConst ``readBytes) memory address size
   let here := read memory
   let low ← mkAppM ``BitVec.toNat #[address]
-  let high ← mkAppM ``HAdd.hAdd #[low, size?.getD (mkNatLit 1)]
+  let high ← mkAppM ``HAdd.hAdd #[low, size]
   let next (earlier step : Expr) (name? : Option FVarId := none) : MetaM (Expr × Option Expr × Option Stop) := do
-    let (final, rest?, stop?) ← walk earlier address size? fits? name?
+    let (final, rest?, stop?) ← walk earlier address size fits name?
     let proof ← match rest? with
       | some rest => mkEqTrans step rest
       | none => pure step
@@ -112,21 +101,16 @@ meta partial def walk (memory address : Expr) (size? fits? : Option Expr) (name?
     let #[earlier, base, length, bytes] := memory.getAppArgs | unreachable!
     let baseValue ← mkAppM ``BitVec.toNat #[base]
     let stored ← mkAppM ``HAdd.hAdd #[baseValue, length]
-    let before ← if size?.isSome then mkAppM ``LE.le #[high, baseValue] else mkAppM ``LT.lt #[low, baseValue]
-    match ← arith (mkOr before (← mkAppM ``LE.le #[stored, low])) with
+    match ← arith (mkOr (← mkAppM ``LE.le #[high, baseValue]) (← mkAppM ``LE.le #[stored, low])) with
     | .ok away =>
-      let step ← match size?, fits? with
-        | some size, some fits =>
-          mkAppOptM ``Memory.readBytes_storeBytes_outside (#[earlier, bytes, base, address, length, size, away, fits].map some)
-        | _, _ => mkAppOptM ``Memory.read_storeBytes_outside (#[earlier, base, length, bytes, address, away].map some)
-      return ← next earlier step
+      return ← next earlier
+        (← mkAppOptM ``Memory.readBytes_storeBytes_outside (#[earlier, bytes, base, address, length, size, away, fits].map some))
     | .error why =>
-      if let (some size, some fits) := (size?, fits?) then
-        if let .ok start ← arith (← mkAppM ``LE.le #[baseValue, low]) then
-          if let .ok finish ← arith (← mkAppM ``LE.le #[high, stored]) then
-            let inside ← mkAppOptM ``Memory.readBytes_storeBytes_inside
-              (#[earlier, bytes, base, address, length, size, start, finish, fits].map some)
-            return (mkApp3 (mkConst ``readBytes) bytes address size, some inside, none)
+      if let .ok start ← arith (← mkAppM ``LE.le #[baseValue, low]) then
+        if let .ok finish ← arith (← mkAppM ``LE.le #[high, stored]) then
+          let inside ← mkAppOptM ``Memory.readBytes_storeBytes_inside
+            (#[earlier, bytes, base, address, length, size, start, finish, fits].map some)
+          return (read bytes, some inside, none)
       let instruction ← match name? with
         | some name => storedBy name
         | none => pure m!""
@@ -140,10 +124,8 @@ meta partial def walk (memory address : Expr) (size? fits? : Option Expr) (name?
     for (earlier, c, kept) in ← keptBy state do
       match ← misses c low high with
       | .ok away =>
-        let step ← match size?, fits? with
-          | some size, some fits => mkAppM ``MachineState.Except.readBytes #[kept, address, size, away, fits]
-          | _, _ => pure <| mkApp6 (mkConst ``MachineState.Except.sameMemory) state earlier c kept address away
-        return ← next (mkApp (mkConst ``MachineState.memory) earlier) step
+        return ← next (mkApp (mkConst ``MachineState.memory) earlier)
+          (← mkAppM ``MachineState.Except.sameMemory #[kept, address, size, away, fits])
       | .error reason => why := why <|> some reason
     if let some reason := why then
       return (here, none, some ⟨here, ← addMessageContext
@@ -163,13 +145,6 @@ meta def walkRead (e : Expr) : MetaM (Expr × Option Expr × Option Stop) := do
   | .ok fits => walk memory address size fits
   | .error why => return (e, none, some ⟨e, m!"is not shown to end below 2^64.\n{why}"⟩)
 
-meta def isByteRead (e : Expr) : MetaM Bool := do
-  unless e.isApp do return false
-  let memory := e.appFn!
-  unless memory.isFVar || memory.isAppOfArity ``Memory.storeBytes 4 || memory.isAppOfArity ``MachineState.memory 1 do
-    return false
-  return (← inferType memory).isConstOf ``Memory
-
 end ReadBack
 
 open ReadBack in
@@ -178,26 +153,7 @@ simproc_decl readBack (readBytes _ _ _) := fun e => do
   let some proof := proof? | return .continue
   return .visit { expr := final, proof? := some proof }
 
-open ReadBack in
-simproc_decl readBackByte (MachineState.memory _ _) := fun e => do
-  let (final, proof?, _) ← walk e.appFn! e.appArg! none none
-  let some proof := proof? | return .continue
-  return .visit { expr := final, proof? := some proof }
-
 namespace ReadBack
-
--- Each byte of a memory a store named (`m₅ a`) in the goal, read back. No simproc can match a
--- variable's application, so these go to `simp` as equations.
-meta def namedBytes : TacticM (Array Expr) := withMainContext do
-  let named := (← storeFacts).map (·.1)
-  if named.isEmpty then return #[]
-  let reads ← IO.mkRef (#[] : Array Expr)
-  forEachExpr (← instantiateMVars (← (← getMainGoal).getType)) fun e => do
-    if let .app (.fvar memory) _ := e then
-      if named.contains memory && !e.hasLooseBVars && !(← reads.get).contains e then reads.modify (·.push e)
-  (← reads.get).filterMapM fun read => do
-    let (_, proof?, _) ← walk read.appFn! read.appArg! none none
-    return proof?
 
 -- The read-back of the goal, or of hypotheses: registers, then memory.
 meta def readBackTactic (locations : Array Term := #[]) : TacticM (TSyntax `tactic) := withMainContext do
@@ -206,10 +162,10 @@ meta def readBackTactic (locations : Array Term := #[]) : TacticM (TSyntax `tact
     unless decl.isImplementationDetail do
       for name in ← opened decl.type do
         unless names.contains name do names := names.push name
-  let all ← lemmas names ((← stepFacts) ++ (← if locations.isEmpty then namedBytes else pure #[])) #[
+  let all ← lemmas names (← stepFacts) #[
     ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| reduceCtorEq),
     ← `(Lean.Parser.Tactic.simpLemma| ↓reduceIte), ← `(Lean.Parser.Tactic.simpLemma| readBack),
-    ← `(Lean.Parser.Tactic.simpLemma| ↓readBackByte), ← `(Lean.Parser.Tactic.simpLemma| readBytes_littleEndianAt),
+    ← `(Lean.Parser.Tactic.simpLemma| readBytes_littleEndianAt),
     ← `(Lean.Parser.Tactic.simpLemma| BitVec.setWidth_eq), ← `(Lean.Parser.Tactic.simpLemma| BitVec.extractLsb'_eq_self),
     ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceMul), ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceSub),
     ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceAdd), ← `(Lean.Parser.Tactic.simpLemma| Nat.reducePow),
@@ -264,7 +220,9 @@ meta partial def leaves (goal : MVarId) : TacticM (Array (MVarId × Option Messa
       if let some (leaf, note) := leaf then found := found.push (leaf, some note)
     let memoryGoal ← mkFreshExprSyntheticOpaqueMVar memoryType
     let (address, bytes) ← memoryGoal.mvarId!.intro `address
+    let (size, bytes) ← bytes.intro `size
     let (away, bytes) ← bytes.intro `away
+    let (_, bytes) ← bytes.intro `fits
     let ranges ← changedRanges c
     let rangeType ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Nat]
     let list ← mkListLit rangeType (ranges.map (·.1)).toList
@@ -275,12 +233,12 @@ meta partial def leaves (goal : MVarId) : TacticM (Array (MVarId × Option Messa
         let member ← mkFreshExprSyntheticOpaqueMVar (← mkAppM ``Membership.mem #[list, range])
         discard <| Tactic.run member.mvarId! do
           evalTactic (← `(tactic| simp only [List.mem_cons, eq_self, true_or, or_true]))
-        pure (mkOr (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[value, mkNatLit 1], low]) (← mkAppM ``LE.le #[high, value]),
+        pure (mkOr (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[value, .fvar size], low]) (← mkAppM ``LE.le #[high, value]),
           mkApp2 (.fvar away) range member)
       bytes := (← (← bytes.assert `away type proof).intro1P).2
     bytes ← bytes.clear away
     goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registersGoal, memoryGoal])
-    return found.push (bytes, some m!"A byte `address` outside the change's memory{indentExpr c}\n\
+    return found.push (bytes, some m!"A read of `size` bytes at `address` outside the change's memory{indentExpr c}\n\
       must end as it started. If a store or a nested block may change it, list its range.")
   if type.getAppFn.constName?.any (isStructure (← getEnv)) then
     return ← (← goal.constructor).toArray.flatMapM leaves
@@ -291,7 +249,7 @@ meta def stops (type : Expr) : MetaM MessageData := do
   let reads ← IO.mkRef (#[] : Array Expr)
   forEachExpr type fun e => do
     if e.hasLooseBVars then return
-    if e.isAppOfArity ``MachineState.registers 2 || e.isAppOfArity ``readBytes 3 || (← isByteRead e) ||
+    if e.isAppOfArity ``MachineState.registers 2 || e.isAppOfArity ``readBytes 3 ||
         ((e.isAppOfArity ``MachineState.status 1 || e.isAppOfArity ``MachineState.zeroFlag 1 ||
           e.isAppOfArity ``MachineState.carryFlag 1 || e.isAppOfArity ``MachineState.signFlag 1 ||
           e.isAppOfArity ``MachineState.overflowFlag 1) && e.appArg!.isFVar) then
@@ -309,10 +267,7 @@ meta def stops (type : Expr) : MetaM MessageData := do
       if let (_, _, some stop) ← walkRead read then
         why := why ++ m!"\nThe read{indentExpr stop.read}\n{stop.reason}"
     | _ =>
-      if ← isByteRead read then
-        if let (_, _, some stop) ← walk read.appFn! read.appArg! none none then
-          why := why ++ m!"\nThe read{indentExpr stop.read}\n{stop.reason}"
-      else if !(← keptBy read.appArg!).isEmpty then
+      if !(← keptBy read.appArg!).isEmpty then
         why := why ++ m!"\n`{read.getAppFn}` of {← describe read.appArg!} is the status or a flag after a \
           nested block. A change says nothing of them: only the block's postcondition does."
   return why
