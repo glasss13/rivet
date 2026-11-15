@@ -199,7 +199,8 @@ or from every region the block's change lists. At a store into its own region, h
 pointers lie is a goal for you. Rivet never searches.
 
 - **A place** is a hypothesis `r.Has q n`: it places `q`. A read or an access that is not placed
-  stops, and the error names the `Has` to state.
+  stops, and the error names the `Has` to state. A place whose size is not a literal places only
+  itself: state the bytes you access, `have byte : dst.Has p 1 := left.first positive`.
 - **Apart, and granted.** `r.Apart r'`, `image.Reads r` and `image.Writes r` are hypotheses as
   written. Put those every block needs in a record of your own and carry it.
 - **Where a read stops,** the error states the goal: that the read is outside the store, for
@@ -280,4 +281,8 @@ and OF, instructions outside the supported subset, and concurrency.
   `F.entry`, `F.program`, `F.region_<a>` for the segment at `a`, `F.regions` (all of them), and
   `F.Loaded memory`: on each segment memory is the segment's bytes,
   `segment_<a> : F.region_<a>.Same F.segment_<a> memory`.
+  A constant read from a segment needs its place and its value as facts:
+  `have place : F.region_<a>.Has 0x403000#64 8 := ⟨by decide, by decide⟩`, then
+  `have value : readBytes s.memory 0x403000#64 8 = 42#64 := by rw [← loaded.segment_<a>.read place]; …`
+  with the known-bytes recipe under Memory.
 - `cargo run -p rivet-check -- --cases 1000` tests the model against the CPU.
