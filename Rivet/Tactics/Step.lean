@@ -2,6 +2,7 @@ module
 public import Rivet.Laws.Instructions
 public import Rivet.Laws.Spelling
 public import Rivet.Tactics.Fetch
+public import Rivet.Tactics.Places
 -- `rivet_step`: executes one instruction of a `Block` goal through its contract.
 public meta import Lean
 
@@ -351,27 +352,78 @@ private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) :
     goal := next
   return some (← dropStates goal states, rewritten)
 
+-- A memory access is placed: `r.Has pointer size` for a region the image grants. The place is a
+-- hypothesis as written or a literal place, or `disch` proves it, and then it is kept as a hypothesis,
+-- so that reading back finds it again. It is never left open.
+private meta def place (pc : Nat) (tactic? : Option Syntax) (tag : Name) (goal : MVarId) (writes : Bool)
+    (image pointer size : Expr) : TacticM (Option (Expr × Expr)) := goal.withContext do
+  let at_ := m!"the instruction at 0x{String.ofList (Nat.toDigits 16 pc)}"
+  let r ← mkFreshExprMVar (mkConst ``Region)
+  let wanted := mkApp3 (mkConst ``Region.Has) r pointer size
+  let placed ← mkFreshExprSyntheticOpaqueMVar wanted tag
+  let granted ← mkFreshExprSyntheticOpaqueMVar
+    (mkApp2 (mkConst (if writes then ``Image.Writes else ``Image.Reads)) image r)
+  goal.assign (← mkAppM (if writes then ``Image.Writes.permits else ``Image.Reads.permits) #[granted, placed])
+  setGoals [placed.mvarId!]
+  let some (named, _) ← overStart placed.mvarId! | throwError "rivet_step: unexpected side condition `{tag}` of {at_}"
+  named.setTag tag
+  let found ← named.withContext do
+    let_expr Region.Has region address length := ← instantiateMVars (← named.getType) | return false
+    let some (candidate, proof) ← Places.has? region address length | return false
+    unless ← isDefEq r candidate do return false
+    named.assign proof
+    return true
+  unless found do
+    match tactic? with
+    | some tactic =>
+      if let some failure ← attempt ⟨tactic⟩ named (runtime := true) then
+        -- Lean drops an error that shows a term it already failed on, and the proof would stop in silence.
+        let failure := if failure.hasSyntheticSorry then m!"a proof inside it failed, and then one that depended on it. \
+          Prove its parts apart: `refine ⟨?_, ?_⟩ <;> …`." else failure
+        throwError "rivet_step: `disch` did not place the access `{tag}` of {at_}: {failure}\nThe place, as `disch` saw it:\
+          {indentD (MessageData.ofGoal named)}"
+    | none =>
+      throwError "rivet_step: the access `{tag}` of {at_} is not placed: no hypothesis says where its pointer is, \
+        as written, and it is not a literal number of bytes into a region. Prove the place with `disch`:\
+        {indentD (MessageData.ofGoal named)}\n{← named.withContext Places.named}"
+  if (← instantiateMVars placed).hasSorry then
+    throwError "rivet_step: `disch` did not place the access `{tag}` of {at_}: a proof inside it failed."
+  let region ← instantiateMVars r
+  if region.hasExprMVar then throwError "rivet_step: `disch` did not say which region the access `{tag}` of {at_} is in"
+  let some grant ← Places.grant? writes image region
+    | throwError "rivet_step: the image is not known to grant the access `{tag}` of {at_}: there is no hypothesis\
+        {indentExpr (← instantiateMVars (← granted.mvarId!.getType))}\nand no layout in scope names the region with that permission."
+  granted.mvarId!.assign grant
+  if found then return none
+  return some (mkApp3 (mkConst ``Region.Has) region pointer size, ← instantiateMVars placed)
+
 private meta def discharge (pc : Nat) (tactic? : Option Syntax) (goal : MVarId) :
-    TacticM (Option MVarId) := do
+    TacticM (Option MVarId × Option (Expr × Expr)) := do
   let tag ← goal.getTag
   setGoals [goal]
   evalTactic (← `(tactic| try simp only [rivet]))
-  let [reduced] ← getGoals | return none
-  if ← closes (← `(tactic| first | rfl | decide +kernel | with_reducible assumption)) reduced then
+  let [reduced] ← getGoals | return (none, none)
+  let access? ← reduced.withContext do
+    let some (_, lhs, _) := (← instantiateMVars (← reduced.getType)).eq? | return none
+    let_expr permits permission pointer size := lhs | return none
+    if let some image := permission.app1? ``Image.readable then return some (false, image, pointer, size)
+    if let some image := permission.app1? ``Image.writable then return some (true, image, pointer, size)
     return none
-  let some (named, rewritten) ← overStart reduced | return none
+  if let some (writes, image, pointer, size) := access? then
+    return (none, ← place pc tactic? tag reduced writes image pointer size)
+  if ← closes (← `(tactic| first | rfl | decide +kernel | with_reducible assumption)) reduced then
+    return (none, none)
+  let some (named, rewritten) ← overStart reduced | return (none, none)
   named.setTag tag
   if rewritten then
-    if ← closes (← `(tactic| with_reducible assumption)) named then return none
+    if ← closes (← `(tactic| with_reducible assumption)) named then return (none, none)
   match tactic? with
   | some tactic =>
-    let some failure ← attempt ⟨tactic⟩ named (runtime := true) | return none
+    let some failure ← attempt ⟨tactic⟩ named (runtime := true) | return (none, none)
     throwError "rivet_step: `disch` did not prove the side condition `{tag}` of the \
       instruction at 0x{String.ofList (Nat.toDigits 16 pc)}: {failure}\nThe side condition, as `disch` saw it:\
       {indentD (MessageData.ofGoal named)}"
-  | none =>
-    if ← closes (← `(tactic| (simp [*, rivet]; done))) named then return none
-    return some named
+  | none => return (some named, none)
 
 end Step
 
@@ -396,6 +448,7 @@ open Step in
   let condition? : Option Name := if stx[3].getNumArgs > 0 then some stx[3][1].getId else none
   -- 1. The contract, with side conditions as goals; discharge what we can.
   let mut unsolved : Array MVarId := #[]
+  let mut placements : Array (Expr × Expr) := #[]
   let mainGoal ← getMainGoal
   -- Goals left open by earlier steps (unproved side conditions) stay open, after ours.
   let pending := (← getGoals).filter (· != mainGoal)
@@ -411,7 +464,10 @@ open Step in
         unless ← isDefEq (← side.getType) (← inferType instructionProof) do
           throwError "rivet_step: unexpected instruction at {pc}"
         side.assign instructionProof
-      | _ => if let some remaining ← discharge pc discharger side then unsolved := unsolved.push remaining
+      | _ =>
+        let (remaining?, placement?) ← discharge pc discharger side
+        if let some remaining := remaining? then unsolved := unsolved.push remaining
+        if let some placement := placement? then placements := placements.push placement
     instantiateMVars proof
   -- 2. Continue from a fresh successor: build `Block.then contract (fun next _ equation => ?_)`
   --    directly, so no term is re-elaborated. Internal names are replaced at the end. The
@@ -441,8 +497,12 @@ open Step in
       return (← whnfR (← instantiateMVars decl.type)).isAppOfArity ``Exists 2
     unless isExists do break
     evalTactic (← `(tactic| obtain ⟨_, $equation⟩ := $equation))
-  -- 3. One fact per field, normalized.
+  -- 3. One fact per field, normalized, and each place `disch` proved with them so both are spelled alike.
   let mut internal : Array Name := #[]
+  for ((type, proof), index) in placements.zipIdx do
+    let name := Name.mkSimple s!"rivet_fact_place{index}"
+    replaceMainGoal [(← (← (← getMainGoal).assert name type proof).intro1P).2]
+    internal := internal.push name
   for field in fields do
     let fact := Name.mkSimple s!"rivet_fact_{field}"
     evalTactic (← `(tactic| have $(mkIdent fact) := congrArg $(mkIdent (`Rivet.MachineState ++ field)) $equation))

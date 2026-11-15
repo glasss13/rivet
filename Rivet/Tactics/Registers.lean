@@ -14,20 +14,13 @@ meta partial def listItems (list : Expr) : MetaM (Array Expr) := do
   let list ← whnfD list
   if list.isAppOfArity ``List.nil 1 then return #[]
   if list.isAppOfArity ``List.cons 3 then return #[list.getArg! 1] ++ (← listItems (list.getArg! 2))
-  throwError "a change lists its registers and ranges one by one; this is not such a list:{indentExpr list}"
+  throwError "a change lists its registers and regions one by one; this is not such a list:{indentExpr list}"
 
 meta def changedRegisters (c : Expr) : MetaM (Array Name) := do
   (← listItems (mkApp (mkConst ``Changes.registers) c)).mapM fun register => do
     let some name := (← whnfD register).constName?
       | throwError "a change names its registers; this is not a register name:{indentExpr register}"
     return name
-
-meta def changedRanges (c : Expr) : MetaM (Array (Expr × Expr × Expr)) := do
-  (← listItems (mkApp (mkConst ``Changes.memory) c)).mapM fun range => do
-    let pair ← whnfD range
-    unless pair.isAppOfArity ``Prod.mk 4 do
-      throwError "a change gives each range as `(low, high)`; this is not one:{indentExpr range}"
-    return (range, pair.getArg! 2, pair.getArg! 3)
 
 -- What each step says of the state it ends in.
 meta def stepFacts : MetaM (Array Expr) := do

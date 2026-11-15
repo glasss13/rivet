@@ -95,8 +95,7 @@ syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tacti
         - A term `lia` does not read, such as a mask, needs its meaning as an equation, e.g. \
         `x &&& 15#64 = x % 16#64`, proved through `toNat`.\n\
         - A goal that adds or subtracts a shifted value may need `grind`.\n\
-        - `lia` does not unfold definitions: unfold them, or list facts about them.\n\
-        - A law's bound that fails by default can be given, or kept as a goal: `(fits := ?_)`.\
+        - `lia` does not unfold definitions: unfold them, or list facts about them.\
         {indentD (withoutRestatements error.toMessageData)}"
   finally
     IO.setNumHeartbeats start

@@ -2,8 +2,9 @@ module
 public import Rivet.Interpreter.Memory
 public import Rivet.Tactics.Arith
 import all Rivet.Interpreter.Memory
--- Laws of memory: permissions, stores and little-endian reads. A range is an interval of
--- `toNat` values. A read that ends past 2^64 wraps around, so the laws about reads ask it not to.
+-- Laws of flat memory: stores and little-endian reads. A range is an interval of `toNat` values. A
+-- read that ends past 2^64 wraps around, so the laws about reads ask it not to. Every bound is an
+-- argument you give.
 @[expose] public section
 namespace Rivet
 
@@ -25,34 +26,6 @@ theorem permits_iff {permission : BitVec 64 → Bool} {base : BitVec 64} {length
     exact each _ (by omega)
   · intro ⟨fits, each⟩
     exact ⟨fits, fun offset bound => each _ (by bv_omega) (by bv_omega)⟩
-
-theorem permits_inside {permission : BitVec 64 → Bool} {base first : BitVec 64} {length size : Nat}
-    (whole : permits permission base length = true)
-    (start : base.toNat ≤ first.toNat := by rivet_arith)
-    (finish : first.toNat + size ≤ base.toNat + length := by rivet_arith) :
-    permits permission first size = true := by
-  rw [permits_iff] at whole ⊢
-  exact ⟨by omega, fun address low high => whole.2 address (by omega) (by omega)⟩
-
-theorem Image.permits_readable {image : Image} {region : Region} {address : BitVec 64} {size : Nat}
-    (member : region ∈ image.regions) (readable : region.readable = true)
-    (start : region.base ≤ address.toNat := by rivet_arith)
-    (finish : address.toNat + size ≤ region.base + region.length := by rivet_arith) :
-    permits image.readable address size = true := by
-  rw [permits_iff]
-  refine ⟨by have := region.fits; omega, fun other start finish => ?_⟩
-  simp only [Image.readable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-  exact ⟨region, member, readable, by simp only [Region.Contains]; omega⟩
-
-theorem Image.permits_writable {image : Image} {region : Region} {address : BitVec 64} {size : Nat}
-    (member : region ∈ image.regions) (writable : region.writable = true)
-    (start : region.base ≤ address.toNat := by rivet_arith)
-    (finish : address.toNat + size ≤ region.base + region.length := by rivet_arith) :
-    permits image.writable address size = true := by
-  rw [permits_iff]
-  refine ⟨by have := region.fits; omega, fun other start finish => ?_⟩
-  simp only [Image.writable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-  exact ⟨region, member, writable, by simp only [Region.Contains]; omega⟩
 
 private theorem foldr_bytes {first second : Nat → Nat} {size : Nat}
     (same : ∀ offset < size, first offset = second offset) :
@@ -78,7 +51,7 @@ private theorem readBytes_offsets_congr {first second : Memory} {address : BitVe
 
 theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Nat}
     (agree : ∀ other, address.toNat ≤ other.toNat → other.toNat < address.toNat + size → first other = second other)
-    (fits : address.toNat + size ≤ 2^64 := by rivet_arith) :
+    (fits : address.toNat + size ≤ 2^64) :
     readBytes first address size = readBytes second address size := by
   apply readBytes_offsets_congr
   intro offset bound
@@ -86,16 +59,16 @@ theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Na
 
 private theorem Memory.read_storeBytes_outside {memory : Memory} {base : BitVec 64} {length : Nat} {bytes : Memory}
     {address : BitVec 64}
-    (outside : address.toNat < base.toNat ∨ base.toNat + length ≤ address.toNat := by rivet_arith) :
+    (outside : address.toNat < base.toNat ∨ base.toNat + length ≤ address.toNat) :
     (memory.storeBytes base length bytes) address = memory address := by
   have away : ¬ (base.toNat ≤ address.toNat ∧ address.toNat < base.toNat + length) := by omega
   simp only [Memory.storeBytes, away, ↓reduceIte]
 
 theorem Memory.readBytes_storeBytes_inside (memory : Memory) (bytes : Memory)
     {base address : BitVec 64} {length size : Nat}
-    (start : base.toNat ≤ address.toNat := by rivet_arith)
-    (finish : address.toNat + size ≤ base.toNat + length := by rivet_arith)
-    (fits : address.toNat + size ≤ 2^64 := by rivet_arith) :
+    (start : base.toNat ≤ address.toNat)
+    (finish : address.toNat + size ≤ base.toNat + length)
+    (fits : address.toNat + size ≤ 2^64) :
     readBytes (memory.storeBytes base length bytes) address size = readBytes bytes address size := by
   apply readBytes_offsets_congr
   intro offset bound
@@ -105,8 +78,8 @@ theorem Memory.readBytes_storeBytes_inside (memory : Memory) (bytes : Memory)
 
 theorem Memory.readBytes_storeBytes_outside (memory : Memory) (bytes : Memory)
     {base address : BitVec 64} {length size : Nat}
-    (outside : address.toNat + size ≤ base.toNat ∨ base.toNat + length ≤ address.toNat := by rivet_arith)
-    (fits : address.toNat + size ≤ 2^64 := by rivet_arith) :
+    (outside : address.toNat + size ≤ base.toNat ∨ base.toNat + length ≤ address.toNat)
+    (fits : address.toNat + size ≤ 2^64) :
     readBytes (memory.storeBytes base length bytes) address size = readBytes memory address size := by
   apply readBytes_offsets_congr
   intro offset bound
@@ -128,7 +101,7 @@ private theorem foldr_littleEndian (value offset size : Nat) :
       Nat.mod_mul, Nat.pow_succ 256 offset, ← Nat.div_div_eq_div_mul]
 
 private theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset size : Nat)
-    (fits : offset + size ≤ 2^64 := by rivet_arith) :
+    (fits : offset + size ≤ 2^64) :
     readBytes (littleEndianAt value address) (address + BitVec.ofNat 64 offset) size =
       value.extractLsb' (8 * offset) (8 * size) := by
   apply BitVec.eq_of_toNat_eq
@@ -141,8 +114,8 @@ private theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVe
   simp only [Nat.reducePow, Nat.mod_mod]
 
 theorem readBytes_littleEndianAt (value : BitVec n) {base address : BitVec 64} {size : Nat} (offset : Nat)
-    (start : address.toNat = base.toNat + offset := by rivet_arith)
-    (fits : address.toNat + size ≤ 2^64 := by rivet_arith) :
+    (start : address.toNat = base.toNat + offset)
+    (fits : address.toNat + size ≤ 2^64) :
     readBytes (littleEndianAt value base) address size = value.extractLsb' (8 * offset) (8 * size) := by
   rw [show address = base + BitVec.ofNat 64 offset by bv_omega]
   exact readBytes_littleEndianAt_add value base offset size (by omega)
