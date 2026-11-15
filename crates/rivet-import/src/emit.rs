@@ -77,7 +77,7 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
     for segment in segments {
         writeln!(
             source,
-            "  segment_{:x} : ∀ address, {:#x} ≤ address.toNat → address.toNat < {:#x} → memory address = segment_{:x} address",
+            "  segment_{:x} : ∀ address size, {:#x} ≤ address.toNat → address.toNat + size ≤ {:#x} →\n    Rivet.readBytes memory address size = Rivet.readBytes segment_{:x} address size",
             segment.address,
             segment.address,
             segment.address + segment.size,

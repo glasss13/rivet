@@ -64,20 +64,20 @@ private theorem except_congr {t u s : MachineState} {c : Changes} (same : u.Exce
     (registers : t.registers = u.registers := by rfl) (memory : t.memory = u.memory := by rfl) :
     t.Except s c :=
   ⟨fun register out => registers ▸ same.sameRegisters register out,
-    fun address away => memory ▸ same.sameMemory address away⟩
+    fun address size away fits => memory ▸ same.sameMemory address size away fits⟩
 
 private theorem write_except (state : MachineState) (register : Reg) (value : BitVec 64) :
     (state.write register value).Except state { registers := [register] } :=
-  ⟨fun other out => by simp_all [MachineState.write], fun _ _ => rfl⟩
+  ⟨fun other out => by simp_all [MachineState.write], fun _ _ _ _ => rfl⟩
 
 private theorem write_write_except (state : MachineState) (first second : Reg) (one two : BitVec 64) :
     ((state.write first one).write second two).Except state { registers := [first, second] } :=
-  ⟨fun other out => by simp_all [MachineState.write], fun _ _ => rfl⟩
+  ⟨fun other out => by simp_all [MachineState.write], fun _ _ _ _ => rfl⟩
 
 private theorem store_except (state : MachineState) (base : BitVec 64) (length : Nat) (bytes : Memory) :
     ({ state with memory := state.memory.storeBytes base length bytes } : MachineState).Except state
       { memory := [(base.toNat, base.toNat + length)] } :=
-  ⟨fun _ _ => rfl, fun address away => by
+  ⟨fun _ _ => rfl, fun address size away fits => readBytes_congr (fits := fits) fun other low high => by
     have := away _ List.mem_cons_self
     simp only [Memory.storeBytes]
     split <;> first | omega | rfl⟩
@@ -87,7 +87,8 @@ private theorem push_except (state : MachineState) (value : BitVec 64) :
       (state.registers .rsp - 8#64)).Except state
       { registers := [.rsp], memory := [((state.registers .rsp - 8#64).toNat,
         (state.registers .rsp - 8#64).toNat + 8)] } :=
-  ⟨fun other out => by simp_all [MachineState.write, MachineState.writeMemory], fun address away => by
+  ⟨fun other out => by simp_all [MachineState.write, MachineState.writeMemory],
+    fun address size away fits => readBytes_congr (fits := fits) fun other low high => by
     have := away _ List.mem_cons_self
     simp only [MachineState.write, MachineState.writeMemory, Memory.storeBytes, Width.bytes]
     split <;> first | omega | rfl⟩
