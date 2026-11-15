@@ -1,0 +1,157 @@
+LZ4 compression termination proof
+
+What this is: a formal-verification exercise. LZ4 is an open-source (BSD)
+compression library. The repository owner compiled LZ4_compress_default
+themselves and imported its instructions into Lean. You are asked to prove, in Lean 4, that
+this function always returns. Nothing here involves attacking, exploiting or
+reverse-engineering anyone's software; it is a mathematical proof about a
+program's behaviour, of the kind done in seL4 or CompCert.
+
+Prove this exact Lean theorem in Lz4Compress/Proof.lean (or import your own
+fresh helper modules from there):
+
+  namespace Rivet.Lz4CompressProof
+  theorem image_termination : Termination := ...
+
+The authoritative frozen goal and ALL assumptions are in
+Lz4Compress/Spec.lean. Termination is exactly:
+
+  forall arguments initial, Preconditions arguments initial ->
+    Block (image arguments) initial (callChanges arguments) (Returned arguments)
+
+image arguments is Lz4CompressImage.program together with the regions the machine may
+touch: the binary's segments, the input, the output and the stack.
+Block image s c Q means: from state s, for EVERY value the CPU might leave in
+its undefined flags, execution reaches in finitely many steps a state that
+satisfies Q and is s except for the change c. callChanges lets a call change
+the caller-saved registers and rsp, the output buffer, and the stack workspace
+below the entry stack pointer; everything else must end as it started. The instruction count may depend on those values and on the initial
+state; no execution budget is a caller assumption. A fault is permanent, so a
+proof of return is also a proof that no memory access on any path faults.
+Returned requires arrival at arguments.returnAddress with final RSP equal to
+arguments.stackPointer + 8. It places no constraint on the result register or
+the output bytes.
+
+Input image:
+- Lz4CompressImage.lean is the exact generated machine image: every instruction
+  of LZ4_compress_default, the LZ4_compress_fast_extState it calls, and the
+  memset and memcpy linked with them, the binary's segments (regions, their
+  bytes, and Loaded, which says memory holds those bytes). Its entry is
+  0x4028a0#64.
+- Work from Lz4CompressImage.lean only. The binary it was generated from is not part
+  of this package. Do not look for it, read it, or disassemble it, and do not
+  generate a different image.
+- Hashes of the image and of the binary it came from are in manifest.json.
+
+Caller assumptions (Spec.lean is authoritative):
+- Addresses and register values are BitVec 64. Start at Lz4CompressImage.entry;
+  RDI=input address, RSI=output address, the low 32 bits of RDX=input size,
+  low 32 bits of RCX=output capacity, RSP=stack pointer.
+- Both sizes are BitVec 32 values below 2^31; upper halves of these argument
+  registers and other registers/flags are unrestricted unless Spec says otherwise.
+- The stack pointer is aligned as the System V ABI guarantees at a function's
+  entry: RSP + 8 is a multiple of 16.
+- A region is a base and a length in bytes, both natural numbers. Arguments
+  carries the buffer bounds: input/output bases and the bottom of the 16624-byte
+  stack workspace are at least decimal 65536; buffer ends and the eight-byte
+  return-slot end are at most 2^47.
+- The regions are exactly the binary's segments plus input, output and stack,
+  and Preconditions states that they are pairwise apart. Input is readable and
+  not writable; output and stack are readable and writable.
+- Memory holds the binary's segments (Lz4CompressImage.Loaded). The bytes of the input,
+  output and stack are arbitrary, except that the return slot at RSP holds the
+  provided continuation.
+
+There is NO assumption of particular input bytes, particular output bytes,
+particular stack bytes, or particular undefined flags. Cover every input size
+and insufficient output capacity under the same preconditions. This task does
+NOT ask for compression correctness (that the output decompresses to the
+input) or return-value classification. Do not replace the target with a
+concrete-input check, bounded-size case, weaker statement, extra hypothesis, or
+an assumed termination result.
+
+Do not stop until it is done:
+- Do not end your work until image_termination is proved and both completion
+  commands below pass. This is a long task (hours). Scope, time, the amount of
+  remaining work, and how much you have already done are not reasons to stop,
+  and a partial result is not a result. There is no time or token limit.
+- The only acceptable early exits are a defect in the library or the
+  specification that you can demonstrate with a small example, or a tool
+  failure you cannot work around. Being stuck on a proof is neither: split the
+  block, restate the invariant, or try another approach.
+- If you start a long command in the background, wait for it to finish before
+  you do anything that ends your turn. Do not hand back "still running".
+
+Independence and allowed work:
+- Work only in your prepared checkout and the installed toolchain. You have
+  no prior proof or chat history as input. Do not look for them elsewhere.
+- Do NOT read anything outside your prepared checkout except the installed
+  toolchain and Lake/Lean caches it needs. In particular, do not inspect any
+  other directory under /home, /tmp, other checkouts/runs/worktrees, other git
+  branches or history, chat threads/transcripts, or any earlier LZ4 proof (compression or decompression).
+  Do not fetch an existing proof from the network.
+- Other work is running on this machine. Do not look at other processes'
+  command lines: if you list processes, list only your own by pid and name,
+  never with arguments (no `ps -ef`, `ps aux`, `pgrep -a`).
+- No delegation or other agents. This is your independent attempt.
+- Rivet is frozen at the revision in manifest.json (the library at the root of
+  your checkout; its README and API.md are the documentation, and the sources
+  under Rivet/ are short). Do not modify its source, dependency setup, toolchain, or the
+  frozen inputs.
+- Use Rivet's public instruction contracts and composition laws. You may prove
+  fresh local helper lemmas. If you genuinely need an internal import or an
+  interpreter unfold, record its location and precise reason in the report.
+  Do not silently patch the library; record general API gaps for later work.
+- Do not add axioms, sorry/admit, unsafe proof escapes, circular assumptions,
+  native_decide/compiler-trust axioms, or additional trusted dependencies.
+  bv_decide adds such an axiom; do not use it. The only permitted axioms are
+  propext, Classical.choice, and Quot.sound.
+- You may create helper modules, probes and logs within this package. Keep
+  final proof modules free of placeholders and do not commit scratch files.
+  Keep scratch files inside this package, not under /tmp.
+
+Memory (this machine is shared):
+- Run EVERY lake and lean command through ./memrun, from this package:
+
+    ./memrun lake build
+    ./memrun lake env lean Check.lean
+    ./memrun lake env lean Lz4Compress/SomeFile.lean
+
+- Everything you start through ./memrun shares one 16G budget that belongs to
+  this checkout alone. -m gives one command a smaller limit, -t a time limit
+  in seconds (default 3600): ./memrun -m 8G -t 120 lake env lean File.lean
+- Exit status 143 or 137 means the command was killed for memory; 124 means it
+  ran out of time. memrun also prints a line saying so on stderr, so the
+  outcome is visible even when you pipe the output. Either one means the proof is the wrong shape, not that you
+  should wait longer or raise a limit: make it cheaper (smaller blocks, fewer
+  facts in context, arithmetic proved as separate small lemmas). A check that
+  takes more than a minute or two is a sign of the same thing.
+- You may run several commands at once within the budget. Do not run cargo or
+  rebuild anything outside this package and the Rivet library it depends on.
+- In this shell, `ls` and `cat` may be aliases for other programs. If one
+  behaves oddly or hangs, use `command ls` and `command cat`.
+
+Commands (from this package):
+  sha256sum -c SHA256SUMS
+  ./memrun lake build
+  ./memrun lake env lean Check.lean
+
+The starter builds only the image and the specification: Check.lean
+intentionally fails until you supply image_termination. Completion requires
+BOTH lake commands to pass from a clean build of your proof modules, unchanged
+frozen inputs, and the axiom list printed by Check.lean to contain only the
+three permitted axioms. Building an empty proof module is not completion.
+
+Keep a machine-readable report.json with:
+- status (complete or incomplete), start/end UTC and elapsed seconds;
+- actual model/settings if available, root commit and Rivet base revision;
+- image/spec hashes, final theorem/type, and final axiom list;
+- verification commands and results, failed compilation count if tracked,
+  proof source line count and file count;
+- every internal import/unfold and why it was necessary;
+- general API gaps, repeated friction, and time-consuming proof issues;
+- any unresolved blocker and what is still unproved.
+
+Commit your final proof and report on your own prepared branch. Do not push or
+open a PR. End with the commit SHA, the build and axiom status, and a concise
+account of what was actually proved.

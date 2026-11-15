@@ -1,0 +1,10 @@
+name = "lz4_compress"
+version = "0.1.0"
+defaultTargets = ["Lz4Compress"]
+[[require]]
+name = "rivet"
+path = ".."
+[[lean_lib]]
+name = "Lz4CompressImage"
+[[lean_lib]]
+name = "Lz4Compress"

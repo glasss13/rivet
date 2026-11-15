@@ -1,0 +1,18 @@
+{
+  "rivet_revision": "b8b232031d513bf339619ea552500f32d6cd0047",
+  "lean_toolchain": "leanprover/lean4:v4.35.0",
+  "source": "lz4 v1.10.0 (ebb370ca83af193212df4dcbadcc5d87bc0de2f0), lib/lz4.c, clang 21.1.8 -O2 -march=x86-64 -fPIC -ffunction-sections -fdata-sections -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -fcf-protection=none; linked (ld -static -nostdlib --gc-sections -e LZ4_compress_default) with byte-loop memset and memcpy",
+  "elf_sha256": "8bd53023e06382aa4908c523581b766b764ab9a58570126487ac2439a7d7d206",
+  "imported_image_sha256": "6bc29cf76fb5f01991e666c715e233426d53d812bc6b8429a8a1f146460e2647",
+  "goal": "Rivet.Lz4CompressProof.image_termination : Rivet.Lz4CompressProof.Termination",
+  "meaning": "For every Arguments and every state satisfying Preconditions, Block (image arguments) initial (callChanges arguments) (Returned arguments): for every value of the undefined flags, execution reaches in finitely many steps a state satisfying Returned that differs from the initial state only in callChanges.",
+  "permitted_axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+  ],
+  "excluded_goals": [
+    "compression correctness",
+    "return-value classification"
+  ]
+}
