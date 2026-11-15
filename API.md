@@ -68,8 +68,9 @@ What is read back:
 - a register, through each step that did not write it and each nested block whose change does
   not list it;
 - memory (`readBytes m a n`; a byte is `n = 1`), through each store the read misses, each store
-  that wrote all of it (giving the bytes stored), and each nested block whose change it misses.
-  Each of these is a bound for `rivet_arith`.
+  that wrote all of it (giving the value stored, or its low bytes, when the read starts where the
+  value does), and each nested block whose change it misses. Each of these is a bound for
+  `rivet_arith`.
 
 A goal is taken apart (`∧`, `∀`, records; of `∨`, either side), and a part closes when it is a
 hypothesis or a part of one (a `∀` one applies when its premises are hypotheses), its two sides are
@@ -175,8 +176,8 @@ A default that fails is an error at that term; give the bound yourself,
 - `permits_iff`: what a permission means, address by address. `permits_inside`: a permission
   covers any part of its range.
 - For a read the read-back stops at: `Memory.readBytes_storeBytes_inside` and `_outside` (a read
-  inside a store reads the stored bytes; one outside it is unchanged), `readBytes_littleEndianAt`
-  and `_add` (a stored value, or part of it).
+  inside a store reads the stored bytes; one outside it is unchanged), `readBytes_littleEndianAt
+  value offset` (a read `offset` bytes into a stored value reads that part of it).
 - `readBytes_succ`: a read in terms of its bytes. A read of known bytes:
   `simp only [readBytes_succ, BitVec.of_length_zero]; decide`.
 

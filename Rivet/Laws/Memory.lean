@@ -84,7 +84,7 @@ theorem readBytes_congr {first second : Memory} {address : BitVec 64} {size : Na
   intro offset bound
   exact agree _ (by bv_omega) (by bv_omega)
 
-theorem Memory.read_storeBytes_outside {memory : Memory} {base : BitVec 64} {length : Nat} {bytes : Memory}
+private theorem Memory.read_storeBytes_outside {memory : Memory} {base : BitVec 64} {length : Nat} {bytes : Memory}
     {address : BitVec 64}
     (outside : address.toNat < base.toNat ∨ base.toNat + length ≤ address.toNat := by rivet_arith) :
     (memory.storeBytes base length bytes) address = memory address := by
@@ -127,7 +127,7 @@ private theorem foldr_littleEndian (value offset size : Nat) :
     rw [shifted, inductionHypothesis (offset + 1), Nat.pow_succ 256 size, Nat.mul_comm _ 256,
       Nat.mod_mul, Nat.pow_succ 256 offset, ← Nat.div_div_eq_div_mul]
 
-theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset size : Nat)
+private theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset size : Nat)
     (fits : offset + size ≤ 2^64 := by rivet_arith) :
     readBytes (littleEndianAt value address) (address + BitVec.ofNat 64 offset) size =
       value.extractLsb' (8 * offset) (8 * size) := by
@@ -140,10 +140,12 @@ theorem readBytes_littleEndianAt_add (value : BitVec n) (address : BitVec 64) (o
   rw [foldr_littleEndian, Nat.pow_mul, Nat.pow_mul]
   simp only [Nat.reducePow, Nat.mod_mod]
 
-@[simp] theorem readBytes_littleEndianAt (value : BitVec n) (address : BitVec 64) (size : Nat)
-    (fits : size ≤ 2^64) :
-    readBytes (littleEndianAt value address) address size = value.extractLsb' 0 (8 * size) := by
-  simpa using readBytes_littleEndianAt_add value address 0 size (by omega)
+theorem readBytes_littleEndianAt (value : BitVec n) {base address : BitVec 64} {size : Nat} (offset : Nat)
+    (start : address.toNat = base.toNat + offset := by rivet_arith)
+    (fits : address.toNat + size ≤ 2^64 := by rivet_arith) :
+    readBytes (littleEndianAt value base) address size = value.extractLsb' (8 * offset) (8 * size) := by
+  rw [show address = base + BitVec.ofNat 64 offset by bv_omega]
+  exact readBytes_littleEndianAt_add value base offset size (by omega)
 
 theorem readBytes_one (memory : Memory) (address : BitVec 64) :
     readBytes memory address 1 = BitVec.ofNat 8 (memory address).val := by
@@ -182,18 +184,5 @@ theorem readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
   rw [readBytes_succ_toNat, BitVec.toNat_append, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega),
     ← Nat.shiftLeft_add_eq_or_of_lt (by omega), Nat.shiftLeft_eq]
   omega
-
-theorem littleEndianAt_add (value : BitVec n) (address : BitVec 64) (offset : Nat)
-    (small : offset < 2^64 := by rivet_arith) :
-    (littleEndianAt value address (address + BitVec.ofNat 64 offset)).val =
-      (value.extractLsb' (8 * offset) 8).toNat := by
-  have distance : (address + BitVec.ofNat 64 offset - address).toNat = offset := by
-    bv_omega
-  simp only [littleEndianAt, distance, BitVec.extractLsb'_toNat, Nat.shiftRight_eq_div_pow,
-    Nat.pow_mul]
-
-@[simp] theorem littleEndianAt_self (value : BitVec n) (address : BitVec 64) :
-    (littleEndianAt value address address).val = (value.extractLsb' 0 8).toNat := by
-  simpa using littleEndianAt_add value address 0
 
 end Rivet
