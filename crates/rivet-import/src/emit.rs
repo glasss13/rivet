@@ -34,25 +34,21 @@ pub fn module(
     Ok(source)
 }
 
-/// Emits the loadable segments three ways: `regions`, their addresses and
-/// permissions for the image; `segment_<a>`, the bytes of the segment at `a`
-/// (zero past the file's data); and `Loaded memory`, that memory holds every
-/// segment's bytes, as the loader leaves it, with a field `segment_<a>` per segment.
+/// Emits the loadable segments: `region_<a>`, the segment at `a` as a region of the
+/// image, and `regions`, all of them; `segment_<a>`, its bytes (zero past the file's
+/// data); and `Loaded memory`, that memory is the same as those bytes on every
+/// segment, as the loader leaves it, with a field `segment_<a>` per segment.
 fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt::Result {
     writeln!(source, "\n-- Loadable segments: addresses and permissions.")?;
-    writeln!(source, "def regions : List Rivet.Region := [")?;
-    for (index, segment) in segments.iter().enumerate() {
+    for segment in segments {
         writeln!(
             source,
-            "  {{ base := {:#x}, length := {:#x}, readable := {}, writable := {} }}{}",
-            segment.address,
-            segment.size,
-            segment.readable,
-            segment.writable,
-            if index + 1 < segments.len() { "," } else { "" }
+            "abbrev region_{:x} : Rivet.Region :=\n  {{ base := {:#x}, length := {:#x}, readable := {}, writable := {} }}",
+            segment.address, segment.address, segment.size, segment.readable, segment.writable,
         )?;
     }
-    writeln!(source, "]")?;
+    let names: Vec<String> = segments.iter().map(|segment| format!("region_{:x}", segment.address)).collect();
+    writeln!(source, "def regions : List Rivet.Region := [{}]", names.join(", "))?;
     // One number per segment, read by shifting: Lean computes on number literals in one step, where a
     // literal list of thousands of bytes overflows its recursion limit to compile or to index.
     for segment in segments {
@@ -71,17 +67,14 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
     // `loaded.segment_<a>` whatever the number or order of segments.
     writeln!(
         source,
-        "\n-- What the loader guarantees: memory holds each segment's bytes.\nstructure Loaded (memory : Rivet.Memory) : Prop{}",
+        "\n-- What the loader guarantees: on each segment, memory is the segment's bytes.\nstructure Loaded (memory : Rivet.Memory) : Prop{}",
         if segments.is_empty() { "" } else { " where" }
     )?;
     for segment in segments {
         writeln!(
             source,
-            "  segment_{:x} : ∀ address size, {:#x} ≤ address.toNat → address.toNat + size ≤ {:#x} →\n    Rivet.readBytes memory address size = Rivet.readBytes segment_{:x} address size",
-            segment.address,
-            segment.address,
-            segment.address + segment.size,
-            segment.address
+            "  segment_{:x} : region_{:x}.Same segment_{:x} memory",
+            segment.address, segment.address, segment.address
         )?;
     }
     Ok(())

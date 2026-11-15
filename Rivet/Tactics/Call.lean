@@ -3,7 +3,7 @@ public import Rivet.Tactics.ReadBack
 public meta import Lean
 -- `rivet_call block args (name := proof)* (as q)?`: runs the block from the current state and goes on
 -- from the state it ends in, with what it left alone and its postcondition in scope. A precondition
--- left out is proved as `rivet_close` does; one that is not proved is an error naming it.
+-- left out is proved as `rivet_known` does, with no arithmetic; one that is not is an error naming it.
 public section
 namespace Rivet
 open Lean Meta Elab Tactic
@@ -38,7 +38,7 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
     if ← goal.isAssigned then continue
     unless ← isProp (← goal.getType) do throwError "rivet_call: give the block its argument `{name}`"
     try
-      discard <| Tactic.run goal do evalTactic (← `(tactic| rivet_close))
+      discard <| Tactic.run goal do evalTactic (← `(tactic| rivet_known))
     catch error =>
       throwError "rivet_call: the block's precondition `{name}` is not proved. Give it: `({name} := …)`.\n\
         {error.toMessageData}"
