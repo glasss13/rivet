@@ -51,41 +51,40 @@ theorem add_body (regions : List Region) (s : MachineState) (entry : s.status = 
   rivet_step                                           -- mov rax, rbx
   exact Block.done
 
-theorem sum_correct (regions : List Region) (s : MachineState)
+theorem sum_correct (regions : List Region) (stack : Region) (s : MachineState)
     (entry : s.status = .running 0x1000)
+    (reads : Image.Reads ⟨sum, regions⟩ stack) (writes : Image.Writes ⟨sum, regions⟩ stack)
     -- the caller's promise: 16 bytes of stack, the slot `push` uses and the return address
-    (write : permits (Image.writable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16 = true)
-    (read : permits (Image.readable ⟨sum, regions⟩) (s.registers .rsp - 8#64) 16 = true) :
-    Block ⟨sum, regions⟩ s
-      -- all it changes: two registers and the slot below the stack pointer
-      { registers := [.rax, .rsp],
-        memory := [((s.registers .rsp).toNat - 8, (s.registers .rsp).toNat)] }
+    (frame : stack.Has (s.registers .rsp - 8#64) 16) :
+    -- all it changes: two registers and the stack
+    Block ⟨sum, regions⟩ s { registers := [.rax, .rsp], memory := [stack] }
       (fun f =>
         f.status = .running s.returnAddress ∧
         f.registers .rax = s.registers .rdi + s.registers .rsi ∧
         f.registers .rsp = s.registers .rsp + 8#64) := by
-  have room := (permits_iff.mp write).1
-  rivet_step (disch := exact permits_inside write)    -- push rbx
-  rivet_call add_body regions                          -- the body
-  rivet_step (disch := exact permits_inside read)     -- pop rbx
-  rivet_step (disch := exact permits_inside read)     -- ret
+  rivet_step                     -- push rbx
+  rivet_call add_body regions    -- the body
+  rivet_step                     -- pop rbx
+  rivet_step                     -- ret
   exact Block.done
 ```
 
-Each `rivet_step` executes one instruction. An instruction that touches memory asks for a
-permission; `disch` proves it by naming the permission the access falls in.
+Each `rivet_step` executes one instruction. Memory is named regions, as the state is named
+registers: an instruction that touches memory must be placed in a region the image grants, here by
+`frame`, which places the 8 bytes `push` writes and the 8 bytes `ret` reads.
 
 Rivet reads every value back to the block's start: a register through the steps that did not
-write it, memory through the stores that missed it, and both through a nested block that left
-them alone. A goal closes when, read that way, it is one of your hypotheses, its two sides are
-the same, or arithmetic proves it from your hypotheses. So nothing is restated by hand.
+write it, memory through the stores into regions apart from it, and both through a nested block
+that left them alone. A goal closes when, read that way, it is one of your hypotheses or its two
+sides are the same. Rivet never searches and starts no arithmetic; what it cannot read back is
+an error that says what to prove.
 
 `Block.done` ends the block that way. It proves `Q` of the current state, and it proves the
-change: every register and byte the change does not list is as it was. `rbx` is not listed,
-although the body changed it, because `pop` reads back what `push` stored and the body left that
-slot alone. Leaving out `rax` or the stack slot is an error naming it. The return address is the
-same read: above the saved `rbx`, untouched by the body. That it does not wrap around the end of
-memory is arithmetic, from `room`.
+change: every register the change does not list is as it was, and every store went into a region
+it lists. `rbx` is not listed, although the body changed it, because `pop` reads back what `push`
+stored. The return address is the same kind of read: 8 bytes past the saved `rbx`, so the push
+did not touch it. Two pointers a literal distance apart, like `rsp` and `rsp - 8`, are compared by
+that distance; any others are apart only when their regions are.
 
 `rivet_call` runs a block you proved as a nested block. It starts it at the current state,
 proves its preconditions the same way (`add_body` asks only for its entry address), and goes on
@@ -98,8 +97,9 @@ To work on a real binary, generate the program instead of writing it by hand:
 cargo run -p rivet-import -- ./prog --function sum --namespace Sum --output Sum.lean
 ```
 
-That gives `Sum.entry`, `Sum.program`, `Sum.regions` for the binary's segments, and
-`Sum.Loaded memory`, which says memory holds each segment's bytes.
+That gives `Sum.entry`, `Sum.program`, a region `Sum.region_<address>` for each of the binary's
+segments, `Sum.regions`, and `Sum.Loaded memory`, which says memory is the segment's bytes on each
+segment's region.
 
 ## API
 
