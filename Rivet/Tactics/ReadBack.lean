@@ -213,8 +213,9 @@ meta def readBackTactic (locations : Array Term := #[]) (goal := false) : Tactic
   else `(tactic| simp only [$all,*] at $[$locations]*)
 
 -- Reads back, in place, the hypotheses that mention a later state, so they meet the goal's parts and
--- `rivet_arith` sees them as it sees the goal.
-meta def known (goal : MVarId) : TacticM MVarId := goal.withContext do
+-- `rivet_arith` sees them as it sees the goal. Read back, they may contradict each other: that proves
+-- the goal, and leaves none.
+meta def known (goal : MVarId) : TacticM (Option MVarId) := goal.withContext do
   let later ← later
   let moved ← (← hypotheses).filterMapM fun decl => do
     if later.any ((← instantiateMVars decl.type).containsFVar ·) then some <$> Term.exprToSyntax decl.toExpr
@@ -222,8 +223,7 @@ meta def known (goal : MVarId) : TacticM MVarId := goal.withContext do
   if moved.isEmpty then return goal
   setGoals [goal]
   evalTactic (← `(tactic| try $(← readBackTactic moved):tactic))
-  let [goal] ← getGoals | throwError "rivet_known: the hypotheses contradict each other once read back"
-  return goal
+  return (← getGoals).head?
 
 meta def facts (goal : MVarId) : MetaM (Array (Expr × Expr)) := goal.withContext do
   (← hypotheses).flatMapM fun decl => parts decl.toExpr decl.type
@@ -504,7 +504,7 @@ where
         if (← close leaf (← facts leaf)).isNone then return none
         -- The hypotheses are read back only for a part that needs them: most parts do not.
         saved.restore
-        let moved ← known leaf
+        let some moved ← known leaf | return none
         return (← close moved (← facts moved)).map fun why => m!"{note.getD asked}\nRead back,{why}"
       if let some failure := failure then failures := failures.push failure
   unless failures.isEmpty do

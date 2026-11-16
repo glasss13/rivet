@@ -137,7 +137,8 @@ where a single step would.
 - **Branches.** A conditional jump is stepped with `if h`, and only it: a bare step there is an
   error naming the address. It gives two goals, `taken` and `fallthrough`, with the condition `h`
   in both (negated in `fallthrough`), a statement about words, such as `¬x - 1#64 = 0#64`, not
-  about a flag. So `iterate`, `repeat` and `rivet_step to` never cross a branch.
+  about a flag. An arm that cannot run is still a goal; when the condition has a value, `h` is
+  `False` there: `exact h.elim`. So `iterate`, `repeat` and `rivet_step to` never cross a branch.
 - **Return.** After `ret` the status is `.running (readBytes m rsp 8)`: the 8 bytes at `rsp`
   before the return.
 - **Places.** A memory access needs its place, `r.Has pointer size`, and the permission,

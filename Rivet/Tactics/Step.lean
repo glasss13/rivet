@@ -172,13 +172,15 @@ private meta def restate (goal : MVarId) (targets : Array FVarId) (target : Bool
     `(Lean.Parser.Tactic.simpLemma| $term:term)
   let stx ← `(tactic| simp only [$lemmas,*, rivet])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
+  -- A branch's condition is restated on its own, last: it never closes its arm, even as `False`.
+  let path ← targets.filterM fun fact => return (← fact.getDecl).userName == `rivet_fact_path
   -- A fact may stay over the end of a nested block.
   let (some (facts, goal), _) ← simpGoal goal (ctx.setFailIfUnchanged false) simprocs (simplifyTarget := target)
-    (fvarIdsToSimp := targets) | return none
+    (fvarIdsToSimp := targets.filter (!path.contains ·)) | return none
   -- A register written twice is tested twice, and the second test can never hold: drop it, and
   -- prove that for each register. Contextual simp would drop it too, but its cost doubles with
   -- each register in the chain. Last fact first, since `replace` renames the facts after it.
-  some <$> facts.foldrM (init := goal) fun fact goal => goal.withContext do
+  let goal ← facts.foldrM (init := goal) fun fact goal => goal.withContext do
     let some (_, _, function) := (← instantiateMVars (← fact.getType)).eq? | return goal
     let .lam binder domain chain info := function | return goal
     let mut kept := #[]
@@ -196,6 +198,14 @@ private meta def restate (goal : MVarId) (targets : Array FVarId) (target : Bool
     discard <| Tactic.run same.mvarId! do
       evalTactic (← `(tactic| funext r; cases r <;> simp only [reduceCtorEq, ↓reduceIte]))
     return (← goal.replace fact (← mkEqTrans (.fvar fact) same)).mvarId
+  if path.isEmpty then return goal
+  goal.withContext do
+    let some path := (← getLCtx).findFromUserName? `rivet_fact_path | unreachable!
+    let (result, _) ← simp (← instantiateMVars path.type) ctx simprocs
+    let proof ← match result.proof? with
+      | some equal => mkEqMP equal path.toExpr
+      | none => mkExpectedTypeHint path.toExpr result.expr
+    return (← goal.replace path.fvarId proof result.expr).mvarId
 
 -- Drops the given states and every memory name that nothing else mentions, with their facts.
 private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVarId :=
@@ -473,9 +483,7 @@ open Step in
   for (branch, index) in (← getGoals).zipIdx do
     setGoals [branch]
     checkpoint
-    -- A path condition that rewrites to `False` closes the goal.
-    let some goal := (← getGoals).head? | continue
-    let mut goal := goal
+    let mut goal ← getMainGoal
     let lctx ← goal.withContext getLCtx
     if let some decl := lctx.findFromUserName? `rivet_next then
       goal ← goal.rename decl.fvarId finalName
