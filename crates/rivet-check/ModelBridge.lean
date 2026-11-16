@@ -6,7 +6,7 @@ meta import JsonDeriving
 @[expose] public section
 open Rivet Json
 
--- Addresses travel as JSON numbers, as before.
+-- Addresses travel as JSON numbers.
 instance : FromJson (BitVec 64) where
   fromJson? json := do
     let value : Nat ← fromJson? json
@@ -112,7 +112,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]
   for index in [:request.steps] do
-    if !current.status.isRunning || current.status == .running (BitVec.ofNat 64 request.stopAddress) then break
+    if current.status == .fault || current.status == .running (BitVec.ofNat 64 request.stopAddress) then break
     let some undefinedFlags := request.nativeFlags[index]?
       | throw "missing native flag observation"
     current := step image current undefinedFlags

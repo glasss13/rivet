@@ -46,70 +46,11 @@ theorem Region.Has.part {r : Region} {pointer : BitVec 64} {size : Nat} (placed 
     (finish : inner.toNat + less ≤ pointer.toNat + size) : r.Has inner less :=
   ⟨by have := placed.start; omega, by have := placed.finish; omega⟩
 
--- A pointer as an expression plus a literal number of bytes, as words: `rsp - 8#64` is `rsp` plus
--- `2^64 - 8`. Two pointers off one expression are then a literal number of bytes apart.
-namespace Offset
-
-theorem refl (pointer : BitVec 64) : pointer = pointer + BitVec.ofNat 64 0 := by simp
-
-theorem literal (pointer : BitVec 64) : pointer = 0#64 + BitVec.ofNat 64 pointer.toNat := by simp
-
-theorem add {pointer base : BitVec 64} {offset : Nat} (placed : pointer = base + BitVec.ofNat 64 offset)
-    (literal : BitVec 64) (sum : Nat) (same : (offset + literal.toNat) % 2^64 = sum) :
-    pointer + literal = base + BitVec.ofNat 64 sum := by
-  subst placed same
-  bv_omega
-
-theorem sub {pointer base : BitVec 64} {offset : Nat} (placed : pointer = base + BitVec.ofNat 64 offset)
-    (literal : BitVec 64) (sum : Nat) (same : (offset + (2^64 - literal.toNat)) % 2^64 = sum) :
-    pointer - literal = base + BitVec.ofNat 64 sum := by
-  subst placed same
-  bv_omega
-
-theorem between {pointer other base : BitVec 64} {offset otherOffset : Nat}
-    (placed : pointer = base + BitVec.ofNat 64 offset) (otherPlaced : other = base + BitVec.ofNat 64 otherOffset)
-    (distance : Nat) (same : (otherOffset + distance) % 2^64 = offset % 2^64) :
-    pointer = other + BitVec.ofNat 64 distance := by
-  subst placed otherPlaced
-  bv_omega
-
-end Offset
-
--- A place covers the pointers a literal number of bytes past it that stay inside it: `placed.part`,
--- with its two bounds proved by evaluation.
-theorem Region.Has.cover {r : Region} {pointer inner : BitVec 64} {size less distance : Nat}
-    (placed : r.Has pointer size) (place : inner = pointer + BitVec.ofNat 64 distance)
-    (inside : distance + less ≤ size) (positive : 0 < less) : r.Has inner less := by
-  subst place
-  have := r.fits
-  have := placed.start
-  have := placed.finish
-  constructor <;> bv_omega
-
-theorem Region.Has.toNat_past {r : Region} {pointer inner : BitVec 64} {size distance : Nat}
-    (placed : r.Has pointer size) (place : inner = pointer + BitVec.ofNat 64 distance)
-    (inside : distance < size) : inner.toNat = pointer.toNat + distance := by
-  subst place
-  have := r.fits
-  have := placed.finish
-  bv_omega
-
 theorem Region.Has.fits {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size) :
     pointer.toNat + size ≤ 2^64 := by
   have := r.fits
   have := placed.finish
   omega
-
--- Two places a literal number of bytes apart, as words, with room for both: their bytes do not meet.
--- It is what `Memory.readBytes_storeBytes_outside` asks, proved by evaluation.
-theorem Region.Has.apart {r other : Region} {pointer stored : BitVec 64} {size length distance : Nat}
-    (read : r.Has pointer size) (store : other.Has stored length)
-    (place : pointer = stored + BitVec.ofNat 64 distance) (after : length ≤ distance) (before : distance + size ≤ 2^64) :
-    pointer.toNat + size ≤ stored.toNat ∨ stored.toNat + length ≤ pointer.toNat := by
-  subst place
-  have := read.fits
-  have := store.fits
-  bv_omega
 
 -- A permission, from the image's own list and for a part of a region that has it.
 theorem Image.reads_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) (readable : r.readable = true) :
@@ -274,5 +215,69 @@ theorem nested {c inner : Changes} {t u : MachineState} {earlier : Memory} (kept
   exact rest address size misses fits
 
 end Changes.Same
+
+-- Laws Rivet's tactics build proofs with. Proofs never name them.
+namespace Internal
+
+-- A pointer as an expression plus a literal number of bytes, as words: `rsp - 8#64` is `rsp` plus
+-- `2^64 - 8`. Two pointers off one expression are then a literal number of bytes apart.
+namespace Offset
+
+theorem refl (pointer : BitVec 64) : pointer = pointer + BitVec.ofNat 64 0 := by simp
+
+theorem literal (pointer : BitVec 64) : pointer = 0#64 + BitVec.ofNat 64 pointer.toNat := by simp
+
+theorem add {pointer base : BitVec 64} {offset : Nat} (placed : pointer = base + BitVec.ofNat 64 offset)
+    (literal : BitVec 64) (sum : Nat) (same : (offset + literal.toNat) % 2^64 = sum) :
+    pointer + literal = base + BitVec.ofNat 64 sum := by
+  subst placed same
+  bv_omega
+
+theorem sub {pointer base : BitVec 64} {offset : Nat} (placed : pointer = base + BitVec.ofNat 64 offset)
+    (literal : BitVec 64) (sum : Nat) (same : (offset + (2^64 - literal.toNat)) % 2^64 = sum) :
+    pointer - literal = base + BitVec.ofNat 64 sum := by
+  subst placed same
+  bv_omega
+
+theorem between {pointer other base : BitVec 64} {offset otherOffset : Nat}
+    (placed : pointer = base + BitVec.ofNat 64 offset) (otherPlaced : other = base + BitVec.ofNat 64 otherOffset)
+    (distance : Nat) (same : (otherOffset + distance) % 2^64 = offset % 2^64) :
+    pointer = other + BitVec.ofNat 64 distance := by
+  subst placed otherPlaced
+  bv_omega
+
+end Offset
+
+-- A place covers the pointers a literal number of bytes past it that stay inside it: `placed.part`,
+-- with its two bounds proved by evaluation.
+theorem Region.Has.cover {r : Region} {pointer inner : BitVec 64} {size less distance : Nat}
+    (placed : r.Has pointer size) (place : inner = pointer + BitVec.ofNat 64 distance)
+    (inside : distance + less ≤ size) (positive : 0 < less) : r.Has inner less := by
+  subst place
+  have := r.fits
+  have := placed.start
+  have := placed.finish
+  constructor <;> bv_omega
+
+theorem Region.Has.toNat_past {r : Region} {pointer inner : BitVec 64} {size distance : Nat}
+    (placed : r.Has pointer size) (place : inner = pointer + BitVec.ofNat 64 distance)
+    (inside : distance < size) : inner.toNat = pointer.toNat + distance := by
+  subst place
+  have := r.fits
+  have := placed.finish
+  bv_omega
+
+-- Two places a literal number of bytes apart, as words, with room for both: their bytes do not meet.
+-- It is what `Memory.readBytes_storeBytes_outside` asks, proved by evaluation.
+theorem Region.Has.apart {r other : Region} {pointer stored : BitVec 64} {size length distance : Nat}
+    (read : r.Has pointer size) (store : other.Has stored length)
+    (place : pointer = stored + BitVec.ofNat 64 distance) (after : length ≤ distance) (before : distance + size ≤ 2^64) :
+    pointer.toNat + size ≤ stored.toNat ∨ stored.toNat + length ≤ pointer.toNat := by
+  subst place
+  have := read.fits
+  have := store.fits
+  bv_omega
+
+end Internal
 
 end Rivet

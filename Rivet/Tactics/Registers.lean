@@ -2,8 +2,8 @@ module
 public import Rivet.Laws.Changes
 public import Rivet.Laws.SimpSet
 public meta import Lean
--- Reading registers back: through the steps' facts, and through each nested block that left the
--- register alone.
+-- What the read-back finds in scope: the steps' facts, the stores', the nested blocks' `Except`, and
+-- the states and hypotheses they make; and the read-back of registers.
 public section
 namespace Rivet
 open Lean Meta Elab Tactic
@@ -30,8 +30,11 @@ meta def fieldOf? (e : Expr) : Option FVarId := do
   guard (e.getAppNumArgs == 1 || (field == ``MachineState.registers && e.getAppNumArgs == 2))
   (e.getArg! 0).fvarId?
 
--- The hidden name of a fact Rivet states: a step's about an unnamed state, and a call's.
-meta def noteModule : Name := `Rivet.Step.note
+-- A fact Rivet states and hides: a step's about an unnamed state, and a call's.
+private meta def noteModule : Name := `Rivet.Step.note
+
+meta def noteName : CoreM Name :=
+  return { extractMacroScopes (← mkFreshUserName `h) with ctx := noteModule }.review
 
 meta def isNote (decl : LocalDecl) : Bool :=
   decl.userName.hasMacroScopes && (extractMacroScopes decl.userName).ctx == noteModule
@@ -120,9 +123,7 @@ meta def registersBack (target : Expr) : TermElabM (TSyntax `tactic) := do
   let all ← lemmas (← opened target) (← stepFacts) #[← `(Lean.Parser.Tactic.simpLemma| rivet)]
   `(tactic| simp only [$all,*])
 
-end ReadBack
-
-open ReadBack in
+-- A register a nested block's change does not list, read back across it.
 simproc [rivet] unchangedRegister (MachineState.registers _ _) := fun e => do
   let_expr MachineState.registers state register := e | return .continue
   let some name := register.constName? | return .continue
@@ -134,5 +135,7 @@ simproc [rivet] unchangedRegister (MachineState.registers _ _) := fun e => do
     return .visit { expr := mkApp2 (mkConst ``MachineState.registers) earlier register,
                     proof? := mkApp6 (mkConst ``MachineState.Except.sameRegisters) state earlier c kept register out }
   return .continue
+
+end ReadBack
 
 end Rivet

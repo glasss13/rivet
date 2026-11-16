@@ -2,9 +2,9 @@ use crate::{
     operand::{Address, Operand},
     register::{Register32, Register64, Xmm},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BinaryOp {
     Add,
@@ -17,21 +17,21 @@ pub enum BinaryOp {
     Xor,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShiftOp {
     Shl,
     Shr,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum XmmMove {
     Movups,
     Movdqu,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Condition {
     Equal,
@@ -47,7 +47,7 @@ pub enum Condition {
     Greater,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     Nop,
@@ -146,7 +146,7 @@ pub enum Operation {
         destination: Register64,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize)]
 pub struct Instruction {
     pub address: u64,
     pub length: u64,

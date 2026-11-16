@@ -150,8 +150,6 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
         !instruction.has_segment_prefix(),
         "segment overrides are not supported"
     );
-    // Address-size overrides are deliberately outside this initial importer.
-    // TODO: just support this
     ensure!(
         !bytes
             .iter()

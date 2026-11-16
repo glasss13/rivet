@@ -23,7 +23,7 @@ meta def same (a b : Expr) : MetaM Bool := withNewMCtxDepth <| withReducible <| 
 meta partial def offset (pointer : Expr) : MetaM (Expr × Nat × Expr) := do
   let pointer ← instantiateMVars pointer
   if let some ⟨width, value⟩ ← getBitVecValue? pointer then
-    if width == 64 then return (toExpr 0#64, value.toNat, mkApp (mkConst ``Offset.literal) pointer)
+    if width == 64 then return (toExpr 0#64, value.toNat, mkApp (mkConst ``Internal.Offset.literal) pointer)
   let folded (inner literal : Expr) (law : Name) (sum : Nat → Nat → Nat) : MetaM (Option (Expr × Nat × Expr)) := do
     let some ⟨width, value⟩ ← getBitVecValue? literal | return none
     unless width == 64 do return none
@@ -31,10 +31,10 @@ meta partial def offset (pointer : Expr) : MetaM (Expr × Nat × Expr) := do
     let total := sum bytes value.toNat % 2^64
     return some (base, total, ← mkAppM law #[proof, literal, mkNatLit total, ← mkEqRefl (mkNatLit total)])
   let found ← match_expr pointer with
-    | HAdd.hAdd _ _ _ _ base literal => folded base literal ``Offset.add (· + ·)
-    | HSub.hSub _ _ _ _ base literal => folded base literal ``Offset.sub (fun bytes value => bytes + (2^64 - value))
+    | HAdd.hAdd _ _ _ _ base literal => folded base literal ``Internal.Offset.add (· + ·)
+    | HSub.hSub _ _ _ _ base literal => folded base literal ``Internal.Offset.sub (fun bytes value => bytes + (2^64 - value))
     | _ => pure none
-  return found.getD (pointer, 0, mkApp (mkConst ``Offset.refl) pointer)
+  return found.getD (pointer, 0, mkApp (mkConst ``Internal.Offset.refl) pointer)
 
 -- How many bytes `pointer` is past `other`, as words, when both are off one expression: the number,
 -- and the equation `pointer = other + BitVec.ofNat 64 distance`.
@@ -43,7 +43,7 @@ meta def between? (pointer other : Expr) : MetaM (Option (Nat × Expr)) := do
   let (otherBase, otherBytes, otherPlaced) ← offset other
   unless ← same base otherBase do return none
   let distance := (bytes + (2^64 - otherBytes)) % 2^64
-  return some (distance, ← mkAppM ``Offset.between #[placed, otherPlaced, mkNatLit distance, ← mkEqRefl (mkNatLit bytes)])
+  return some (distance, ← mkAppM ``Internal.Offset.between #[placed, otherPlaced, mkNatLit distance, ← mkEqRefl (mkNatLit bytes)])
 
 -- What the hypotheses say of places, regions and the image: each such statement in scope, a record's
 -- fields among them.
@@ -167,7 +167,7 @@ meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
       unless distance + bytes ≤ room do continue
       let inside ← mkDecideProof (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit distance, size], length])
       let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
-      return some (candidate, ← mkAppM ``Region.Has.cover #[proof, place, inside, positive])
+      return some (candidate, ← mkAppM ``Internal.Region.Has.cover #[proof, place, inside, positive])
     return none
 
 -- The region an access is in, with its place.

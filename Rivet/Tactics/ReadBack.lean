@@ -1,12 +1,11 @@
 module
 public import Rivet.Laws.Block
 public import Rivet.Tactics.Step
-public import Rivet.Tactics.Arith
 public meta import Lean
 -- The read-back: every value of a later state, read back to the block's start. `rivet_known` closes a
--- goal that, read that way, is a hypothesis or has two equal sides. `rivet_arith` reads its goal and its
--- facts back the same way, then asks `lia`. The read-back itself asks no arithmetic: a read placed in a region passes a
--- store or a nested block by the names of the regions.
+-- goal that, read that way, is a hypothesis or has two equal sides. The read-back itself asks no
+-- arithmetic: a read placed in a region passes a store or a nested block whose regions are apart from
+-- it, by the lookups in `Places`.
 public section
 namespace Rivet
 open Lean Meta Elab Tactic
@@ -17,15 +16,7 @@ namespace ReadBack
 meta def describe (state : Expr) : MetaM MessageData := do
   if let some id := state.fvarId? then
     unless ((← getLCtx).get! id).userName.hasMacroScopes do return m!"`{state}`"
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    let some (_, lhs, rhs) := (← instantiateMVars decl.type).eq? | continue
-    unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
-    let some address := rhs.app1? ``ExecutionStatus.running | continue
-    let value? ← match ← getBitVecValue? address with
-      | some ⟨_, value⟩ => pure (some value.toNat)
-      | none => getNatValue? address
-    if let some value := value? then return m!"the state at 0x{String.ofList (Nat.toDigits 16 value)}"
+  if let some (_, pc, _) ← Step.findPc? state then return m!"the state at 0x{Fetch.hex pc}"
   return m!"an unnamed state"
 
 -- The instruction that made a store's memory.
@@ -34,7 +25,7 @@ meta def storedBy (memory : Expr) : MetaM MessageData := do
     let_expr Step.StoredBy stored address operation := ← instantiateMVars decl.type | continue
     if stored == memory then
       let some address ← getNatValue? address | continue
-      return m!" by `{operation}` at 0x{String.ofList (Nat.toDigits 16 address)}"
+      return m!" by `{operation}` at 0x{Fetch.hex address}"
   return m!""
 
 -- A store: the memory before it, where it wrote, how many bytes, and which; behind its name when it has one.
@@ -50,8 +41,7 @@ meta def store? (memory : Expr) : MetaM (Option (Expr × Expr × Expr × Expr ×
 -- The region `r` back through every store placed in a region apart from it and every nested block
 -- whose change lists only regions apart from it: the earliest memory that is the same on `r`, a proof
 -- `r.Same earliest memory`, and why it stopped short of a start (and whether that is a store into `r`
--- itself). Each step is a lookup: the region the store was placed in, and a hypothesis that
--- says the two are apart.
+-- itself). Each step is a lookup: the region the store was placed in, and that the two are apart.
 meta partial def regionBack (r memory : Expr) : MetaM (Expr × Option Expr × Option (MessageData × Bool)) := do
   let next (earlier step : Expr) : MetaM (Expr × Option Expr × Option (MessageData × Bool)) := do
     let (final, rest?, stop?) ← regionBack r earlier
@@ -120,7 +110,7 @@ meta def atStore (read memory address size : Expr) : MetaM (Option (Expr × Expr
   if bytesStored ≤ distance && distance + bytesRead ≤ 2^64 then
     let after ← mkDecideProof (← le length (mkNatLit distance))
     let before ← mkDecideProof (← le (← sum (mkNatLit distance) size) (mkNatLit (2^64)))
-    let outside ← mkAppM ``Region.Has.apart #[read, placed, place, after, before]
+    let outside ← mkAppM ``Internal.Region.Has.apart #[read, placed, place, after, before]
     let proof ← mkAppM ``Memory.readBytes_storeBytes_outside #[earlier, bytes, outside, ← mkAppM ``Region.Has.fits #[read]]
     return some (mkApp3 (mkConst ``readBytes) earlier address size, ← renamed proof)
   unless 0 < bytesRead && distance + bytesRead ≤ bytesStored do return none
@@ -128,7 +118,7 @@ meta def atStore (read memory address size : Expr) : MetaM (Option (Expr × Expr
   unless anchor == base do return none
   let within ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit distance, length])
   let inside ← mkDecideProof (← le (← sum (mkNatLit distance) size) length)
-  let start ← mkAppM ``Region.Has.toNat_past #[placed, place, within]
+  let start ← mkAppM ``Internal.Region.Has.toNat_past #[placed, place, within]
   let proof ← mkAppM ``Region.Has.readBytes_stored #[placed, mkNatLit distance, start, inside, earlier, value]
   return some ((← inferType proof).eq?.get!.2.2, ← renamed proof)
 
@@ -150,8 +140,6 @@ meta def readBack? (memory address size : Expr) : MetaM (Option (Expr × Expr)) 
     return some (mkApp3 (mkConst ``readBytes) final address size, ← mkEqSymm (← mkAppM ``Region.Same.read #[same, placed]))
   atStore placed memory address size
 
--- `c.Same memory start`: every store between the two is placed in a region the change lists, and every
--- nested block's change is within it. Each step is a lookup in the change's list.
 -- `c.Covers range`: the change lists the range, or covers the region it is a part of. Each step a lookup.
 meta partial def covers (c : Expr) (range : Expr) : MetaM (Option Expr) := do
   let listed ← listItems (mkApp (mkConst ``Changes.memory) c)
@@ -168,6 +156,8 @@ meta partial def covers (c : Expr) (range : Expr) : MetaM (Option Expr) := do
   let some rest ← covers c (mkApp (mkConst ``Region.range) root) | return none
   return some (← mkAppM ``Changes.Covers.part #[rest, offset, length, inside])
 
+-- `c.Same memory start`: every store between the two is placed in a region the change covers, and every
+-- nested block's change is within it.
 meta partial def sameMemory (c memory start : Expr) : MetaM Expr := do
   if memory == start then return ← mkAppOptM ``Changes.Same.refl #[c, memory]
   let pairType ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Nat]
@@ -202,16 +192,12 @@ meta partial def sameMemory (c memory start : Expr) : MetaM Expr := do
         ← sameMemory c earlierMemory start]
   throwError "the memory{indentExpr memory}\nis not traced back to the block's start."
 
-end ReadBack
-
-open ReadBack in
-simproc_decl readBack (readBytes _ _ _) := fun e => do
+-- A placed read of a later memory, read back.
+simproc_decl placedRead (readBytes _ _ _) := fun e => do
   let_expr readBytes memory address size := e | return .continue
   if address.hasLooseBVars then return .continue
   let some (final, proof) ← readBack? memory address size | return .continue
   return .visit { expr := final, proof? := some proof }
-
-namespace ReadBack
 
 -- The read-back of the goal, or of hypotheses: registers, then memory.
 meta def readBackTactic (locations : Array Term := #[]) (goal := false) : TacticM (TSyntax `tactic) := withMainContext do
@@ -221,7 +207,7 @@ meta def readBackTactic (locations : Array Term := #[]) (goal := false) : Tactic
       for name in ← opened decl.type do
         unless names.contains name do names := names.push name
   let all ← lemmas names (← stepFacts) #[
-    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| readBack)]
+    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| placedRead)]
   if locations.isEmpty then `(tactic| simp only [$all,*])
   else if goal then `(tactic| simp only [$all,*] at $[$locations]* ⊢)
   else `(tactic| simp only [$all,*] at $[$locations]*)
@@ -387,44 +373,28 @@ meta def finish (goal : MVarId) (facts : Array (Expr × Expr)) : TacticM Bool :=
     if ← withReducible <| isDefEq part type then
       goal.assign proof
       return true
-  let attempt (tactic : TSyntax `tactic) : TacticM Bool := do
-    let saved ← saveState
-    try
-      setGoals [goal]
-      evalTactic tactic
-      if (← getGoals).isEmpty then return true
-      saved.restore
-      return false
-    catch _ =>
-      saved.restore
-      return false
   -- Not full `rfl`: it unfolds word arithmetic. `x ≤ x` has two equal sides too.
-  if ← attempt (← `(tactic| with_reducible first | rfl | exact Nat.le_refl _ | exact BitVec.le_refl _)) then return true
+  if ← Step.closes (← `(tactic| with_reducible first | rfl | exact Nat.le_refl _ | exact BitVec.le_refl _)) goal then
+    return true
   -- Literals alone, however spelled (`4106#64 = 4106`): evaluated.
   if !type.hasFVar && !type.hasMVar then
-    if ← attempt (← `(tactic| decide)) then return true
+    if ← Step.closes (← `(tactic| decide)) goal then return true
   for (proof, part) in facts do
     if part.isForall then
       let proof ← Term.exprToSyntax (← mkExpectedTypeHint proof part)
-      if ← attempt (← `(tactic| with_reducible apply $proof <;> with_reducible assumption)) then return true
+      if ← Step.closes (← `(tactic| with_reducible apply $proof <;> with_reducible assumption)) goal then return true
   return false
 
 -- A status asked for at one address, where the steps say the block is at another.
 meta def elsewhere (type : Expr) : MetaM (Option MessageData) := do
-  let hex (n : Nat) := String.ofList (Nat.toDigits 16 n)
   let some (_, status, asked) := type.eq? | return none
-  unless status.isAppOfArity ``MachineState.status 1 do return none
+  let some state := status.app1? ``MachineState.status | return none
   let some asked := asked.app1? ``ExecutionStatus.running | return none
   let some asked ← Fetch.addressValue? asked | return none
-  for fact in ← stepFacts do
-    let some (_, lhs, rhs) := (← instantiateMVars (← inferType fact)).eq? | continue
-    unless lhs == status do continue
-    let some at_ := rhs.app1? ``ExecutionStatus.running | continue
-    let some at_ ← Fetch.addressValue? at_ | continue
-    unless at_ == asked do
-      return some m!" the block is at 0x{hex at_}, and this asks for 0x{hex asked}. Step to it, \
-        `rivet_step to 0x{hex asked}`, or ask for where the block is."
-  return none
+  let some (_, at_, _) ← Step.findPc? state | return none
+  if at_ == asked then return none
+  return some m!" the block is at 0x{Fetch.hex at_}, and this asks for 0x{Fetch.hex asked}. Step to it, \
+    `rivet_step to 0x{Fetch.hex asked}`, or ask for where the block is."
 
 meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM (Option MessageData) :=
     leaf.withContext do
@@ -471,7 +441,7 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
   saved.restore
   -- What a nested block's postcondition says a register or a read holds, where reading back stops.
   let mut values := #[]
-  for (proof, part) in facts ++ (← hypotheses).map fun decl => (decl.toExpr, decl.type) do
+  for (proof, part) in facts do
     let some (_, lhs, _) := part.eq? | continue
     let state? := match lhs.app2? ``MachineState.registers with
       | some (state, _) => some state
@@ -520,136 +490,28 @@ where
       if let some why ← close leaf facts then return some why
     return none
 
-end ReadBack
-
-namespace ReadBack
-
-meta def closeTactic : TacticM Unit := withMainContext <| reporting m!"rivet_known" do
-  let name := m!"rivet_known"
+@[tactic rivetKnown] meta def evalRivetKnown : Tactic := fun _ => withMainContext <| reporting m!"rivet_known" do
   let start ← getMainGoal
   let others := (← getGoals).tail
   let wanted := (← instantiateMVars (← start.getType)).headBeta
   let start ← start.replaceTargetDefEq wanted
   let mut failures := #[]
   unless ← withReducible start.assumptionCore do
-    let known ← facts start
     for (leaf, note) in ← leaves start do
       let asked ← leaf.withContext do addMessageContext m!"{← instantiateMVars (← leaf.getType)}"
-      let failure ← reporting m!"{name}: the part{indentD (note.getD asked)}\nwas not closed" do
+      let failure ← reporting m!"rivet_known: the part{indentD (note.getD asked)}\nwas not closed" do
         let saved ← saveState
-        if (← close leaf known).isNone then return none
+        if (← close leaf (← facts leaf)).isNone then return none
         -- The hypotheses are read back only for a part that needs them: most parts do not.
         saved.restore
-        let moved ← ReadBack.known leaf
+        let moved ← known leaf
         return (← close moved (← facts moved)).map fun why => m!"{note.getD asked}\nRead back,{why}"
       if let some failure := failure then failures := failures.push failure
   unless failures.isEmpty do
-    throwError "{name}: {failures.size} part(s) of{indentExpr wanted}\ndo not follow from what is known.\n\
+    throwError "rivet_known: {failures.size} part(s) of{indentExpr wanted}\ndo not follow from what is known.\n\
       {MessageData.joinSep (failures.toList.map fun why => m!"• {why}") "\n"}"
   setGoals others
 
 end ReadBack
-
-@[tactic rivetKnown] meta def evalRivetKnown : Tactic := fun _ => ReadBack.closeTactic
-
-meta partial def ReadBack.arith (stx : Syntax) : TacticM Unit := withMainContext do
-  -- A record is proved field by field, as a listed record is given field by field. `lia` reads `∧` itself.
-  let record ← do
-    let type ← whnfR (← instantiateMVars (← getMainTarget))
-    let env ← getEnv
-    pure (type.getAppFn.constName?.any fun name => name != ``And && isStructure env name)
-  if record then
-    let others := (← getGoals).tail
-    for field in ← (← getMainGoal).constructor do
-      setGoals [field]
-      arith stx
-    setGoals others
-    return
-  let only := !stx[1].isNone
-  let facts := if stx[2].isNone then #[] else stx[2][1].getSepArgs
-  let others := (← getGoals).tail
-  let mut goal ← getMainGoal
-  let unlisted ← if only then goal.withContext do
-      (← getLCtx).foldlM (init := #[]) fun unlisted decl => do
-        if decl.isImplementationDetail then return unlisted
-        return if ← isProp decl.type then unlisted.push decl.fvarId else unlisted
-    else pure #[]
-  let mut given := #[]
-  for term in facts do
-    let proof ← instantiateMVars (← Tactic.elabTerm term none)
-    let type ← inferType proof
-    -- `lia` does not instantiate a general statement, so one would be silently unused.
-    if let .forallE _ domain _ _ ← whnfR type then
-      unless ← isProp domain do
-        throwError "rivet_arith: the fact `{term}` is general: `{type}`. `lia` uses only facts about \
-          the goal's terms; give it its arguments."
-    for (part, partType) in ← ReadBack.parts proof type do
-      let (fact, next) ← (← goal.assert (← mkFreshUserName `fact) partType part).intro1P
-      given := given.push fact
-      goal := next
-  -- Everything below works on a copy of the goal, and its proof is checked at once, as a lemma of its
-  -- own, not at the end of your theorem.
-  let outer := goal
-  let outerType ← goal.withContext do instantiateMVars (← goal.getType)
-  let copy ← goal.withContext do mkFreshExprSyntheticOpaqueMVar outerType
-  let close : TacticM Unit := outer.withContext do
-    outer.assign (← mkAuxTheorem outerType (← instantiateMVars copy))
-  goal := copy.mvarId!
-  -- The goal and the facts it may use, read back and in the `rivet` set's form, as every value Rivet
-  -- writes is.
-  setGoals [goal]
-  let moved ← goal.withContext do
-    let later ← ReadBack.later
-    let used ← if only then given.mapM (·.getDecl) else ReadBack.hypotheses
-    let moved ← used.filterM fun decl => return later.any ((← instantiateMVars decl.type).containsFVar ·)
-    if moved.isEmpty && !later.any ((← instantiateMVars (← goal.getType)).containsFVar ·) then pure none else
-      some <$> ReadBack.readBackTactic (← moved.mapM fun decl => Term.exprToSyntax decl.toExpr) (goal := true)
-  if let some readBack := moved then
-    evalTactic (← `(tactic| try $readBack:tactic))
-  else
-    let used ← goal.withContext do
-      let used ← if only then given.mapM (·.getDecl) else ReadBack.hypotheses
-      used.mapM fun decl => Term.exprToSyntax decl.toExpr
-    evalTactic (← `(tactic| try simp only [rivet] at $[$used]* ⊢))
-  let [read] ← getGoals | close; setGoals others; return
-  goal := read
-  -- `lia` never instantiates a general fact, but `grind` still prepares each one, within the budget.
-  let hidden ← goal.withContext do
-    (← getLCtx).foldlM (init := #[]) fun hidden decl => do
-      if decl.isImplementationDetail then return hidden
-      if unlisted.contains decl.fvarId then return hidden.push decl.fvarId
-      let .forallE _ domain _ _ ← whnfR (← instantiateMVars decl.type) | return hidden
-      return if (← isProp decl.type) && !(← isProp domain) then hidden.push decl.fvarId else hidden
-  for fact in hidden.reverse do
-    goal ← goal.tryClear fact
-  setGoals [goal]
-  let start ← IO.getNumHeartbeats
-  let attempt := withTheReader Core.Context
-    (fun context => { context with initHeartbeats := start, maxHeartbeats := arithBudget * 1000 })
-    (evalTactic (← `(tactic| lia)))
-  try
-    tryCatchRuntimeEx (do attempt; close) fun error => do
-      -- Its budget is its own; Lean's recursion limit is not, and stops the tactic.
-      if error.isMaxRecDepth then throw error
-      -- `grind` reports its own timeout as an ordinary failure, so compare the work done.
-      if error.isMaxHeartbeat || (← IO.getNumHeartbeats) - start ≥ arithBudget * 1000 then
-        throwError "rivet_arith: no proof within its budget of {arithBudget} heartbeats; \
-          `maxHeartbeats` does not change it. Give it only the facts the goal needs: \
-          `rivet_arith only [facts]`."
-      throwError "rivet_arith: `lia` did not prove the goal from the facts in scope. Below is where it \
-        stopped. Its assignment may or may not be a counterexample: `lia` drops what it does not read, \
-        and may stop before it has tried everything.\n\
-        - Facts the goal does not need, such as `%` or `/` facts and large `∨`s, can keep `lia` from a \
-        proof: give it only those it needs, `rivet_arith only [facts]`.\n\
-        - A term `lia` does not read, such as a mask, needs its meaning as an equation, e.g. \
-        `x &&& 15#64 = x % 16#64`, proved through `toNat`.\n\
-        - A goal that adds or subtracts a shifted value may need `grind`.\n\
-        - `lia` does not unfold definitions: unfold them, or list facts about them.\
-        {indentD (withoutRestatements error.toMessageData)}"
-  finally
-    IO.setNumHeartbeats start
-  setGoals others
-
-@[tactic rivetArith] meta def evalRivetArith : Tactic := ReadBack.arith
 
 end Rivet

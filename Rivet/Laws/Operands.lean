@@ -7,80 +7,80 @@ import all Rivet.Interpreter.Memory
 @[expose] public section
 namespace Rivet
 
-@[simp, rivet] theorem MachineState.canRead_reg8 (state : MachineState) (image : Image) (register : Reg8) :
+@[rivet] theorem MachineState.canRead_reg8 (state : MachineState) (image : Image) (register : Reg8) :
     state.canRead image (.reg8 register) = true := by simp [canRead]
-@[simp, rivet] theorem MachineState.canRead_reg16 (state : MachineState) (image : Image) (register : Reg16) :
+@[rivet] theorem MachineState.canRead_reg16 (state : MachineState) (image : Image) (register : Reg16) :
     state.canRead image (.reg16 register) = true := by simp [canRead]
-@[simp, rivet] theorem MachineState.canRead_reg32 (state : MachineState) (image : Image) (register : Reg32) :
+@[rivet] theorem MachineState.canRead_reg32 (state : MachineState) (image : Image) (register : Reg32) :
     state.canRead image (.reg32 register) = true := by simp [canRead]
-@[simp, rivet] theorem MachineState.canRead_reg64 (state : MachineState) (image : Image) (register : Reg) :
+@[rivet] theorem MachineState.canRead_reg64 (state : MachineState) (image : Image) (register : Reg) :
     state.canRead image (.reg64 register) = true := by simp [canRead]
-@[simp, rivet] theorem MachineState.canRead_immediate (state : MachineState) (image : Image) (value : Int) :
+@[rivet] theorem MachineState.canRead_immediate (state : MachineState) (image : Image) (value : Int) :
     state.canRead image (.immediate value) = true := by simp [canRead]
-@[simp, rivet] theorem MachineState.canRead_memory (state : MachineState) (image : Image) (width : Width)
+@[rivet] theorem MachineState.canRead_memory (state : MachineState) (image : Image) (width : Width)
     (address : Address) :
     state.canRead image (.memory width address) = permits image.readable (address.evaluate state.registers)
       width.bytes := by simp [canRead]
 
-@[simp, rivet] theorem MachineState.canWrite_reg8 (state : MachineState) (image : Image) (register : Reg8) :
+@[rivet] theorem MachineState.canWrite_reg8 (state : MachineState) (image : Image) (register : Reg8) :
     state.canWrite image (.reg8 register) = true := by simp [canWrite]
-@[simp, rivet] theorem MachineState.canWrite_reg16 (state : MachineState) (image : Image) (register : Reg16) :
+@[rivet] theorem MachineState.canWrite_reg16 (state : MachineState) (image : Image) (register : Reg16) :
     state.canWrite image (.reg16 register) = true := by simp [canWrite]
-@[simp, rivet] theorem MachineState.canWrite_reg32 (state : MachineState) (image : Image) (register : Reg32) :
+@[rivet] theorem MachineState.canWrite_reg32 (state : MachineState) (image : Image) (register : Reg32) :
     state.canWrite image (.reg32 register) = true := by simp [canWrite]
-@[simp, rivet] theorem MachineState.canWrite_reg64 (state : MachineState) (image : Image) (register : Reg) :
+@[rivet] theorem MachineState.canWrite_reg64 (state : MachineState) (image : Image) (register : Reg) :
     state.canWrite image (.reg64 register) = true := by simp [canWrite]
-@[simp, rivet] theorem MachineState.canWrite_immediate (state : MachineState) (image : Image) (value : Int) :
+@[rivet] theorem MachineState.canWrite_immediate (state : MachineState) (image : Image) (value : Int) :
     state.canWrite image (.immediate value) = false := by simp [canWrite]
-@[simp, rivet] theorem MachineState.canWrite_memory (state : MachineState) (image : Image) (width : Width)
+@[rivet] theorem MachineState.canWrite_memory (state : MachineState) (image : Image) (width : Width)
     (address : Address) :
     state.canWrite image (.memory width address) = permits image.writable (address.evaluate state.registers)
       width.bytes := by simp [canWrite]
 
-@[simp, rivet] theorem MachineState.readOperand_reg8 (state : MachineState) (register : Reg8) :
+@[rivet] theorem MachineState.readOperand_reg8 (state : MachineState) (register : Reg8) :
     state.readOperand .byte (.reg8 register) = (state.registers register.parent).setWidth 8 := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_reg16 (state : MachineState) (register : Reg16) :
+@[rivet] theorem MachineState.readOperand_reg16 (state : MachineState) (register : Reg16) :
     state.readOperand .word (.reg16 register) = (state.registers register.parent).setWidth 16 := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_reg32 (state : MachineState) (register : Reg32) :
+@[rivet] theorem MachineState.readOperand_reg32 (state : MachineState) (register : Reg32) :
     state.readOperand .dword (.reg32 register) = (state.registers register.parent).setWidth 32 := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_reg64 (state : MachineState) (register : Reg) :
+@[rivet] theorem MachineState.readOperand_reg64 (state : MachineState) (register : Reg) :
     state.readOperand .qword (.reg64 register) = state.registers register := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_byte (state : MachineState) (address : Address) :
+@[rivet] theorem MachineState.readOperand_byte (state : MachineState) (address : Address) :
     state.readOperand .byte (.memory .byte address) = readBytes state.memory (address.evaluate state.registers) 1 := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_word (state : MachineState) (address : Address) :
+@[rivet] theorem MachineState.readOperand_word (state : MachineState) (address : Address) :
     state.readOperand .word (.memory .word address) = readBytes state.memory (address.evaluate state.registers) 2 := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_dword (state : MachineState) (address : Address) :
+@[rivet] theorem MachineState.readOperand_dword (state : MachineState) (address : Address) :
     state.readOperand .dword (.memory .dword address) = readBytes state.memory (address.evaluate state.registers) 4 := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_qword (state : MachineState) (address : Address) :
+@[rivet] theorem MachineState.readOperand_qword (state : MachineState) (address : Address) :
     state.readOperand .qword (.memory .qword address) = readBytes state.memory (address.evaluate state.registers) 8 := by
   simp [readOperand, readOperand64]
-@[simp, rivet] theorem MachineState.readOperand_immediate (state : MachineState) (width : Width) (value : Int) :
+@[rivet] theorem MachineState.readOperand_immediate (state : MachineState) (width : Width) (value : Int) :
     state.readOperand width (.immediate value) = BitVec.ofInt width.bits value := by
   apply BitVec.eq_of_toNat_eq
   cases width <;> simp [readOperand, readOperand64, BitVec.toNat_ofInt] <;> omega
 
-@[simp, rivet] theorem MachineState.writeOperand_reg8 (state : MachineState) (register : Reg8) (value : BitVec 8) :
+@[rivet] theorem MachineState.writeOperand_reg8 (state : MachineState) (register : Reg8) (value : BitVec 8) :
     state.writeOperand .byte (.reg8 register) value = state.write register.parent
       ((state.registers register.parent &&& ~~~(255#64)) ||| value.setWidth 64) := by
   simp [writeOperand, writeOperand64]
-@[simp, rivet] theorem MachineState.writeOperand_reg16 (state : MachineState) (register : Reg16) (value : BitVec 16) :
+@[rivet] theorem MachineState.writeOperand_reg16 (state : MachineState) (register : Reg16) (value : BitVec 16) :
     state.writeOperand .word (.reg16 register) value = state.write register.parent
       ((state.registers register.parent &&& ~~~(65535#64)) ||| value.setWidth 64) := by
   simp [writeOperand, writeOperand64]
-@[simp, rivet] theorem MachineState.writeOperand_reg32 (state : MachineState) (register : Reg32) (value : BitVec 32) :
+@[rivet] theorem MachineState.writeOperand_reg32 (state : MachineState) (register : Reg32) (value : BitVec 32) :
     state.writeOperand .dword (.reg32 register) value = state.write register.parent (value.setWidth 64) := by
   simp [writeOperand, writeOperand64]
-@[simp, rivet] theorem MachineState.writeOperand_reg64 (state : MachineState) (register : Reg) (value : BitVec 64) :
+@[rivet] theorem MachineState.writeOperand_reg64 (state : MachineState) (register : Reg) (value : BitVec 64) :
     state.writeOperand .qword (.reg64 register) value = state.write register value := by
   simp [writeOperand, writeOperand64]
-@[simp, rivet] theorem MachineState.writeOperand_memory (state : MachineState) (width : Width) (address : Address)
+@[rivet] theorem MachineState.writeOperand_memory (state : MachineState) (width : Width) (address : Address)
     (value : BitVec width.bits) :
     state.writeOperand width (.memory width address) value =
       state.writeMemory (address.evaluate state.registers) width value := by
@@ -90,7 +90,7 @@ namespace Rivet
     unfold littleEndianAt
     simp only [BitVec.toNat_setWidth, Nat.mod_eq_of_lt fits]
   simp only [writeOperand, writeOperand64, MachineState.writeMemory, same]
-@[simp, rivet] theorem MachineState.writeOperand_immediate (state : MachineState) (width : Width) (operand : Int)
+@[rivet] theorem MachineState.writeOperand_immediate (state : MachineState) (width : Width) (operand : Int)
     (value : BitVec width.bits) :
     state.writeOperand width (.immediate operand) value = state := by
   simp [writeOperand, writeOperand64]

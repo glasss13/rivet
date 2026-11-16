@@ -2,14 +2,14 @@ module
 public import Rivet.Laws.SimpSet
 meta import Lean
 -- One spelling for what `rivet_step` states: conditions as comparisons, literal offsets
--- folded, and register parts read back as the value written.
+-- folded, and register parts read back as the value written. Rivet's tactics use these through the
+-- `rivet` set; proofs never name them.
 @[expose] public section
-namespace Rivet
+namespace Rivet.Internal
 
 attribute [rivet] BitVec.setWidth_setWidth_of_le BitVec.setWidth_eq
   BitVec.xor_self BitVec.and_self BitVec.setWidth_zero BitVec.sub_zero
-  BitVec.shiftLeft_zero BitVec.ushiftRight_zero
-  eq_self_iff_true and_self Bool.false_eq_true Bool.true_eq_false ite_eq_right_iff imp_false
+  and_self Bool.false_eq_true Bool.true_eq_false
   decide_eq_true_eq decide_eq_false_iff_not beq_iff_eq beq_eq_false_iff_ne ne_eq Classical.not_not
   Bool.not_eq_true' Bool.and_eq_true Bool.or_eq_true BitVec.not_lt BitVec.not_le
 
@@ -43,7 +43,7 @@ attribute [rivet] BitVec.extractLsb'_eq_self
 
 -- Literal displacements: `BitVec.ofInt 64 (-8)` becomes a subtraction of `8#64`, and a zero
 -- displacement is dropped.
-attribute [rivet] BitVec.ofInt_ofNat BitVec.ofInt_neg BitVec.ofInt_natCast BitVec.add_neg_eq_sub
+attribute [rivet] BitVec.ofInt_ofNat BitVec.ofInt_neg BitVec.add_neg_eq_sub
   BitVec.add_zero
 
 @[rivet] theorem le_and_ne_iff_lt {a b : BitVec w} : (b ≤ a ∧ ¬a = b) ↔ b < a := by
@@ -136,4 +136,4 @@ attribute [rivet] bne_iff_ne Int.not_lt Int.not_le
   simp only [BitVec.getElem_or, BitVec.getElem_and, mask, BitVec.getElem_setWidth]
   by_cases high : 16 ≤ i <;> simp [high, BitVec.getLsbD_of_ge]
 
-end Rivet
+end Rivet.Internal

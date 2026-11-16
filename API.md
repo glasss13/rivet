@@ -24,7 +24,7 @@ exhaust its recursion limit.
 - `t.Except s c`: every register outside `c.registers` and every read outside `c.memory` is the
   same in `t` as in `s`. Flags, vector registers and the status are not compared: state what you
   need of them in `Q`. It compares the end with the start, so a register the block saves and
-  restores is not in the change. `kept.same`: the two memories are the `Same` on a region the change misses.
+  restores is not in the change.
 
 While you step through a block from `s`, the goal is `Block image s c Q t`: the same block, now
 at the state `t` reached so far. The code in between runs as nested blocks: each instruction is
@@ -158,8 +158,8 @@ back, registers and memory, as `rivet_known` does.
 
 - A fact is a statement about the goal's terms. A listed record (`inv`) is given field by field,
   and a goal that is a record (`r.Has p n`) is proved field by field; `lia` does not look inside
-  a record in scope. A general fact (`∀ x, …`) is ignored: give it its
-  arguments (`lemma x`).
+  a record in scope. A general fact (`∀ x, …`) is not used: listed, it is an error, and in scope
+  it is hidden. Give it its arguments (`lemma x`).
 - It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
   `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
   `-x - 1` and `movsxd` as a sum with an `if`, in these terms.
@@ -176,7 +176,6 @@ back, registers and memory, as `rivet_known` does.
     apply BitVec.eq_of_toNat_eq; simpa using Nat.and_two_pow_sub_one_eq_mod x.toNat 4
   ```
 
-- A goal that adds or subtracts a shifted value may need `grind`.
 - Do not use `bv_omega`: it rewrites every fact about words in scope, can run for minutes, and
   ignores `maxHeartbeats`.
 
@@ -184,10 +183,8 @@ back, registers and memory, as `rivet_known` does.
 
 - `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`,
   `overflowFlag`, `memory`, `status`. `ExecutionStatus`: `running address` or `fault`.
-  `MachineState.returnAddress`: the 8 bytes at `rsp`. `Condition.holds`: whether a jump condition
-  holds in a state.
-- `Reg`, `Reg32`, `Reg16`, `Reg8` (with `.parent`), `Xmm`, `Width`, `Address`, `Operand`, `Op`,
-  `Instruction`, `Program`.
+  `MachineState.returnAddress`: the 8 bytes at `rsp`.
+- `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
 
 One contract per instruction, each a `Block` whose change is what the instruction writes:
 `move`, `movzx`, `movsxd`, `lea`, `add`, `sub`, `sbb`, `compare`, `test`, `bitwise_and`,
@@ -270,10 +267,9 @@ readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
   readBytes memory address (size + 1) = readBytes memory (address + 1#64) size ++ BitVec.ofNat 8 (memory address).val
 ```
 
-`first` is kept beside `part`: it takes the fact you have (`left.first positive`), where `part`
-would ask for two bounds. To use a law on a read of a later state, rewrite with the step's facts
-first: `rw [t_memory, m₁_def, Memory.readBytes_storeBytes_outside _ _ (by …) (by …)]`. A read of
-known bytes: `simp only [readBytes_succ, BitVec.of_length_zero]; decide`.
+To use a law on a read of a later state, rewrite with the step's facts first:
+`rw [t_memory, m₁_def, Memory.readBytes_storeBytes_outside _ _ (by …) (by …)]`. A read of known
+bytes: `simp only [readBytes_succ, BitVec.of_length_zero]; decide`.
 
 ## What a theorem means
 
@@ -281,11 +277,7 @@ known bytes: `simp only [readBytes_succ, BitVec.of_length_zero]; decide`.
 `execute image n state choices` runs `n` of them with one value of the undefined flags per step
 (`FlagChoices`). Proofs never mention them; they are what a theorem's meaning rests on.
 
-What a proof does not cover: the decoder (instructions come from the importer and iced-x86), the
-CPU (the model is tested against hardware, not proved equal to it), flags other than ZF, CF, SF
-and OF, instructions outside the supported subset, and concurrency.
-
-## Importer and checker
+## Importer
 
 - `cargo run -p rivet-import -- ./prog --function f --namespace F --output F.lean` writes
   `F.entry`, `F.program`, `F.region_<a>` for the segment at `a`, `F.regions` (all of them), and
@@ -295,4 +287,3 @@ and OF, instructions outside the supported subset, and concurrency.
   `have place : F.region_<a>.Has 0x403000#64 8 := ⟨by decide, by decide⟩`, then
   `have value : readBytes s.memory 0x403000#64 8 = 42#64 := by rw [← loaded.segment_<a>.read place]; …`
   with the known-bytes recipe under Memory.
-- `cargo run -p rivet-check -- --cases 1000` tests the model against the CPU.
