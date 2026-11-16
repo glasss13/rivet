@@ -431,6 +431,16 @@ open Step in
   let operation := instruction.getArg! 2
   let named? : Option Name := if stx[1].getNumArgs > 0 then some stx[1][1].getId else none
   let condition? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
+  -- A step that splits the proof in two says so.
+  let isBranch := operation.isAppOfArity ``Op.jcc 2
+  if isBranch && condition?.isNone then
+    throwError "rivet_step: the instruction at 0x{String.ofList (Nat.toDigits 16 pc)} is a conditional jump. \
+      Step it with `rivet_step if h`: it splits the proof in two, `taken` and `fallthrough`, with its \
+      condition as `h` in each."
+  if let some condition := condition? then
+    unless isBranch do
+      throwError "rivet_step: `if {condition}` names a branch condition, and the instruction at \
+        0x{String.ofList (Nat.toDigits 16 pc)} is not a conditional jump"
   -- 1. The contract, with side conditions as goals; discharge what we can.
   let mut unsolved : Array MVarId := #[]
   let mainGoal ← getMainGoal
@@ -498,11 +508,6 @@ open Step in
     at $locations*))
   nameMemory pc operation
   -- 4. Conditional jump: two tagged goals, each with its path condition.
-  let isBranch := operation.isAppOfArity ``Op.jcc 2
-  if let some condition := condition? then
-    unless isBranch do
-      throwError "rivet_step: `if {condition}` names a branch condition, and the instruction at \
-        0x{String.ofList (Nat.toDigits 16 pc)} is not a conditional jump"
   if isBranch then
     let condition ← Term.exprToSyntax operation.getAppArgs[0]!
     let oldStx ← Term.exprToSyntax old
@@ -542,6 +547,20 @@ open Step in
     if isBranch then goal.setTag (if index == 0 then `taken else `fallthrough)
     finished := finished.push goal
   setGoals (finished.toList ++ unsolved.toList ++ pending)
+
+syntax (name := rivetStepTo) "rivet_step" &" to " term : tactic
+
+-- Steps until the block is at the address. A conditional jump on the way stops it, as a bare step does.
+open Step in
+@[tactic rivetStepTo] meta def Step.evalRivetStepTo : Tactic := fun stx => withMainContext do
+  let some target ← Fetch.addressValue? (← Term.elabTermAndSynthesize stx[2] (mkApp (mkConst ``BitVec) (mkNatLit 64)))
+    | throwError "rivet_step to: `{stx[2]}` is not an address"
+  repeat
+    let pc ← withMainContext do
+      let (_, state) ← goalParts (← getMainGoal)
+      return (← findPc state).2.1
+    if pc == target then return
+    evalTactic (← `(tactic| rivet_step))
 
 end Rivet
 end
