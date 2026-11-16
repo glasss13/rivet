@@ -10,11 +10,11 @@ inductive ExecutionStatus where
   deriving DecidableEq
 structure MachineState where
   registers : Reg → BitVec 64
-  xmmRegisters : Xmm → BitVec 128 := fun _ => 0
-  signFlag : Bool := false
+  xmmRegisters : Xmm → BitVec 128
+  signFlag : Bool
   zeroFlag : Bool
-  carryFlag : Bool := false
-  overflowFlag : Bool := false
+  carryFlag : Bool
+  overflowFlag : Bool
   memory : Memory
   status : ExecutionStatus
 
@@ -32,14 +32,8 @@ def MachineState.write (state : MachineState) (register : Reg) (value : BitVec 6
   { state with registers := fun otherRegister =>
       if otherRegister = register then value else state.registers otherRegister }
 
-def ExecutionStatus.isRunning : ExecutionStatus → Bool
-  | .running _ => true
-  | _ => false
-
 private def next (nextAddress : BitVec 64) (state : MachineState) : MachineState :=
-  { state with status := match state.status with
-      | .running _ => .running nextAddress
-      | stopped => stopped }
+  { state with status := .running nextAddress }
 @[no_expose, irreducible] def Address.evaluate (address : Address) (registers : Reg → BitVec 64) : BitVec 64 :=
   (address.base.map registers).getD 0 +
     (address.index.map registers).getD 0 * BitVec.ofNat 64 address.scale.value +
