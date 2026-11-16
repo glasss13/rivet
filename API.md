@@ -36,8 +36,11 @@ block may change what the block keeps, if the code after it restores it.
   which it takes from the goal. Each precondition is proved as `rivet_known` does; one that is not
   is an error naming it, and you give it by name. The proof goes on from the state the block ends
   in, with `q_post`, its postcondition, and `q_kept`, what it left alone, in scope (hidden without
-  `as q`). A postcondition that is an `∨` is one way out per side, as a branch is: one goal for
-  each, in order, with that side as `q_post`.
+  `as q`). A call ends as a step does: `q_post` is read back to the block's start, and each part
+  that says what the block left unknown, `q.status = …`, a flag or a register its change lists,
+  is a fact of `q`'s, which later steps state their values through. A postcondition that is an
+  `∨` is one way out per side, as a branch is: one goal for each, in order, with that side as
+  `q_post`.
 - `exact Block.done` ends the block at the current state. It proves `Q`, and that every store went
   into a region `c` lists, as `rivet_known` does. `Block.done proof` takes your proof of `Q`
   instead: `Block.done ⟨by rivet_known, by rivet_arith only [bound]⟩`.
@@ -89,7 +92,7 @@ place stated over a named state, `buf.Has (u.registers .rdi) 8`, places what the
 What is read back, each step a lookup and none of them arithmetic:
 
 - a register, through each step that did not write it and each nested block whose change does
-  not list it;
+  not list it, and through a nested block's postcondition where it says what one it lists holds;
 - a read (`readBytes m p n`; a byte is `n = 1`) that is placed, by the rule under Memory: past a
   store or a nested block by its region. Where it stops, the error states what to prove;
 - a goal `r.Same s.memory t.memory`: every store since `s` is placed in a region apart from `r`,
