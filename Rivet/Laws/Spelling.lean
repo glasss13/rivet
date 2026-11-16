@@ -1,5 +1,6 @@
 module
 public import Rivet.Laws.SimpSet
+meta import Lean
 -- One spelling for what `rivet_step` states: conditions as comparisons, literal offsets
 -- folded, and register parts read back as the value written.
 @[expose] public section
@@ -16,6 +17,29 @@ attribute [rivet] BitVec.setWidth_setWidth_of_le BitVec.setWidth_eq
 -- `reduceCtorEq` and `reduceIte` are not `meta`, so a module cannot add them to a set directly.
 simproc [rivet] distinctConstructors (_ = _) := reduceCtorEq
 simproc ↓ [rivet] decidedIte (ite _ _ _) := reduceIte
+
+-- Literals are evaluated: `8 + 56`, `16 % 32`, `8 ≤ 56`, `1#64 = 0#64`, `(65546#32).toInt`.
+dsimproc [rivet] natAdd ((_ + _ : Nat)) := Nat.reduceAdd
+dsimproc [rivet] natSub ((_ - _ : Nat)) := Nat.reduceSub
+dsimproc [rivet] natMul ((_ * _ : Nat)) := Nat.reduceMul
+dsimproc [rivet] natDiv ((_ / _ : Nat)) := Nat.reduceDiv
+dsimproc [rivet] natMod ((_ % _ : Nat)) := Nat.reduceMod
+dsimproc [rivet] natPow ((_ ^ _ : Nat)) := Nat.reducePow
+-- A comparison of two literals is decided; nothing else is rearranged, which is `lia`'s work.
+simproc [rivet] natLe ((_ : Nat) ≤ _) := fun e => do
+  let_expr LE.le _ _ x y := e | return .continue
+  let (some x, some y) := (← Lean.Meta.getNatValue? x, ← Lean.Meta.getNatValue? y) | return .continue
+  Lean.Meta.Simp.evalPropStep e (x ≤ y)
+simproc [rivet] natEq ((_ : Nat) = _) := fun e => do
+  let_expr Eq _ x y := e | return .continue
+  let (some x, some y) := (← Lean.Meta.getNatValue? x, ← Lean.Meta.getNatValue? y) | return .continue
+  Lean.Meta.Simp.evalPropStep e (x = y)
+dsimproc [rivet] wordOfNat (BitVec.ofNat _ _) := BitVec.reduceOfNat
+dsimproc [rivet] wordAdd ((_ + _ : BitVec _)) := BitVec.reduceAdd
+dsimproc [rivet] wordSetWidth (BitVec.setWidth _ _) := BitVec.reduceSetWidth
+simproc [rivet] wordEq ((_ : BitVec _) = _) := BitVec.reduceEq
+dsimproc [rivet] wordToInt (BitVec.toInt _) := BitVec.reduceToInt
+attribute [rivet] BitVec.extractLsb'_eq_self
 
 -- Literal displacements: `BitVec.ofInt 64 (-8)` becomes a subtraction of `8#64`, and a zero
 -- displacement is dropped.
@@ -50,6 +74,19 @@ attribute [rivet] bne_iff_ne Int.not_lt Int.not_le
   rw [← BitVec.toInt_inj]; omega
 @[rivet] theorem toInt_le_and_ne_iff_lt {x y : BitVec w} : (y.toInt ≤ x.toInt ∧ ¬x = y) ↔ y.toInt < x.toInt := by
   rw [← BitVec.toInt_inj]; omega
+-- The same, where one side is a literal and its `toInt` is already a number.
+@[rivet] theorem toInt_lt_or_eq_iff_le_right {x y : BitVec w} {c : Int} (value : y.toInt = c) :
+    (x.toInt < c ∨ x = y) ↔ x.toInt ≤ c := by
+  subst value; exact toInt_lt_or_eq_iff_le
+@[rivet] theorem toInt_lt_or_eq_iff_le_left {x y : BitVec w} {c : Int} (value : x.toInt = c) :
+    (c < y.toInt ∨ x = y) ↔ c ≤ y.toInt := by
+  subst value; exact toInt_lt_or_eq_iff_le
+@[rivet] theorem toInt_le_and_ne_iff_lt_right {x y : BitVec w} {c : Int} (value : y.toInt = c) :
+    (c ≤ x.toInt ∧ ¬x = y) ↔ c < x.toInt := by
+  subst value; exact toInt_le_and_ne_iff_lt
+@[rivet] theorem toInt_le_and_ne_iff_lt_left {x y : BitVec w} {c : Int} (value : x.toInt = c) :
+    (y.toInt ≤ c ∧ ¬x = y) ↔ y.toInt < c := by
+  subst value; exact toInt_le_and_ne_iff_lt
 
 @[rivet] theorem sub_ofNat_sub_ofNat (x : BitVec w) (a b : Nat) :
     x - BitVec.ofNat w a - BitVec.ofNat w b = x - BitVec.ofNat w (a + b) := by

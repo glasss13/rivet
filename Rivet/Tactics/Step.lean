@@ -201,8 +201,7 @@ private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Arra
   let lemmas ← facts.mapM fun decl => do
     let term ← Term.exprToSyntax (.fvar decl.fvarId)
     `(Lean.Parser.Tactic.simpLemma| $term:term)
-  let stx ← `(tactic| simp only [$lemmas,*, reduceCtorEq, ↓reduceIte, rivet, Nat.reduceLeDiff,
-    Nat.reduceAdd, Nat.reduceSub, BitVec.reduceSetWidth, BitVec.reduceEq])
+  let stx ← `(tactic| simp only [$lemmas,*, rivet])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
   let (some (facts, goal), _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
     (fvarIdsToSimp := targets) | return none
@@ -483,21 +482,9 @@ open Step in
   -- `MachineState.write` becomes an `if`: its decidability instance keeps whatever
   -- register it was built with, and simp does not rewrite instances.
   evalTactic (← `(tactic| try simp only [rivet] at $locations*))
-  evalTactic (← `(tactic| try simp only [MachineState.write,
-      MachineState.writeMemory, Width.bits,
-      -- The successor `address + length` reduces to a literal.
-      BitVec.reduceOfNat, BitVec.reduceAdd,
-      -- A literal shift count is masked and tested for zero (`16 % 32 = 0` is decided).
-      Nat.reduceMod, Nat.reduceSub, Nat.reduceEqDiff, ↓reduceIte,
-      -- Literal comparisons the `rivet` set's rules need or leave: `8 ≤ 56`, `1 = 0`.
-      Nat.reduceLeDiff, Nat.reduceAdd, BitVec.reduceSetWidth, BitVec.reduceEq,
-      -- Literal operands as numbers: PSHUFD's lane offsets, IMUL's immediate.
-      Nat.reduceMul, Nat.reduceDiv, Nat.reducePow, BitVec.reduceToInt,
-      -- A condition as the flags it tests.
-      Condition.holds,
-      -- Operand equations, register parents, and addresses as point reads of registers
-      -- (`r .rbx - 8#64`), never the whole register file.
-      rivet] at $locations*))
+  -- Then the model's own writes, and the `rivet` set again on what they leave.
+  evalTactic (← `(tactic| try simp only [MachineState.write, MachineState.writeMemory, Width.bits, rivet]
+    at $locations*))
   nameMemory pc operation
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   let isBranch := operation.isAppOfArity ``Op.jcc 2
@@ -513,8 +500,8 @@ open Step in
     -- The status fact already tests the flags, spelled by the `rivet` set; spell the path
     -- condition the same way to match it.
     evalTactic (← `(tactic| by_cases $path : Condition.holds $condition $oldStx = true <;>
-      simp only [Condition.holds, rivet] at $path:ident <;>
-      simp only [$path:ident, ↓reduceIte, rivet] at $status:ident))
+      simp only [rivet] at $path:ident <;>
+      simp only [$path:ident, rivet] at $status:ident))
     internal := internal.push `rivet_fact_path
   -- 5. In each goal: state the new state over the block's start, drop the old one, then give the new
   --    state and its facts their final names (yours, or inaccessible).
