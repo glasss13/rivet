@@ -22,14 +22,28 @@ meta def changedRegisters (c : Expr) : MetaM (Array Name) := do
       | throwError "a change names its registers; this is not a register name:{indentExpr register}"
     return name
 
--- What each step says of the state it ends in.
+-- The state a field of a named state is of: `t.status`, `t.memory`, `t.registers` or one register,
+-- `t.registers .rsp`.
+meta def fieldOf? (e : Expr) : Option FVarId := do
+  let field ← e.getAppFn.constName?
+  guard (field.getPrefix == ``MachineState)
+  guard (e.getAppNumArgs == 1 || (field == ``MachineState.registers && e.getAppNumArgs == 2))
+  (e.getArg! 0).fvarId?
+
+-- The hidden name of a fact Rivet states: a step's about an unnamed state, and a call's.
+meta def noteModule : Name := `Rivet.Step.note
+
+meta def isNote (decl : LocalDecl) : Bool :=
+  decl.userName.hasMacroScopes && (extractMacroScopes decl.userName).ctx == noteModule
+
+-- What each step says of the state it ends in, and what a call's postcondition says of the state it
+-- ends in. One register, `t.registers .rsp = …`, only a call says.
 meta def stepFacts : MetaM (Array Expr) := do
   let mut found := #[]
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
     let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | continue
-    if lhs.getAppNumArgs == 1 && lhs.appArg!.isFVar &&
-        (lhs.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false then found := found.push decl.toExpr
+    if (fieldOf? lhs).isSome && (lhs.getAppNumArgs == 1 || isNote decl) then found := found.push decl.toExpr
   return found
 
 -- A store's memory, and what it is.
@@ -57,7 +71,8 @@ meta def later : MetaM (Array FVarId) := do
     let some (_, lhs, _) := (← instantiateMVars (← inferType fact)).eq? | continue
     -- Its status alone does not make a state a later one: the block's start has one too.
     if lhs.isAppOf ``MachineState.status then continue
-    unless found.contains lhs.appArg!.fvarId! do found := found.push lhs.appArg!.fvarId!
+    let some state := fieldOf? lhs | continue
+    unless found.contains state do found := found.push state
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
     let_expr MachineState.Except t _ _ := ← instantiateMVars decl.type | continue
