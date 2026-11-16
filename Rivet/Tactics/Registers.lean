@@ -102,11 +102,7 @@ meta def lemmas (names : Array Name) (facts : Array Expr) (fixed : Array (TSynta
 
 -- Reads the registers and addresses of `target` back. No arithmetic.
 meta def registersBack (target : Expr) : TermElabM (TSyntax `tactic) := do
-  let all ← lemmas (← opened target) (← stepFacts) #[
-    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| reduceCtorEq),
-    ← `(Lean.Parser.Tactic.simpLemma| ↓reduceIte), ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceSub),
-    ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceAdd), ← `(Lean.Parser.Tactic.simpLemma| BitVec.reduceOfNat),
-    ← `(Lean.Parser.Tactic.simpLemma| BitVec.sub_zero), ← `(Lean.Parser.Tactic.simpLemma| BitVec.add_zero)]
+  let all ← lemmas (← opened target) (← stepFacts) #[← `(Lean.Parser.Tactic.simpLemma| rivet)]
   `(tactic| simp only [$all,*])
 
 end ReadBack

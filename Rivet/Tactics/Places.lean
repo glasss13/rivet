@@ -5,7 +5,8 @@ public meta import Lean
 -- Pointers and regions, compared without arithmetic on the hypotheses. A pointer is placed by a
 -- hypothesis `r.Has q n`. Two pointers that are one expression plus or minus literals are a literal
 -- number of bytes apart, and what a place covers and whether two places meet is then evaluated. That
--- two regions are apart, and that the image grants one, are hypotheses as written.
+-- two regions are apart, and that the image grants one, are hypotheses. A hypothesis about a later state
+-- is read back to the block's start, as a goal is.
 public section
 namespace Rivet
 open Lean Meta
@@ -66,46 +67,69 @@ where
       if opened != type then return ← visit proof opened found
     return found
 
--- `r.Apart other`: a hypothesis as written, either way round.
-meta def apart? (r other : Expr) : MetaM (Option Expr) := do
-  for (proof, type) in ← known do
+-- The statements about a later state, read back to the block's start as a goal is.
+meta def readBack (statements : Array (Expr × Expr)) : MetaM (Array (Expr × Expr)) := do
+  let later ← ReadBack.later
+  let moved := statements.filter fun (_, type) => later.any (type.containsFVar ·)
+  if moved.isEmpty then return #[]
+  let types := moved.map (·.2)
+  let tactic ← (ReadBack.registersBack (mkAndN types.toList)).run'
+  let results ← IO.mkRef #[]
+  discard <| (Elab.Tactic.run (← mkFreshExprMVar (mkConst ``True)).mvarId! do
+    let { ctx, simprocs, .. } ← Elab.Tactic.mkSimpContext tactic (eraseLocal := false)
+    for type in types do results.modify (·.push (← simp type ctx simprocs).1)).run'
+  (moved.zip (← results.get)).filterMapM fun ((proof, type), result) => do
+    if result.expr == type then return none
+    return some (← match result.proof? with
+      | some equal => mkEqMP equal proof
+      | none => mkExpectedTypeHint proof result.expr, result.expr)
+
+-- A lookup among the hypotheses as written, then among them read back.
+meta def lookup (find : Array (Expr × Expr) → MetaM (Option α)) : MetaM (Option α) := do
+  let known ← known
+  if let some found ← find known then return some found
+  find (← readBack known)
+
+-- `r.Apart other`: a hypothesis, either way round.
+meta def apart? (r other : Expr) : MetaM (Option Expr) := lookup fun known => do
+  for (proof, type) in known do
     let_expr Region.Apart first second := type | continue
     if (← same first r) && (← same second other) then return some proof
     if (← same first other) && (← same second r) then return some (← mkAppM ``Region.Apart.symm #[proof])
   return none
 
--- `image.Reads r` or `image.Writes r`: a hypothesis as written.
-meta def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
+-- `image.Reads r` or `image.Writes r`: a hypothesis.
+meta def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := lookup fun known => do
   let name := if writes then ``Image.Writes else ``Image.Reads
-  for (proof, type) in ← known do
+  for (proof, type) in known do
     unless type.isAppOfArity name 2 do continue
     if (← same (type.getArg! 0) image) && (← same (type.getArg! 1) r) then return some proof
   return none
 
--- `r.Has pointer size`, where `r` may be unknown: a hypothesis as written, or one that covers it: the
--- pointer a literal number of bytes past its own, and the literal bytes asked for inside those it has.
--- Returns the region with the proof.
+-- `r.Has pointer size`, where `r` may be unknown: a hypothesis, or one that covers it: the pointer a
+-- literal number of bytes past its own, and the literal bytes asked for inside those it has. Returns the
+-- region with the proof.
 meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
   let r ← instantiateMVars r
   let pointer ← instantiateMVars pointer
   let size ← instantiateMVars size
   let fits (candidate : Expr) : MetaM Bool := if r.isMVar then pure true else same candidate r
-  let known ← known
-  for (proof, type) in known do
-    let_expr Region.Has candidate at_ length := type | continue
-    if at_ == pointer && length == size && (← fits candidate) then return some (candidate, proof)
-  let some bytes ← getNatValue? size | return none
-  if bytes == 0 then return none
-  for (proof, type) in known do
-    let_expr Region.Has candidate at_ length := type | continue
-    let some room ← getNatValue? length | continue
-    unless ← fits candidate do continue
-    let some (distance, place) ← between? pointer at_ | continue
-    unless distance + bytes ≤ room do continue
-    let inside ← mkDecideProof (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit distance, size], length])
-    let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
-    return some (candidate, ← mkAppM ``Region.Has.cover #[proof, place, inside, positive])
-  return none
+  lookup fun known => do
+    for (proof, type) in known do
+      let_expr Region.Has candidate at_ length := type | continue
+      if at_ == pointer && length == size && (← fits candidate) then return some (candidate, proof)
+    let some bytes ← getNatValue? size | return none
+    if bytes == 0 then return none
+    for (proof, type) in known do
+      let_expr Region.Has candidate at_ length := type | continue
+      let some room ← getNatValue? length | continue
+      unless ← fits candidate do continue
+      let some (distance, place) ← between? pointer at_ | continue
+      unless distance + bytes ≤ room do continue
+      let inside ← mkDecideProof (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit distance, size], length])
+      let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
+      return some (candidate, ← mkAppM ``Region.Has.cover #[proof, place, inside, positive])
+    return none
 
 -- The region an access is in, with its place.
 meta def placed? (pointer size : Expr) : MetaM (Option (Expr × Expr)) := do

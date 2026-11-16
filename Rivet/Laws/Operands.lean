@@ -162,4 +162,7 @@ attribute [rivet] Reg8.parent Reg16.parent Reg32.parent
 -- Access sizes as numbers of bytes.
 attribute [rivet] Width.bytes
 
+-- A condition as the flags it tests, and a status as its address.
+attribute [rivet] Condition.holds ExecutionStatus.running.injEq
+
 end Rivet

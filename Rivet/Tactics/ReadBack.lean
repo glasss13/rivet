@@ -214,14 +214,7 @@ meta def readBackTactic (locations : Array Term := #[]) (goal := false) : Tactic
       for name in ← opened decl.type do
         unless names.contains name do names := names.push name
   let all ← lemmas names (← stepFacts) #[
-    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| reduceCtorEq),
-    ← `(Lean.Parser.Tactic.simpLemma| ↓reduceIte), ← `(Lean.Parser.Tactic.simpLemma| readBack),
-    ← `(Lean.Parser.Tactic.simpLemma| BitVec.setWidth_eq), ← `(Lean.Parser.Tactic.simpLemma| BitVec.extractLsb'_eq_self),
-    ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceMul), ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceSub),
-    ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceAdd), ← `(Lean.Parser.Tactic.simpLemma| Nat.reducePow),
-    ← `(Lean.Parser.Tactic.simpLemma| Nat.reduceLeDiff), ← `(Lean.Parser.Tactic.simpLemma| BitVec.reduceOfNat),
-    ← `(Lean.Parser.Tactic.simpLemma| BitVec.sub_zero), ← `(Lean.Parser.Tactic.simpLemma| BitVec.add_zero),
-    ← `(Lean.Parser.Tactic.simpLemma| ExecutionStatus.running.injEq)]
+    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| readBack)]
   if locations.isEmpty then `(tactic| simp only [$all,*])
   else if goal then `(tactic| simp only [$all,*] at $[$locations]* ⊢)
   else `(tactic| simp only [$all,*] at $[$locations]*)
@@ -569,7 +562,16 @@ meta partial def ReadBack.arith (stx : Syntax) : TacticM Unit := withMainContext
       let (fact, next) ← (← goal.assert (← mkFreshUserName `fact) partType part).intro1P
       given := given.push fact
       goal := next
-  -- The goal and the facts it may use, read back, so they meet.
+  -- Everything below works on a copy of the goal, and its proof is checked at once, as a lemma of its
+  -- own, not at the end of your theorem.
+  let outer := goal
+  let outerType ← goal.withContext do instantiateMVars (← goal.getType)
+  let copy ← goal.withContext do mkFreshExprSyntheticOpaqueMVar outerType
+  let close : TacticM Unit := outer.withContext do
+    outer.assign (← mkAuxTheorem outerType (← instantiateMVars copy))
+  goal := copy.mvarId!
+  -- The goal and the facts it may use, read back and in the `rivet` set's form, as every value Rivet
+  -- writes is.
   setGoals [goal]
   let moved ← goal.withContext do
     let later ← ReadBack.later
@@ -579,8 +581,13 @@ meta partial def ReadBack.arith (stx : Syntax) : TacticM Unit := withMainContext
       some <$> ReadBack.readBackTactic (← moved.mapM fun decl => Term.exprToSyntax decl.toExpr) (goal := true)
   if let some readBack := moved then
     evalTactic (← `(tactic| try $readBack:tactic))
-    let [read] ← getGoals | setGoals others; return
-    goal := read
+  else
+    let used ← goal.withContext do
+      let used ← if only then given.mapM (·.getDecl) else ReadBack.hypotheses
+      used.mapM fun decl => Term.exprToSyntax decl.toExpr
+    evalTactic (← `(tactic| try simp only [rivet] at $[$used]* ⊢))
+  let [read] ← getGoals | close; setGoals others; return
+  goal := read
   -- `lia` never instantiates a general fact, but `grind` still prepares each one, within the budget.
   let hidden ← goal.withContext do
     (← getLCtx).foldlM (init := #[]) fun hidden decl => do
@@ -596,7 +603,7 @@ meta partial def ReadBack.arith (stx : Syntax) : TacticM Unit := withMainContext
     (fun context => { context with initHeartbeats := start, maxHeartbeats := arithBudget * 1000 })
     (evalTactic (← `(tactic| lia)))
   try
-    tryCatchRuntimeEx attempt fun error => do
+    tryCatchRuntimeEx (do attempt; close) fun error => do
       -- Its budget is its own; Lean's recursion limit is not, and stops the tactic.
       if error.isMaxRecDepth then throw error
       -- `grind` reports its own timeout as an ordinary failure, so compare the work done.
