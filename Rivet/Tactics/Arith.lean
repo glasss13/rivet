@@ -76,19 +76,10 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
   -- The goal and the facts it may use, read back and in the `rivet` set's form, as every value Rivet
   -- writes is.
   setGoals [goal]
-  let moved ← goal.withContext do
-    let later ← later
+  let used ← goal.withContext do
     let used ← if only then given.mapM (·.getDecl) else hypotheses
-    let moved ← used.filterM fun decl => return later.any ((← instantiateMVars decl.type).containsFVar ·)
-    if moved.isEmpty && !later.any ((← instantiateMVars (← goal.getType)).containsFVar ·) then pure none else
-      some <$> readBackTactic (← moved.mapM fun decl => Term.exprToSyntax decl.toExpr) (goal := true)
-  if let some readBack := moved then
-    evalTactic (← `(tactic| try $readBack:tactic))
-  else
-    let used ← goal.withContext do
-      let used ← if only then given.mapM (·.getDecl) else hypotheses
-      used.mapM fun decl => Term.exprToSyntax decl.toExpr
-    evalTactic (← `(tactic| try simp only [rivet] at $[$used]* ⊢))
+    used.mapM fun decl => Term.exprToSyntax decl.toExpr
+  evalTactic (← `(tactic| try $(← readBackTactic used (goal := true)):tactic))
   let [read] ← getGoals | close; setGoals others; return
   goal := read
   -- `lia` never instantiates a general fact, but `grind` still prepares each one, within the budget.
