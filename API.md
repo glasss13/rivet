@@ -83,7 +83,8 @@ is a hypothesis or has two equal sides; `Block.done` and `rivet_call` close thei
 There are two closing tactics: `rivet_known`, which starts no arithmetic and never searches, and
 `rivet_arith` (below), which is yours. Rivet sees through an `abbrev` and a record's fields (a
 record is a `structure` in `Prop`), never a `def`. Every lookup does: a place, a permission,
-apartness, and the current address.
+apartness, and the current address. A lookup reads your hypotheses back as it reads the goal, so a
+place stated over a named state, `buf.Has (u.registers .rdi) 8`, places what the step writes.
 
 What is read back, each step a lookup and none of them arithmetic:
 
@@ -136,8 +137,8 @@ its contract. It is written `rivet_step`, `rivet_step as t`, `rivet_step if h` o
   before the return.
 - **Places.** A memory access needs its place, `r.Has pointer size`, and the permission,
   `image.Reads r` or `image.Writes r`, in scope before the step (see Memory). An access that is
-  not placed is an error at that step, which shows the `Has` to state with the pointer as the step
-  spells it.
+  not placed is an error at that step, which shows the `Has` to state, over the block's start; over
+  a named state is the same.
 - **Other side conditions** (operand checks) are stated over the block's start state. `rivet_step`
   tries `rfl`, `decide` and `assumption`; one left open is your goal.
 - Your own hypotheses are never rewritten.
