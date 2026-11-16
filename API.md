@@ -205,8 +205,9 @@ pointers lie is a goal for you. Rivet never searches.
 - **A place** is a hypothesis `r.Has q n`: it places `q`. A read or an access that is not placed
   stops, and the error names the `Has` to state. A place whose size is not a literal places only
   itself: state the bytes you access, `have byte : dst.Has p 1 := left.first positive`.
-- **Apart, and granted.** `r.Apart r'`, `image.Reads r` and `image.Writes r` are hypotheses as
-  written. Put those every block needs in a record of your own and carry it.
+- **Apart, and granted.** `r.Apart r'`, `image.Reads r` and `image.Writes r` are hypotheses, about
+  a region or the region it is a part of (below). State them for whole regions: that the buffers
+  and the stack are apart, and what the image grants each.
 - **Where a read stops,** the error states the goal: that the read is outside the store, for
   `Memory.readBytes_storeBytes_outside`, or where it is inside it, for `placed.readBytes_stored`.
   A place you need and do not have is `placed.part start finish`, from its two bounds.
@@ -218,6 +219,12 @@ are numbers, and Rivet evaluates them instead of handing them over. So
 read at `rsp` passes a store of 8 bytes at `rsp - 8`; and a read inside a store is those bytes
 of the value stored. This never crosses a nested block: a change lists regions, so what must
 survive a call is in a region the callee does not list.
+
+Regions are the same. Two parts of one region at literal offsets, `(stack a).part 0 8` and
+`(stack a).part 8 136`, are apart when their bytes do not meet. A part has what its region has: it
+is apart from what the region is apart from, the image grants it what it grants the region, and a
+change that lists the region covers it, for a store and for a nested block whose change lists the
+part.
 
 The model is flat, and so is what a theorem means: `Memory` is a byte per 64-bit address, and
 `Memory.storeBytes memory base length bytes` writes the addresses whose value lies in
@@ -255,11 +262,8 @@ Region.Has.readBytes_stored (placed : r.Has stored length) (offset : Nat)
 -- a read placed in a region is the same in two memories that are the same on it
 Region.Same.read (same : r.Same earlier later) (placed : r.Has pointer size) :
   readBytes earlier pointer size = readBytes later pointer size
--- a permission, from the image's list and for a part
+-- a permission, from the image's list; and the same for `Writes`, `Image.writes_of_mem`
 Image.reads_of_mem (member : r ∈ image.regions) (readable : r.readable = true) : image.Reads r
-Image.Reads.part (reads : image.Reads r) (offset length : Nat) (inside : offset + length ≤ r.length) :
-  image.Reads (r.part offset length inside)
--- and the same two for `Writes`: `Image.writes_of_mem`, `Image.Writes.part`
 readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
   readBytes memory address (size + 1) = readBytes memory (address + 1#64) size ++ BitVec.ofNat 8 (memory address).val
 ```
