@@ -10,7 +10,7 @@ open Lean Meta Elab Tactic
 
 namespace Fetch
 
-private meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
+meta def hex (n : Nat) : String := String.ofList (Nat.toDigits 16 n)
 
 meta def addressValue? (address : Expr) : MetaM (Option Nat) := do
   let address ← instantiateMVars address

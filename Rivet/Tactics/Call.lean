@@ -44,7 +44,8 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
       throwError "rivet_call: the block's precondition `{name}` is not proved. Give it: `({name} := …)`.\n\
         {error.toMessageData}"
   let name (suffix : String) : TacticM Name :=
-    if stx[3].getNumArgs > 0 then pure (stx[3][1].getId.appendAfter suffix) else mkFreshUserName `h
+    if stx[3].getNumArgs > 0 then pure (stx[3][1].getId.appendAfter suffix)
+    else mkFreshUserName (if suffix.isEmpty then `s else `h)
   let call ← instantiateMVars (mkAppN given holes)
   let args := (← whnfR (← inferType call)).getAppArgs
   let postName ← name "_post"
@@ -64,11 +65,10 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
           let changed ← ReadBack.changedRegisters args[2]!
           let mut goal := goal
           for (proof, part) in ← ReadBack.parts (.fvar post) (← post.getType) do
-            if proof == .fvar post then continue
             let some (_, lhs, _) := part.eq? | continue
             unless ReadBack.fieldOf? lhs == some next.fvarId! do continue
             if lhs.getAppNumArgs == 2 && !((← whnfR (lhs.getArg! 1)).constName?.any changed.contains) then continue
-            goal := (← (← goal.assert (← Step.noteName) part proof).intro1P).2
+            goal := (← (← goal.assert (← ReadBack.noteName) part proof).intro1P).2
           return goal
   setGoals (rest.toList ++ pending)
 where
@@ -76,7 +76,7 @@ where
     let type ← instantiateMVars (← post.getType)
     let facts := (← ReadBack.stepFacts).filter (· != .fvar post)
     let all ← ReadBack.lemmas (← ReadBack.opened type) facts #[
-      ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| readBack)]
+      ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| ReadBack.placedRead)]
     setGoals [goal]
     let { ctx, simprocs, .. } ← mkSimpContext (← `(tactic| simp only [$all,*])) (eraseLocal := false)
     let (result, _) ← simp type ctx simprocs
