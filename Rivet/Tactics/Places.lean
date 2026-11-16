@@ -4,9 +4,10 @@ public import Rivet.Tactics.Registers
 public meta import Lean
 -- Pointers and regions, compared without arithmetic on the hypotheses. A pointer is placed by a
 -- hypothesis `r.Has q n`. Two pointers that are one expression plus or minus literals are a literal
--- number of bytes apart, and what a place covers and whether two places meet is then evaluated. That
--- two regions are apart, and that the image grants one, are hypotheses. A hypothesis about a later state
--- is read back to the block's start, as a goal is.
+-- number of bytes apart, and what a place covers and whether two places meet is then evaluated. A
+-- region is the same: two parts of one region at literal offsets are compared by evaluation, and a part
+-- has what its region has. Otherwise that two regions are apart, and that the image grants one, are
+-- hypotheses. A hypothesis about a later state is read back to the block's start, as a goal is.
 public section
 namespace Rivet
 open Lean Meta
@@ -90,21 +91,59 @@ meta def lookup (find : Array (Expr × Expr) → MetaM (Option α)) : MetaM (Opt
   if let some found ← find known then return some found
   find (← readBack known)
 
--- `r.Apart other`: a hypothesis, either way round.
-meta def apart? (r other : Expr) : MetaM (Option Expr) := lookup fun known => do
-  for (proof, type) in known do
-    let_expr Region.Apart first second := type | continue
-    if (← same first r) && (← same second other) then return some proof
-    if (← same first other) && (← same second r) then return some (← mkAppM ``Region.Apart.symm #[proof])
+-- A region as a part of another, `r.part offset length` with literal offset and length, through
+-- `abbrev`s: the region it is part of, the two numbers, and the proof it lies inside.
+meta partial def part? (region : Expr) : MetaM (Option (Expr × Expr × Expr × Expr)) := do
+  let region := (← instantiateMVars region).headBeta
+  if region.isAppOfArity ``Region.part 4 then
+    let #[r, offset, length, inside] := region.getAppArgs | return none
+    let (some _, some _) := (← getNatValue? offset, ← getNatValue? length) | return none
+    return some (r, offset, length, inside)
+  let some name := region.getAppFn.constName? | return none
+  unless ← isReducible name do return none
+  let some unfolded ← unfoldDefinition? region | return none
+  part? unfolded
+
+-- `r.Apart other`: a hypothesis, either way round; two parts of one region whose offsets do not meet;
+-- or a part whose region is apart from the other.
+meta partial def apart? (r other : Expr) : MetaM (Option Expr) := do
+  let found ← lookup fun known => do
+    for (proof, type) in known do
+      let_expr Region.Apart first second := type | continue
+      if (← same first r) && (← same second other) then return some proof
+      if (← same first other) && (← same second r) then return some (← mkAppM ``Region.Apart.symm #[proof])
+    return none
+  if found.isSome then return found
+  let left ← part? r
+  let right ← part? other
+  if let (some (root, offset, length, inside), some (root', offset', length', inside')) := (left, right) then
+    if ← same root root' then
+      let number (e : Expr) := return (← getNatValue? e).getD 0
+      let (a, b, c, d) := (← number offset, ← number length, ← number offset', ← number length')
+      unless a + b ≤ c || c + d ≤ a do return none
+      let apart := mkOr (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[offset, length], offset'])
+        (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[offset', length'], offset])
+      return some (← mkAppOptM ``Region.part_apart #[root, offset, length, offset', length', inside, inside', ← mkDecideProof apart])
+  if let some (root, offset, length, inside) := left then
+    if let some proof ← apart? root other then
+      return some (← mkAppM ``Region.Apart.part_left #[proof, offset, length, inside])
+  if let some (root, offset, length, inside) := right then
+    if let some proof ← apart? r root then
+      return some (← mkAppM ``Region.Apart.part_right #[proof, offset, length, inside])
   return none
 
--- `image.Reads r` or `image.Writes r`: a hypothesis.
-meta def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := lookup fun known => do
+-- `image.Reads r` or `image.Writes r`: a hypothesis, or of the region `r` is a part of.
+meta partial def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
   let name := if writes then ``Image.Writes else ``Image.Reads
-  for (proof, type) in known do
-    unless type.isAppOfArity name 2 do continue
-    if (← same (type.getArg! 0) image) && (← same (type.getArg! 1) r) then return some proof
-  return none
+  let found ← lookup fun known => do
+    for (proof, type) in known do
+      unless type.isAppOfArity name 2 do continue
+      if (← same (type.getArg! 0) image) && (← same (type.getArg! 1) r) then return some proof
+    return none
+  if found.isSome then return found
+  let some (root, offset, length, inside) ← part? r | return none
+  let some proof ← grant? writes image root | return none
+  return some (← mkAppM (if writes then ``Image.Writes.part else ``Image.Reads.part) #[proof, offset, length, inside])
 
 -- `r.Has pointer size`, where `r` may be unknown: a hypothesis, or one that covers it: the pointer a
 -- literal number of bytes past its own, and the literal bytes asked for inside those it has. Returns the

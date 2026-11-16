@@ -138,6 +138,21 @@ theorem Image.Writes.part {image : Image} {r : Region} (writes : image.Writes r)
   simp only [Region.Contains] at within ⊢
   omega
 
+-- A part lies inside its region: it is apart from what the region is apart from. Two parts of one
+-- region are apart when their offsets say so.
+theorem Region.Apart.part_left {r other : Region} (apart : r.Apart other) (offset length : Nat)
+    (inside : offset + length ≤ r.length) : (r.part offset length inside).Apart other := by
+  simp only [Region.Apart] at apart ⊢; omega
+
+theorem Region.Apart.part_right {r other : Region} (apart : r.Apart other) (offset length : Nat)
+    (inside : offset + length ≤ other.length) : r.Apart (other.part offset length inside) := by
+  simp only [Region.Apart] at apart ⊢; omega
+
+theorem Region.part_apart (r : Region) {offset length offset' length' : Nat} (inside : offset + length ≤ r.length)
+    (inside' : offset' + length' ≤ r.length) (apart : offset + length ≤ offset' ∨ offset' + length' ≤ offset) :
+    (r.part offset length inside).Apart (r.part offset' length' inside') := by
+  simp only [Region.Apart]; omega
+
 theorem Image.Reads.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
     (reads : image.Reads r) (placed : r.Has pointer size) : permits image.readable pointer size = true := by
   rw [permits_iff]
@@ -215,6 +230,19 @@ def Changes.Same (c : Changes) (later earlier : Memory) : Prop :=
   ∀ (address : BitVec 64) (size : Nat), c.Misses address.toNat (address.toNat + size) →
     address.toNat + size ≤ 2^64 → readBytes later address size = readBytes earlier address size
 
+-- A range lies inside one the change lists.
+def Changes.Covers (c : Changes) (range : Nat × Nat) : Prop :=
+  ∃ listed ∈ c.memory, listed.1 ≤ range.1 ∧ range.2 ≤ listed.2
+
+theorem Changes.Covers.listed {c : Changes} {range : Nat × Nat} (member : range ∈ c.memory) : c.Covers range :=
+  ⟨range, member, Nat.le_refl _, Nat.le_refl _⟩
+
+-- A change that covers a region covers its parts.
+theorem Changes.Covers.part {c : Changes} {r : Region} (covers : c.Covers r.range) (offset length : Nat)
+    (inside : offset + length ≤ r.length) : c.Covers (r.part offset length inside).range := by
+  obtain ⟨listed, member, low, high⟩ := covers
+  exact ⟨listed, member, by simp only at low ⊢; omega, by simp only at high ⊢; omega⟩
+
 namespace Changes.Same
 
 theorem refl {c : Changes} {memory : Memory} : c.Same memory memory := fun _ _ _ _ => rfl
@@ -222,23 +250,27 @@ theorem refl {c : Changes} {memory : Memory} : c.Same memory memory := fun _ _ _
 theorem of_eq {c : Changes} {later middle earlier : Memory} (same : later = middle) (rest : c.Same middle earlier) :
     c.Same later earlier := same ▸ rest
 
--- A store placed in a region the change lists.
+-- A store placed in a region the change covers.
 theorem store {c : Changes} {memory earlier bytes : Memory} {r : Region} {pointer : BitVec 64} {size : Nat}
-    (placed : r.Has pointer size) (listed : r.range ∈ c.memory) (rest : c.Same memory earlier) :
+    (placed : r.Has pointer size) (covers : c.Covers r.range) (rest : c.Same memory earlier) :
     c.Same (memory.storeBytes pointer size bytes) earlier := by
   intro address length misses fits
-  have away : address.toNat + length ≤ r.base ∨ r.base + r.length ≤ address.toNat := misses _ listed
+  obtain ⟨listed, member, low, high⟩ := covers
+  have away : address.toNat + length ≤ r.base ∨ r.base + r.length ≤ address.toNat := by
+    have := misses _ member; simp only at low high; omega
   have := placed.start
   have := placed.finish
   rw [Memory.readBytes_storeBytes_outside _ _ (by omega) fits]
   exact rest address length misses fits
 
--- A nested block whose change is within this one.
+-- A nested block whose change this one covers.
 theorem nested {c inner : Changes} {t u : MachineState} {earlier : Memory} (kept : t.Except u inner)
-    (within : ∀ range ∈ inner.memory, range ∈ c.memory) (rest : c.Same u.memory earlier) :
+    (within : ∀ range ∈ inner.memory, c.Covers range) (rest : c.Same u.memory earlier) :
     c.Same t.memory earlier := by
   intro address size misses fits
-  rw [kept.sameMemory address size (fun range member => misses range (within range member)) fits]
+  rw [kept.sameMemory address size (fun range member => by
+    obtain ⟨listed, listedIn, low, high⟩ := within range member
+    have := misses listed listedIn; omega) fits]
   exact rest address size misses fits
 
 end Changes.Same

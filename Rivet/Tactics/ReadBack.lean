@@ -152,22 +152,29 @@ meta def readBack? (memory address size : Expr) : MetaM (Option (Expr × Expr)) 
 
 -- `c.Same memory start`: every store between the two is placed in a region the change lists, and every
 -- nested block's change is within it. Each step is a lookup in the change's list.
-meta partial def sameMemory (c memory start : Expr) : MetaM Expr := do
-  if memory == start then return ← mkAppOptM ``Changes.Same.refl #[c, memory]
+-- `c.Covers range`: the change lists the range, or covers the region it is a part of. Each step a lookup.
+meta partial def covers (c : Expr) (range : Expr) : MetaM (Option Expr) := do
   let listed ← listItems (mkApp (mkConst ``Changes.memory) c)
   let pairType ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Nat]
-  let list ← mkListLit pairType listed.toList
-  let member (range : Expr) : MetaM (Option Expr) := do
-    let some index ← listed.findIdxM? (Places.same · range) | return none
+  if let some index ← listed.findIdxM? (Places.same · range) then
     let mut proof ← mkAppOptM ``List.Mem.head
       #[pairType, listed[index]!, ← mkListLit pairType (listed.toList.drop (index + 1))]
     for before in (listed.toList.take index).reverse do
       proof ← mkAppOptM ``List.Mem.tail #[pairType, none, before, none, proof]
-    return some (← mkExpectedTypeHint proof (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.memory) c, range]))
+    let member ← mkExpectedTypeHint proof (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.memory) c, range])
+    return some (← mkAppM ``Changes.Covers.listed #[member])
+  let some r := (← instantiateMVars range).app1? ``Region.range | return none
+  let some (root, offset, length, inside) ← Places.part? r | return none
+  let some rest ← covers c (mkApp (mkConst ``Region.range) root) | return none
+  return some (← mkAppM ``Changes.Covers.part #[rest, offset, length, inside])
+
+meta partial def sameMemory (c memory start : Expr) : MetaM Expr := do
+  if memory == start then return ← mkAppOptM ``Changes.Same.refl #[c, memory]
+  let pairType ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Nat]
   if let some (earlier, base, length, bytes, fact?) ← store? memory then
     let which := m!"the store of {length} bytes{← storedBy memory}, to{indentExpr base}\n"
     let some (r, placed) ← Places.placed? base length | throwError "{which}is not placed in a region."
-    let some inside ← member (mkApp (mkConst ``Region.range) r)
+    let some inside ← covers c (mkApp (mkConst ``Region.range) r)
       | throwError "{which}is into `{r}`, which the change{indentExpr c}\ndoes not list. If the block does write it, list it."
     let rest ← sameMemory c earlier start
     let proof ← mkAppOptM ``Changes.Same.store #[c, earlier, start, bytes, r, base, length, placed, inside, rest]
@@ -180,11 +187,11 @@ meta partial def sameMemory (c memory start : Expr) : MetaM Expr := do
     let nested ← keptBy state
     if let some ((earlier, inner, kept) : Expr × Expr × Expr) := nested[0]? then
       let motive ← withLocalDeclD `range pairType fun range => do
-        mkLambdaFVars #[range] (← mkAppM ``Membership.mem #[list, range])
+        mkLambdaFVars #[range] (← mkAppM ``Changes.Covers #[c, range])
       let mut proof ← mkAppOptM ``List.forall_mem_nil #[pairType, motive]
       let mut rest ← mkListLit pairType []
       for range in (← listItems (mkApp (mkConst ``Changes.memory) inner)).reverse do
-        let some inside ← member range
+        let some inside ← covers c range
           | throwError "the nested block that ended in {← describe state} may change{indentExpr range}\nwhich the \
               change{indentExpr c}\ndoes not list."
         proof ← mkAppM ``Iff.mpr #[← mkAppOptM ``List.forall_mem_cons #[pairType, motive, range, rest],
