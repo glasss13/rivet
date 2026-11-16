@@ -120,7 +120,8 @@ stopped: at a store (named by its instruction and address) or a nested block, an
 
 `rivet_step` executes the instruction at the current state's `status = .running address` through
 its contract. It is written `rivet_step`, `rivet_step as t`, `rivet_step if h` or
-`rivet_step as t if h`.
+`rivet_step as t if h`. `rivet_step to 0x401380` steps until the block is at that address, and stops
+where a single step would.
 
 - **Facts.** The new state gets one fact per field: `status`, `registers`, `memory`,
   `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `xmmRegisters`. They are stated over the
@@ -133,9 +134,10 @@ its contract. It is written `rivet_step`, `rivet_step as t`, `rivet_step if h` o
   pointer, `n` the size as a literal, `v` the value. For `mov [rdi], rsi` from `s`:
   `m₁_def : m₁ = s.memory.storeBytes (s.registers .rdi) 8 (littleEndianAt (s.registers .rsi) (s.registers .rdi))`,
   and `t_memory : t.memory = m₁`.
-- **Branches.** A conditional jump gives two goals, `taken` and `fallthrough`. `if h` names the
-  condition `h` in both (negated in `fallthrough`); otherwise it is hidden. It is a statement
-  about words, such as `¬x - 1#64 = 0#64`, not about a flag.
+- **Branches.** A conditional jump is stepped with `if h`, and only it: a bare step there is an
+  error naming the address. It gives two goals, `taken` and `fallthrough`, with the condition `h`
+  in both (negated in `fallthrough`), a statement about words, such as `¬x - 1#64 = 0#64`, not
+  about a flag. So `iterate`, `repeat` and `rivet_step to` never cross a branch.
 - **Return.** After `ret` the status is `.running (readBytes m rsp 8)`: the 8 bytes at `rsp`
   before the return.
 - **Places.** A memory access needs its place, `r.Has pointer size`, and the permission,

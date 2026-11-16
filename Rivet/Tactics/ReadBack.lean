@@ -409,6 +409,23 @@ meta def finish (goal : MVarId) (facts : Array (Expr × Expr)) : TacticM Bool :=
       if ← attempt (← `(tactic| with_reducible apply $proof <;> with_reducible assumption)) then return true
   return false
 
+-- A status asked for at one address, where the steps say the block is at another.
+meta def elsewhere (type : Expr) : MetaM (Option MessageData) := do
+  let hex (n : Nat) := String.ofList (Nat.toDigits 16 n)
+  let some (_, status, asked) := type.eq? | return none
+  unless status.isAppOfArity ``MachineState.status 1 do return none
+  let some asked := asked.app1? ``ExecutionStatus.running | return none
+  let some asked ← Fetch.addressValue? asked | return none
+  for fact in ← stepFacts do
+    let some (_, lhs, rhs) := (← instantiateMVars (← inferType fact)).eq? | continue
+    unless lhs == status do continue
+    let some at_ := rhs.app1? ``ExecutionStatus.running | continue
+    let some at_ ← Fetch.addressValue? at_ | continue
+    unless at_ == asked do
+      return some m!" the block is at 0x{hex at_}, and this asks for 0x{hex asked}. Step to it, \
+        `rivet_step to 0x{hex asked}`, or ask for where the block is."
+  return none
+
 meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM (Option MessageData) :=
     leaf.withContext do
   if ← finish leaf facts then return none
@@ -468,6 +485,7 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
   try evalTactic step catch _ => setGoals [leaf]
   let [rest] ← getGoals | return none
   if ← finish rest facts then return none
+  if let some why ← elsewhere type then return some why
   rest.withContext do
     let shown ← instantiateMVars (← rest.getType)
     if shown.isAppOf ``Region.Has then
