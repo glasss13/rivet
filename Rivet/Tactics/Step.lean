@@ -119,7 +119,7 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
 private meta def fields : List Name :=
   [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `overflowFlag, `memory, `status]
 
-private meta def noteModule : Name := `Rivet.Step.note
+private meta def noteModule : Name := ReadBack.noteModule
 
 -- Path conditions get a name of their own, so later checkpoints know them from the user's.
 private meta def pathModule : Name := `Rivet.Step.path
@@ -128,6 +128,9 @@ private meta def markModule : Name := `Rivet.Step.mark
 
 private meta def ownName (module : Name) : CoreM Name := do
   return { extractMacroScopes (← mkFreshUserName `h) with ctx := module }.review
+
+-- The name of a fact about a state, as a step's hidden facts are named.
+meta def noteName : CoreM Name := ownName noteModule
 
 private meta def owned (module : Name) (decl : LocalDecl) : Bool :=
   !decl.isImplementationDetail && decl.userName.hasMacroScopes &&
@@ -160,14 +163,13 @@ private meta def markersOf (subject : FVarId) : MetaM (Array FVarId) := do
         (type.isAppOfArity ``StoredBy 3 && type.getArg! 0 == .fvar subject) then found := found.push decl.fvarId
   return found
 
--- A step's fact about a state: hidden for an unnamed state, `t_<field>` for a named one.
+-- A step's fact about a state: hidden for an unnamed state, `t_<field>` for a named one. A call's facts
+-- are named as a step's hidden ones.
 private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
   if decl.isImplementationDetail then return none
   let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | return none
-  unless lhs.isApp && lhs.getAppNumArgs == 1 do return none
+  let some state := ReadBack.fieldOf? lhs | return none
   let some field := lhs.getAppFn.constName? | return none
-  unless field.getPrefix == ``MachineState do return none
-  let .fvar state := lhs.appArg! | return none
   if owned noteModule decl then return some state
   unless decl.userName == (← state.getUserName).appendAfter s!"_{field.getString!}" do
     return none
@@ -187,23 +189,32 @@ private meta def notesAbout (states : Array FVarId) : MetaM (Array LocalDecl) :=
       if states.contains state then found := found.push decl
   return found
 
-private meta def introducedStates : MetaM (Array FVarId) := do
+-- The states with facts: those the steps introduced, and the ends of nested blocks, which stay, since
+-- a field their postcondition does not state is stated over them.
+private meta def notedStates : MetaM (Array FVarId × Array FVarId) := do
   let mut states := #[]
+  let mut ends := #[]
   for decl in ← getLCtx do
     if let some state ← noteState? decl then
-      unless states.contains state do states := states.push state
-  return states
+      if states.contains state || ends.contains state then continue
+      if (← ReadBack.keptBy (.fvar state)).isEmpty then states := states.push state
+      else ends := ends.push state
+  return (states, ends)
+
+private meta def introducedStates : MetaM (Array FVarId) :=
+  return (← notedStates).1
 
 private meta def restate (goal : MVarId) (states : Array FVarId) (targets : Array FVarId)
     (target : Bool := false) : TacticM (Option MVarId) := goal.withContext do
-  let facts ← notesAbout states
+  let facts ← notesAbout (states ++ (← notedStates).2)
   if facts.isEmpty || (targets.isEmpty && !target) then return some goal
   let lemmas ← facts.mapM fun decl => do
     let term ← Term.exprToSyntax (.fvar decl.fvarId)
     `(Lean.Parser.Tactic.simpLemma| $term:term)
   let stx ← `(tactic| simp only [$lemmas,*, rivet])
   let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
-  let (some (facts, goal), _) ← simpGoal goal ctx simprocs (simplifyTarget := target)
+  -- A fact may stay over the end of a nested block.
+  let (some (facts, goal), _) ← simpGoal goal (ctx.setFailIfUnchanged false) simprocs (simplifyTarget := target)
     (fvarIdsToSimp := targets) | return none
   -- A register written twice is tested twice, and the second test can never hold: drop it, and
   -- prove that for each register. Contextual simp would drop it too, but its cost doubles with
@@ -261,13 +272,13 @@ private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVar
   goal.tryClearMany dropped
 
 private meta def checkpoint : TacticM Unit := withMainContext do
-  let states ← introducedStates
-  if states.isEmpty then return
+  let (states, ends) ← notedStates
+  if states.isEmpty && ends.isEmpty then return
   let mut targets := #[]
   for decl in ← getLCtx do
     unless isFact decl || owned pathModule decl do continue
     let type ← instantiateMVars decl.type
-    if states.any (type.containsFVar ·) then targets := targets.push decl.fvarId
+    if (states ++ ends).any (type.containsFVar ·) then targets := targets.push decl.fvarId
   let some goal ← restate (← getMainGoal) states targets | replaceMainGoal []
   goal.withContext do
     for decl in ← getLCtx do
@@ -345,9 +356,9 @@ private meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Boo
   return (← attempt tactic goal).isNone
 
 private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
-  let states ← introducedStates
+  let (states, ends) ← notedStates
   let mut goal := goal
-  let rewritten := states.any ((← instantiateMVars (← goal.getType)).containsFVar ·)
+  let rewritten := (states ++ ends).any ((← instantiateMVars (← goal.getType)).containsFVar ·)
   if rewritten then
     let some next ← restate goal states #[] (target := true) | return none
     goal := next
