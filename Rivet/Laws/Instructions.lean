@@ -476,7 +476,7 @@ theorem imul (image : Image) (address : BitVec 64) (destination source : Operand
       | none => initial.readOperand width destination
       | some value => BitVec.ofInt width.bits value
     let product := sourceValue.toInt * multiplier.toInt
-    let result := BitVec.ofInt width.bits product
+    let result := sourceValue * multiplier
     Block image initial (destination.changes initial) (fun final => ∃ sign zero : Bool,
       final = { initial.writeOperand width destination result with
         status := .running (address + BitVec.ofNat 64 length)
