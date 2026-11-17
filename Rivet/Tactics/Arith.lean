@@ -1,15 +1,14 @@
 module
 public import Rivet.Tactics.ReadBack
 public meta import Lean
--- `rivet_arith (only)? [facts]`: proves an arithmetic goal about words and numbers with `lia`, within
--- a fixed budget that `maxHeartbeats` does not change. The goal and the facts it uses are read back to
--- the block's start first, registers and memory. General (`∀`) facts in scope are hidden, and with
--- `only`, every other hypothesis.
+-- `rivet_arith [facts]`: proves an arithmetic goal about words and numbers with `lia` from the listed
+-- facts alone, within a fixed budget that `maxHeartbeats` does not change. The goal and the facts are
+-- read back to the block's start first, registers and memory.
 public section
 namespace Rivet
 open Lean Meta Elab Tactic
 
-syntax (name := rivetArith) "rivet_arith" (&" only")? (" [" term,* "]")? : tactic
+syntax (name := rivetArith) "rivet_arith" (" [" term,* "]")? : tactic
 
 namespace ReadBack
 
@@ -43,18 +42,18 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
       arith stx
     setGoals others
     return
-  let only := !stx[1].isNone
-  let facts := if stx[2].isNone then #[] else stx[2][1].getSepArgs
+  let terms := if stx[1].isNone then #[] else stx[1][1].getSepArgs
   let others := (← getGoals).tail
   let mut goal ← getMainGoal
-  let unlisted ← if only then goal.withContext do
-      (← getLCtx).foldlM (init := #[]) fun unlisted decl => do
-        if decl.isImplementationDetail then return unlisted
-        return if ← isProp decl.type then unlisted.push decl.fvarId else unlisted
-    else pure #[]
+  let unlisted ← goal.withContext do
+    (← getLCtx).foldlM (init := #[]) fun unlisted decl => do
+      if decl.isImplementationDetail then return unlisted
+      return if ← isProp decl.type then unlisted.push decl.fvarId else unlisted
+  let mut listed := #[]
   let mut given := #[]
-  for term in facts do
+  for term in terms do
     let proof ← instantiateMVars (← Tactic.elabTerm term none)
+    listed := listed.push proof
     let type ← inferType proof
     -- `lia` does not instantiate a general statement, so one would be silently unused.
     if let .forallE _ domain _ _ ← whnfR type then
@@ -76,12 +75,11 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
   -- The goal and the facts it may use, read back and in the `rivet` set's form, as every value Rivet
   -- writes is.
   setGoals [goal]
-  let used ← goal.withContext do
-    let used ← if only then given.mapM (·.getDecl) else hypotheses
-    used.mapM fun decl => Term.exprToSyntax decl.toExpr
+  let used ← goal.withContext do given.mapM fun fact => Term.exprToSyntax (.fvar fact)
   evalTactic (← `(tactic| try $(← readBackTactic used (goal := true)):tactic))
   let [read] ← getGoals | close; setGoals others; return
   goal := read
+  let readType ← goal.withContext do instantiateMVars (← goal.getType)
   -- `lia` never instantiates a general fact, but `grind` still prepares each one, within the budget.
   let hidden ← goal.withContext do
     (← getLCtx).foldlM (init := #[]) fun hidden decl => do
@@ -103,13 +101,21 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
       -- `grind` reports its own timeout as an ordinary failure, so compare the work done.
       if error.isMaxHeartbeat || (← IO.getNumHeartbeats) - start ≥ arithBudget * 1000 then
         throwError "rivet_arith: no proof within its budget of {arithBudget} heartbeats; \
-          `maxHeartbeats` does not change it. Give it only the facts the goal needs: \
-          `rivet_arith only [facts]`."
-      throwError "rivet_arith: `lia` did not prove the goal from the facts in scope. Below is where it \
+          `maxHeartbeats` does not change it. List only the facts the goal needs."
+      -- What you may have meant to list: hypotheses about the goal's variables, registers and reads.
+      let unused : MessageData ← outer.withContext do
+        let atoms := (← atomsOf outerType) ++ (← atomsOf readType)
+        let related := (← facts outer).filter fun (proof, part) =>
+          !proof.hasAnyFVar (fun fact => given.contains fact || listed.any (·.containsFVar fact)) &&
+            atoms.any fun atom => (part.find? (· == atom)).isSome
+        if related.isEmpty then return m!""
+        addMessageContext m!"\n- Facts in scope about its terms, not listed: \
+          {MessageData.joinSep (related.toList.map fun (proof, _) => m!"`{proof}`") ", "}."
+      throwError "rivet_arith: `lia` did not prove the goal from the listed facts. Below is where it \
         stopped. Its assignment may or may not be a counterexample: `lia` drops what it does not read, \
-        and may stop before it has tried everything.\n\
+        and may stop before it has tried everything.{unused}\n\
         - Facts the goal does not need, such as `%` or `/` facts and large `∨`s, can keep `lia` from a \
-        proof: give it only those it needs, `rivet_arith only [facts]`.\n\
+        proof: list only those it needs.\n\
         - A term `lia` does not read, such as a mask, needs its meaning as an equation, e.g. \
         `x &&& 15#64 = x % 16#64`, proved through `toNat`.\n\
         - `lia` does not unfold definitions: unfold them, or list facts about them.\

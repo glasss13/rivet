@@ -43,7 +43,7 @@ block may change what the block keeps, if the code after it restores it.
   `q_post`.
 - `exact Block.done` ends the block at the current state. It proves `Q`, and that every store went
   into a region `c` lists, as `rivet_known` does. `Block.done proof` takes your proof of `Q`
-  instead: `Block.done ⟨by rivet_known, by rivet_arith only [bound]⟩`.
+  instead: `Block.done ⟨by rivet_known, by rivet_arith [bound]⟩`.
 - `Block.loop invariant measure holds body`: a loop whose head is `t`, as a block of its own.
 
 ```lean
@@ -74,8 +74,8 @@ theorem fill (dst : Region) (s : MachineState) (writes : image.Writes dst) (star
   rivet_step
   rivet_step if more
   · exact Block.done (Or.inl ⟨⟨by rivet_known,
-      ⟨by rivet_arith only [inv, fits, more], by rivet_arith only [inv, fits, more]⟩,
-      by rivet_arith only [inv, more]⟩, by rivet_arith only [inv]⟩)
+      ⟨by rivet_arith [inv, fits, more], by rivet_arith [inv, fits, more]⟩,
+      by rivet_arith [inv, more]⟩, by rivet_arith [inv]⟩)
   · exact Block.done (Or.inr (by rivet_known))
 ```
 
@@ -152,23 +152,19 @@ where a single step would.
 ## Arithmetic
 
 A step's facts are about words (`rdi + rax`, `rax < rdx`, `rsp - 8#64`); bounds and invariants are
-plain numbers over `x.toNat`. `rivet_arith` proves goals that mix the two, with Lean's `lia`. It is
-written `rivet_arith`, `rivet_arith [f₁, f₂]` (the hypotheses in scope and the listed facts) or
-`rivet_arith only [f₁, f₂]` (the listed facts alone). It first reads the goal and those facts
-back, registers and memory, as `rivet_known` does.
+plain numbers over `x.toNat`. `rivet_arith [f₁, f₂]` proves goals that mix the two from the listed
+facts alone, with Lean's `lia`; `rivet_arith` lists none. It first reads the goal and those facts
+back, registers and memory, as `rivet_known` does. When `lia` fails, the error names the facts in
+scope about the goal's terms that were not listed.
 
 - A fact is a statement about the goal's terms. A listed record (`inv`) is given field by field,
-  and a goal that is a record (`r.Has p n`) is proved field by field; `lia` does not look inside
-  a record in scope. A general fact (`∀ x, …`) is not used: listed, it is an error, and in scope
-  it is hidden. Give it its arguments (`lemma x`).
+  and a goal that is a record (`r.Has p n`) is proved field by field. A general fact (`∀ x, …`) is an error: give it its arguments (`lemma x`).
 - It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
   `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
   `-x - 1` and `movsxd` as a sum with an `if`, in these terms.
 - It has a fixed budget of 20000 heartbeats that `maxHeartbeats` does not change, and its work
-  does not count against the declaration. When the budget runs out, or `lia` fails on a goal you
-  believe true, give it only the facts the goal needs: `rivet_arith only [f₁, f₂, …]` hides every
-  other hypothesis. Facts the goal does not need, such as `%` or `/` facts and large `∨`s, can
-  keep `lia` from a proof it finds without them.
+  does not count against the declaration. Facts the goal does not need, such as `%` or `/` facts
+  and large `∨`s, can keep `lia` from a proof it finds without them: list only those it needs.
 - A term it does not read, such as a mask, needs its meaning as an equation, proved through
   `toNat`. Not with `bv_decide`: its proofs depend on an axiom that trusts compiled code.
 
