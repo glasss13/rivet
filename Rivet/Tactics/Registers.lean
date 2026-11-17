@@ -92,14 +92,14 @@ meta def hypotheses : MetaM (Array LocalDecl) := do
     if !(← isProp type) || type.isAppOf ``MachineState.Except || type.isAppOf `Rivet.Block then return found
     return found.push decl
 
--- What a fact says, part by part: an `abbrev`'s body, and a record's fields.
-meta partial def parts (proof type : Expr) : MetaM (Array (Expr × Expr)) := do
+-- What a fact says, part by part: an `abbrev`'s body, and a record's fields; the records named in `whole` kept whole.
+meta partial def parts (proof type : Expr) (whole : Array Name := #[]) : MetaM (Array (Expr × Expr)) := do
   let type ← whnfR (← instantiateMVars type)
   let some name := type.getAppFn.constName? | return #[(proof, type)]
-  unless isStructure (← getEnv) name do return #[(proof, type)]
+  unless isStructure (← getEnv) name && !whole.contains name do return #[(proof, type)]
   (getStructureFields (← getEnv) name).flatMapM fun field => do
     let part ← mkProjection proof field
-    parts part (← inferType part)
+    parts part (← inferType part) whole
 
 -- The `abbrev`s `e` applies to a later state, unfolded where it is read back so that what they read
 -- is read back too.

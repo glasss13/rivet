@@ -38,13 +38,26 @@ meta def store? (memory : Expr) : MetaM (Option (Expr × Expr × Expr × Expr ×
   let_expr Memory.storeBytes earlier base length bytes := stored | return none
   return some (earlier, base, length, bytes, fact?)
 
+-- What to state for a store or a nested block into `other` that `r` is not known to be apart from.
+meta def notApart (r other : Expr) : MetaM MessageData := do
+  if ← Places.within other r then
+    return m!"`{other}` is a part of `{r}`, so the two are never apart. Place the read in a part of `{r}` apart from it."
+  return m!"Nothing says the two regions are apart: state `{mkApp2 (mkConst ``Region.Apart) r other}`."
+
 -- The region `r` back through every store placed in a region apart from it and every nested block
 -- whose change lists only regions apart from it: the earliest memory that is the same on `r`, a proof
 -- `r.Same earliest memory`, and why it stopped short of a start (and whether that is a store into `r`
 -- itself). Each step is a lookup: the region the store was placed in, and that the two are apart.
-meta partial def regionBack (r memory : Expr) : MetaM (Expr × Option Expr × Option (MessageData × Bool)) := do
+-- Asked for `r.Same target memory`, it stops at `target`, or at a memory `m` with a fact `r.Same target m`.
+meta partial def regionBack (r memory : Expr) (asked : Option (Expr × Array (Expr × Expr)) := none) :
+    MetaM (Expr × Option Expr × Option (MessageData × Bool)) := do
+  if let some (target, facts) := asked then
+    if memory == target then return (memory, none, none)
+    for (proof, part) in facts do
+      let some (other, earlier, later) := part.app3? ``Region.Same | continue
+      if earlier == target && later == memory && (← Places.same other r) then return (target, some proof, none)
   let next (earlier step : Expr) : MetaM (Expr × Option Expr × Option (MessageData × Bool)) := do
-    let (final, rest?, stop?) ← regionBack r earlier
+    let (final, rest?, stop?) ← regionBack r earlier asked
     let proof ← match rest? with
       | some rest => mkAppM ``Region.Same.trans #[rest, step]
       | none => pure step
@@ -56,8 +69,7 @@ meta partial def regionBack (r memory : Expr) : MetaM (Expr × Option Expr × Op
       | return (memory, none, some (m!"stopped at {which}which no hypothesis places in a region.", false))
     if ← Places.same other r then return (memory, none, some (m!"stopped at {which}into `{r}` itself.", true))
     let some apart ← Places.apart? r other
-      | return (memory, none, some (m!"stopped at {which}into `{other}`. Nothing says the two regions are apart: \
-          state `{mkApp2 (mkConst ``Region.Apart) r other}`.", false))
+      | return (memory, none, some (m!"stopped at {which}into `{other}`. {← notApart r other}", false))
     let step ← mkAppM ``Region.Same.store #[placed, apart, bytes, ← here earlier]
     return ← next earlier (← match fact? with
       | some fact => mkAppM ``Region.Same.of_eq #[fact, step]
@@ -83,8 +95,7 @@ meta partial def regionBack (r memory : Expr) : MetaM (Expr × Option Expr × Op
           return (memory, none, some (m!"{where_}`{r}` is in its change, so only its postcondition says what `{r}` \
             holds after it. State what you need there.", false))
         let some apart ← Places.apart? r other
-          | return (memory, none, some (m!"{where_}its change lists `{other}`. Nothing says the two regions are \
-              apart: state `{mkApp2 (mkConst ``Region.Apart) r other}`.", false))
+          | return (memory, none, some (m!"{where_}its change lists `{other}`. {← notApart r other}", false))
         proof ← mkAppM ``Iff.mpr #[← mkAppOptM ``List.forall_mem_cons #[pairType, motive, range, rest],
           ← mkAppM ``And.intro #[← mkExpectedTypeHint apart (motive.beta #[range]), proof]]
         rest ← mkAppM ``List.cons #[range, rest]
@@ -213,16 +224,26 @@ meta def readBackTactic (locations : Array Term := #[]) (goal := false) : Tactic
   else `(tactic| simp only [$all,*] at $[$locations]*)
 
 -- Reads back, in place, the hypotheses that mention a later state, so they meet the goal's parts and
--- `rivet_arith` sees them as it sees the goal. Read back, they may contradict each other: that proves
--- the goal, and leaves none.
+-- `rivet_arith` sees them as it sees the goal. A record's fields are read back one by one, beside it:
+-- `simp` does not rewrite inside a record. Read back, they may contradict each other: that proves the
+-- goal, and leaves none.
 meta def known (goal : MVarId) : TacticM (Option MVarId) := goal.withContext do
   let later ← later
-  let moved ← (← hypotheses).filterMapM fun decl => do
-    if later.any ((← instantiateMVars decl.type).containsFVar ·) then some <$> Term.exprToSyntax decl.toExpr
-    else pure none
+  let mut goal := goal
+  let mut moved := #[]
+  for decl in ← hypotheses do
+    let type ← instantiateMVars decl.type
+    unless later.any (type.containsFVar ·) do continue
+    for (proof, part) in ← parts decl.toExpr type #[``Region.Has] do
+      if proof == decl.toExpr then moved := moved.push decl.fvarId; continue
+      let name := (← goal.withContext do ppExpr proof).pretty.toName
+      let (field, next) ← (← goal.assert name part proof).intro1P
+      moved := moved.push field
+      goal := next
   if moved.isEmpty then return goal
   setGoals [goal]
-  evalTactic (← `(tactic| try $(← readBackTactic moved):tactic))
+  let locations ← goal.withContext do moved.mapM fun fact => Term.exprToSyntax (.fvar fact)
+  evalTactic (← `(tactic| try $(← readBackTactic locations):tactic))
   return (← getGoals).head?
 
 meta def facts (goal : MVarId) : MetaM (Array (Expr × Expr)) := goal.withContext do
@@ -401,7 +422,7 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
   if ← finish leaf facts then return none
   -- `r.Same earlier later`: the region followed back from `later`.
   if let some (r, earlier, memory) := (← instantiateMVars (← leaf.getType)).app3? ``Region.Same then
-    let (final, proof?, stop?) ← regionBack r memory
+    let (final, proof?, stop?) ← regionBack r memory (some (earlier, facts))
     if final == earlier then
       leaf.assign (← match proof? with
         | some proof => pure proof
