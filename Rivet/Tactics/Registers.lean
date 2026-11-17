@@ -5,7 +5,7 @@ public meta import Lean
 -- What the read-back finds in scope: the steps' facts, the stores', the nested blocks' `Except`, and
 -- the states and hypotheses they make; and the read-back of registers.
 public section
-namespace Rivet
+namespace Rivet.Internal
 open Lean Meta Elab Tactic
 
 namespace ReadBack
@@ -138,4 +138,4 @@ simproc [rivet] unchangedRegister (MachineState.registers _ _) := fun e => do
 
 end ReadBack
 
-end Rivet
+end Rivet.Internal

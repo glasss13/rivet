@@ -1,7 +1,8 @@
 # Rivet API
 
-Everything a proof can use, by concept. All names are in namespace `Rivet`. Start each proof
-file with
+Everything a proof can use, by concept. All names are in namespace `Rivet`, and the instruction
+contracts in `Rivet.Contract`. `Rivet.Internal` holds what Rivet's tactics build proofs with; a proof
+never names it. Start each proof file with
 
 ```lean
 module
@@ -44,6 +45,9 @@ block may change what the block keeps, if the code after it restores it.
 - `exact Block.done` ends the block at the current state. It proves `Q`, and that every store went
   into a region `c` lists, as `rivet_known` does. `Block.done proof` takes your proof of `Q`
   instead: `Block.done ⟨by rivet_known, by rivet_arith [bound]⟩`.
+- `Block.then inner rest` runs a block you give as a term, such as a loop:
+  `refine Block.then (c₁ := c) (P := P) (Block.loop …) fun u kept post => ?_`. The proof goes on
+  from `u`, with `kept : u.Except t c` and `post : P u`; nothing is read back.
 - `Block.loop invariant measure holds body`: a loop whose head is `t`, as a block of its own.
 
 ```lean
@@ -68,7 +72,8 @@ theorem fill (dst : Region) (s : MachineState) (writes : image.Writes dst) (star
     Block image s { registers := [.rdi, .rdx], memory := [dst] } (fun t => t.status = .running 0x100b) := by
   refine Block.loop (Filling dst s) (fun t => (t.registers .rdx).toNat) start fun c kept inv => ?_
   have fits := dst.fits
-  have byte : dst.Has (c.registers .rdi) 1 := inv.left.first inv.positive   -- the place of this pass's store
+  have byte : dst.Has (c.registers .rdi) 1 :=   -- the place of this pass's store
+    inv.left.part (Nat.le_refl _) (by rivet_arith [inv])
   rivet_step
   rivet_step
   rivet_step
@@ -85,16 +90,18 @@ Rivet reads every value back to the block's start. `rivet_known` closes a goal t
 is a hypothesis or has two equal sides; `Block.done` and `rivet_call` close their goals with it.
 There are two closing tactics: `rivet_known`, which starts no arithmetic and never searches, and
 `rivet_arith` (below), which is yours. Rivet sees through an `abbrev` and a record's fields (a
-record is a `structure` in `Prop`), never a `def`. Every lookup does: a place, a permission,
-apartness, and the current address. A lookup reads your hypotheses back as it reads the goal, so a
-place stated over a named state, `buf.Has (u.registers .rdi) 8`, places what the step writes.
+record is a `structure` in `Prop`), never a `def`. Every lookup does: a place, a permission and
+apartness. Finding the instruction is the exception: the program, and an address with no variables
+in it such as the importer's `F.entry`, are evaluated. A lookup reads your hypotheses back as it
+reads the goal, so a place stated over a named state, `buf.Has (u.registers .rdi) 8`, places what
+the step writes.
 
 What is read back, each step a lookup and none of them arithmetic:
 
 - a register, through each step that did not write it and each nested block whose change does
   not list it, and through a nested block's postcondition where it says what one it lists holds;
 - a read (`readBytes m p n`; a byte is `n = 1`) that is placed, by the rule under Memory: past a
-  store or a nested block by its region. Where it stops, the error states what to prove;
+  store or a nested block by its region;
 - a goal `r.Same s.memory t.memory`: every store since `s` is placed in a region apart from `r`,
   and every nested block's change lists only such regions.
 
@@ -142,9 +149,7 @@ where a single step would.
 - **Return.** After `ret` the status is `.running (readBytes m rsp 8)`: the 8 bytes at `rsp`
   before the return.
 - **Places.** A memory access needs its place, `r.Has pointer size`, and the permission,
-  `image.Reads r` or `image.Writes r`, in scope before the step (see Memory). An access that is
-  not placed is an error at that step, which shows the `Has` to state, over the block's start; over
-  a named state is the same.
+  `image.Reads r` or `image.Writes r`, in scope before the step (see Memory).
 - **Other side conditions** (operand checks) are stated over the block's start state. `rivet_step`
   tries `rfl`, `decide` and `assumption`; one left open is your goal.
 - Your own hypotheses are never rewritten.
@@ -185,11 +190,9 @@ scope about the goal's terms that were not listed.
   `MachineState.returnAddress`: the 8 bytes at `rsp`.
 - `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
 
-One contract per instruction, each a `Block` whose change is what the instruction writes:
-`move`, `movzx`, `movsxd`, `lea`, `add`, `sub`, `sbb`, `compare`, `test`, `bitwise_and`,
-`bitwise_or`, `bitwise_xor`, `bitwise_not`, `imul`, `mul`, `tzcnt`, `shift`, `inc`, `dec`,
-`setcc`, `cmovcc`, `push`, `pop`, `call`, `return_`, `jump`, `branch`, `nop`, `movd`, `pshufd`,
-`load_xmm`, `store_xmm`. `rivet_step` applies them; read one to see exactly what an instruction does.
+One contract per instruction, each a `Block` whose change is what the instruction writes: the
+contract for `Op.x` is `Contract.x`, and for `Op.binary .y`, `Contract.y` (`Contract.mov`,
+`Contract.cmp`). `rivet_step` applies them; read one to see exactly what an instruction does.
 
 ## Memory
 
@@ -202,7 +205,7 @@ pointers lie is a goal for you. Rivet never searches.
 
 - **A place** is a hypothesis `r.Has q n`: it places `q`. A read or an access that is not placed
   stops, and the error names the `Has` to state. A place whose size is not a literal places only
-  itself: state the bytes you access, `have byte : dst.Has p 1 := left.first positive`.
+  itself: state the bytes you access, `have byte : dst.Has p 1 := left.part (Nat.le_refl _) (by …)`.
 - **Apart, and granted.** `r.Apart r'`, `image.Reads r` and `image.Writes r` are hypotheses, about
   a region or the region it is a part of (below). State them for whole regions: that the buffers
   and the stack are apart, and what the image grants each.
@@ -219,10 +222,10 @@ of the value stored. This never crosses a nested block: a change lists regions, 
 survive a call is in a region the callee does not list.
 
 Regions are the same. Two parts of one region at literal offsets, `(stack a).part 0 8` and
-`(stack a).part 8 136`, are apart when their bytes do not meet. A part has what its region has: it
-is apart from what the region is apart from, the image grants it what it grants the region, and a
-change that lists the region covers it, for a store and for a nested block whose change lists the
-part.
+`(stack a).part 8 136`, are apart when their bytes do not meet; at other offsets, that is
+`Region.part_apart`. A part has what its region has: it is apart from what the region is apart
+from, the image grants it what it grants the region, and a change that lists the region covers it,
+for a store and for a nested block whose change lists the part.
 
 The model is flat, and so is what a theorem means: `Memory` is a byte per 64-bit address, and
 `Memory.storeBytes memory base length bytes` writes the addresses whose value lies in
@@ -243,8 +246,7 @@ two (`placed.start`, `placed.finish`) and its region's `r.fits`.
 Region.fits (r : Region) : r.base + r.length ≤ 2^64
 Region.Has.start (placed : r.Has pointer size) : r.base ≤ pointer.toNat
 Region.Has.finish (placed : r.Has pointer size) : pointer.toNat + size ≤ r.base + r.length
--- a place from one you have: its first bytes, or any bytes inside it, by their bounds
-Region.Has.first (placed : r.Has pointer size) (le : less ≤ size) : r.Has pointer less
+-- a place from one you have: any bytes inside it, by their bounds
 Region.Has.part (placed : r.Has pointer size) (start : pointer.toNat ≤ inner.toNat)
   (finish : inner.toNat + less ≤ pointer.toNat + size) : r.Has inner less
 -- where a read stops at a store into its own region
@@ -262,6 +264,12 @@ Region.Same.read (same : r.Same earlier later) (placed : r.Has pointer size) :
   readBytes earlier pointer size = readBytes later pointer size
 -- a permission, from the image's list; and the same for `Writes`, `Image.writes_of_mem`
 Image.reads_of_mem (member : r ∈ image.regions) (readable : r.readable = true) : image.Reads r
+-- two parts of one region whose bytes do not meet
+Region.part_apart (r : Region) (inside : offset + length ≤ r.length) (inside' : offset' + length' ≤ r.length)
+  (apart : offset + length ≤ offset' ∨ offset' + length' ≤ offset) :
+  (r.part offset length inside).Apart (r.part offset' length' inside')
+readBytes_one (memory : Memory) (address : BitVec 64) :
+  readBytes memory address 1 = BitVec.ofNat 8 (memory address).val
 readBytes_succ (memory : Memory) (address : BitVec 64) (size : Nat) :
   readBytes memory address (size + 1) = readBytes memory (address + 1#64) size ++ BitVec.ofNat 8 (memory address).val
 ```

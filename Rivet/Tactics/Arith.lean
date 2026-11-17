@@ -5,7 +5,7 @@ public meta import Lean
 -- facts alone, within a fixed budget that `maxHeartbeats` does not change. The goal and the facts are
 -- read back to the block's start first, registers and memory.
 public section
-namespace Rivet
+namespace Rivet.Internal
 open Lean Meta Elab Tactic
 
 syntax (name := rivetArith) "rivet_arith" (" [" term,* "]")? : tactic
@@ -134,4 +134,4 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
 
 end ReadBack
 
-end Rivet
+end Rivet.Internal

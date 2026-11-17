@@ -24,7 +24,7 @@ def Changes.Misses (c : Changes) (low high : Nat) : Prop :=
 
 -- Closes a goal that, with every value read back to the block's start, is a hypothesis or has two
 -- equal sides. Rivet's own: `Block.done` and `rivet_call` use it, and it starts no arithmetic.
-syntax (name := rivetKnown) "rivet_known" : tactic
+syntax (name := Internal.rivetKnown) "rivet_known" : tactic
 
 -- `t` is `s` except for `c`. Flags, vector registers and the status are not compared.
 structure MachineState.Except (t s : MachineState) (c : Changes) : Prop where
@@ -32,10 +32,12 @@ structure MachineState.Except (t s : MachineState) (c : Changes) : Prop where
   sameMemory : ∀ (address : BitVec 64) (size : Nat), c.Misses address.toNat (address.toNat + size) →
     address.toNat + size ≤ 2^64 → readBytes t.memory address size = readBytes s.memory address size
 
-namespace MachineState.Except
+-- Laws Rivet's tactics build proofs with. Proofs never name them.
+namespace Internal
 
-theorem refl {s : MachineState} {c : Changes} : s.Except s c := ⟨fun _ _ => rfl, fun _ _ _ _ => rfl⟩
+theorem MachineState.Except.refl {s : MachineState} {c : Changes} : s.Except s c :=
+  ⟨fun _ _ => rfl, fun _ _ _ _ => rfl⟩
 
-end MachineState.Except
+end Internal
 
 end Rivet

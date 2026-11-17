@@ -7,7 +7,7 @@ public meta import Lean
 -- arithmetic: a read placed in a region passes a store or a nested block whose regions are apart from
 -- it, by the lookups in `Places`.
 public section
-namespace Rivet
+namespace Rivet.Internal
 open Lean Meta Elab Tactic
 
 namespace ReadBack
@@ -110,7 +110,7 @@ meta def atStore (read memory address size : Expr) : MetaM (Option (Expr × Expr
   if bytesStored ≤ distance && distance + bytesRead ≤ 2^64 then
     let after ← mkDecideProof (← le length (mkNatLit distance))
     let before ← mkDecideProof (← le (← sum (mkNatLit distance) size) (mkNatLit (2^64)))
-    let outside ← mkAppM ``Internal.Region.Has.apart #[read, placed, place, after, before]
+    let outside ← mkAppM ``Region.Has.apart #[read, placed, place, after, before]
     let proof ← mkAppM ``Memory.readBytes_storeBytes_outside #[earlier, bytes, outside, ← mkAppM ``Region.Has.fits #[read]]
     return some (mkApp3 (mkConst ``readBytes) earlier address size, ← renamed proof)
   unless 0 < bytesRead && distance + bytesRead ≤ bytesStored do return none
@@ -118,7 +118,7 @@ meta def atStore (read memory address size : Expr) : MetaM (Option (Expr × Expr
   unless anchor == base do return none
   let within ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit distance, length])
   let inside ← mkDecideProof (← le (← sum (mkNatLit distance) size) length)
-  let start ← mkAppM ``Internal.Region.Has.toNat_past #[placed, place, within]
+  let start ← mkAppM ``Region.Has.toNat_past #[placed, place, within]
   let proof ← mkAppM ``Region.Has.readBytes_stored #[placed, mkNatLit distance, start, inside, earlier, value]
   return some ((← inferType proof).eq?.get!.2.2, ← renamed proof)
 
@@ -140,7 +140,7 @@ meta def readBack? (memory address size : Expr) : MetaM (Option (Expr × Expr)) 
     return some (mkApp3 (mkConst ``readBytes) final address size, ← mkEqSymm (← mkAppM ``Region.Same.read #[same, placed]))
   atStore placed memory address size
 
--- `c.Covers range`: the change lists the range, or covers the region it is a part of. Each step a lookup.
+-- `Changes.Covers c range`: the change lists the range, or covers the region it is a part of. Each step a lookup.
 meta partial def covers (c : Expr) (range : Expr) : MetaM (Option Expr) := do
   let listed ← listItems (mkApp (mkConst ``Changes.memory) c)
   let pairType ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Nat]
@@ -514,4 +514,4 @@ where
 
 end ReadBack
 
-end Rivet
+end Rivet.Internal

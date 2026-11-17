@@ -80,7 +80,7 @@ theorem Block.loop {image : Image} {t : MachineState} {c : Changes} {exit : Mach
       Block image t c (fun next => invariant next ∧ measure next < measure current ∨ exit next) current) :
     Block image t c exit := by
   suffices loop : ∀ current, current.Except t c → invariant current → Block image t c exit current from
-    loop t .refl holds
+    loop t Internal.MachineState.Except.refl holds
   intro current same inv
   constructor
   intro choices

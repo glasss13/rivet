@@ -4,7 +4,8 @@ public import Rivet.Laws.Operands
 import all Rivet.Interpreter.Machine
 import all Rivet.Interpreter.Memory
 import all Rivet.Laws.Block
--- Instruction contracts: one `Block` per modeled operation, proved against `step`.
+-- Instruction contracts: one `Block` per modeled operation, proved against `step`. The contract for
+-- `Op.x` is `Contract.x`; for `Op.binary .y`, it is `Contract.y`.
 @[expose] public section
 namespace Rivet
 
@@ -66,7 +67,7 @@ private theorem write_write_except (state : MachineState) (first second : Reg) (
 private theorem store_except (state : MachineState) (base : BitVec 64) (length : Nat) (bytes : Memory) :
     ({ state with memory := state.memory.storeBytes base length bytes } : MachineState).Except state
       { memory := [(base.toNat, base.toNat + length)] } :=
-  ⟨fun _ _ => rfl, fun address size away fits => readBytes_congr (fits := fits) fun other low high => by
+  ⟨fun _ _ => rfl, fun address size away fits => Internal.readBytes_congr (fits := fits) fun other low high => by
     have := away _ List.mem_cons_self
     simp only [Memory.storeBytes]
     split <;> first | omega | rfl⟩
@@ -77,7 +78,7 @@ private theorem push_except (state : MachineState) (value : BitVec 64) :
       { registers := [.rsp], memory := [((state.registers .rsp - 8#64).toNat,
         (state.registers .rsp - 8#64).toNat + 8)] } :=
   ⟨fun other out => by simp_all [MachineState.write, MachineState.writeMemory],
-    fun address size away fits => readBytes_congr (fits := fits) fun other low high => by
+    fun address size away fits => Internal.readBytes_congr (fits := fits) fun other low high => by
     have := away _ List.mem_cons_self
     simp only [MachineState.write, MachineState.writeMemory, Memory.storeBytes, Width.bytes]
     split <;> first | omega | rfl⟩
@@ -89,7 +90,7 @@ private theorem writeOperand_except (state : MachineState) (width : Width) (dest
   cases destination with
   | reg8 register | reg16 register | reg32 register | reg64 register => exact write_except _ _ _
   | memory width address => exact store_except _ _ _ _
-  | immediate => exact .refl
+  | immediate => exact Internal.MachineState.Except.refl
 
 private theorem append_nat (a : BitVec m) (b : BitVec n) :
     (a ++ b).toNat = a.toNat * 2^n + b.toNat := by
@@ -113,7 +114,7 @@ private theorem shuffle_value (original : BitVec 128) (order : Nat) :
   have b3 := bound 3
   omega
 
-theorem movd (image : Image) (address : BitVec 64) (destination : Xmm) (source : Reg32)
+theorem Contract.movd (image : Image) (address : BitVec 64) (destination : Xmm) (source : Reg32)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -122,12 +123,12 @@ theorem movd (image : Image) (address : BitVec 64) (destination : Xmm) (source :
     Block image initial {} (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr .refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp [stepOp, next]
 
-theorem pshufd (image : Image) (address : BitVec 64) (destination source : Xmm) (order : Nat)
+theorem Contract.pshufd (image : Image) (address : BitVec 64) (destination source : Xmm) (order : Nat)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -139,14 +140,14 @@ theorem pshufd (image : Image) (address : BitVec 64) (destination source : Xmm) 
     Block image initial {} (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr .refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp only [stepOp, encoded, ite_true]
   rw [shuffle_value]
   simp [next]
 
-theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
+theorem Contract.loadXmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (destination : Xmm) (source : Address) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -157,12 +158,12 @@ theorem load_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     Block image initial {} (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr .refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp [stepOp, readable, next]
 
-theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
+theorem Contract.storeXmm (image : Image) (address : BitVec 64) (operation : XmmMove)
     (destination : Address) (source : Xmm) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -177,7 +178,7 @@ theorem store_xmm (image : Image) (address : BitVec 64) (operation : XmmMove)
   rw [one code location undefinedFlags]
   simp only [stepOp, writable, ite_true, next]
 
-theorem lea (image : Image) (address : BitVec 64) (destination : Operand) (source : Address)
+theorem Contract.lea (image : Image) (address : BitVec 64) (destination : Operand) (source : Address)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -196,7 +197,7 @@ theorem lea (image : Image) (address : BitVec 64) (destination : Operand) (sourc
   simp [stepOp, next, valid, MachineState.writeOperand,
     MachineState.writeOperand64_setWidth initial destination _ hasWidth]
 
-theorem movzx (image : Image) (address : BitVec 64) (destination : Reg32) (source : Operand)
+theorem Contract.movzx (image : Image) (address : BitVec 64) (destination : Reg32) (source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -226,7 +227,7 @@ private theorem signExtend_eq_add (value : BitVec 32) :
   simp only [BitVec.lt_def]
   split <;> split <;> simp_all <;> omega
 
-theorem movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source : Operand)
+theorem Contract.movsxd (image : Image) (address : BitVec 64) (destination : Reg) (source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -264,7 +265,7 @@ private theorem binary (operation : BinaryOp) (image : Image) (address : BitVec 
       carryFlag := operation.carry left right result initial.carryFlag,
       overflowFlag := operation.overflow left right result initial.carryFlag, signFlag := result.msb }) := by
   apply Block.of_step (by rintro _ rfl; by_cases writes : operation.writes = true <;> simp only [writes, ↓reduceIte] <;>
-    first | exact except_congr (writeOperand_except _ _ _ _) | exact except_congr .refl)
+    first | exact except_congr (writeOperand_except _ _ _ _) | exact except_congr Internal.MachineState.Except.refl)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp only [stepOp, MachineState.binary, valid, leftReadable, rightReadable, writable,
@@ -279,7 +280,7 @@ private theorem sub_beq_zero (left right : BitVec width) :
   apply Bool.eq_iff_iff.mpr
   simp [BitVec.sub_eq_iff_eq_add]
 
-theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.add (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -302,7 +303,7 @@ theorem add (image : Image) (address : BitVec 64) (destination source : Operand)
   exact binary .add image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.sub (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -325,7 +326,7 @@ theorem sub (image : Image) (address : BitVec 64) (destination source : Operand)
   exact binary .sub image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.sbb (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -349,7 +350,7 @@ theorem sbb (image : Image) (address : BitVec 64) (destination source : Operand)
   exact binary .sbb image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-theorem compare (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.cmp (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -373,7 +374,7 @@ theorem compare (image : Image) (address : BitVec 64) (destination source : Oper
     binary .cmp image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
 
-theorem test (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.test (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -394,7 +395,7 @@ theorem test (image : Image) (address : BitVec 64) (destination source : Operand
   exact binary .test image address destination source initial width location code hasWidth valid
       leftReadable rightReadable (by rfl)
 
-theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.and (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -416,7 +417,7 @@ theorem bitwise_and (image : Image) (address : BitVec 64) (destination source : 
   exact binary .and image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.or (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -438,7 +439,7 @@ theorem bitwise_or (image : Image) (address : BitVec 64) (destination source : O
   exact binary .or image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.xor (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -460,7 +461,7 @@ theorem bitwise_xor (image : Image) (address : BitVec 64) (destination source : 
   exact binary .xor image address destination source initial width location code hasWidth valid
       leftReadable rightReadable writable
 
-theorem imul (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.imul (image : Image) (address : BitVec 64) (destination source : Operand)
     (immediate : Option Int) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -499,7 +500,7 @@ private theorem toNat_beq_zero (value : BitVec w) : (value.toNat == 0) = (value 
   · intro equal; exact BitVec.eq_of_toNat_eq equal
   · intro equal; rw [equal]; rfl
 
-theorem mul (image : Image) (address : BitVec 64) (source : Reg) (initial : MachineState)
+theorem Contract.mul (image : Image) (address : BitVec 64) (source : Reg) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.mul source)) :
@@ -515,7 +516,7 @@ theorem mul (image : Image) (address : BitVec 64) (source : Reg) (initial : Mach
   rw [one code location undefinedFlags]
   simp [stepOp, next, MachineState.write]
 
-theorem tzcnt (image : Image) (address : BitVec 64) (destination source : Operand)
+theorem Contract.tzcnt (image : Image) (address : BitVec 64) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -543,7 +544,7 @@ theorem tzcnt (image : Image) (address : BitVec 64) (destination source : Operan
     MachineState.writeOperand, toNat_beq_zero]
   rfl
 
-theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
+theorem Contract.shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
     (destination : Operand) (count : Nat) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -578,7 +579,7 @@ theorem shift (image : Image) (address : BitVec 64) (operation : ShiftOp)
   cases operation <;> split <;>
     simp only [toNat_beq_zero] <;> simp_all [next, MachineState.writeOperand64_flags]
 
-theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand)
+theorem Contract.not (image : Image) (address : BitVec 64) (destination : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -599,7 +600,7 @@ theorem bitwise_not (image : Image) (address : BitVec 64) (destination : Operand
   simp [stepOp, readable, writable, next, MachineState.readOperand, MachineState.writeOperand,
     ← BitVec.setWidth_not narrow, MachineState.writeOperand64_setWidth initial destination _ hasWidth]
 
-theorem setcc (image : Image) (address : BitVec 64) (condition : Condition) (destination : Operand)
+theorem Contract.setcc (image : Image) (address : BitVec 64) (condition : Condition) (destination : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -617,7 +618,7 @@ theorem setcc (image : Image) (address : BitVec 64) (condition : Condition) (des
     MachineState.writeOperand64_setWidth initial destination _ valid]
   simp [next]
 
-theorem cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (destination source : Operand)
+theorem Contract.cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (destination source : Operand)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
@@ -640,7 +641,7 @@ theorem cmovcc (image : Image) (address : BitVec 64) (condition : Condition) (de
     MachineState.writeOperand64_setWidth initial destination _ hasWidth]
   simp [next]
 
-theorem inc (image : Image) (address : BitVec 64) (destination : Operand) (initial : MachineState)
+theorem Contract.inc (image : Image) (address : BitVec 64) (destination : Operand) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.inc destination))
@@ -664,7 +665,7 @@ theorem inc (image : Image) (address : BitVec 64) (destination : Operand) (initi
     MachineState.writeOperand, toNat_beq_zero]
   rfl
 
-theorem dec (image : Image) (address : BitVec 64) (destination : Operand) (initial : MachineState)
+theorem Contract.dec (image : Image) (address : BitVec 64) (destination : Operand) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.dec destination))
@@ -688,41 +689,41 @@ theorem dec (image : Image) (address : BitVec 64) (destination : Operand) (initi
     MachineState.writeOperand, toNat_beq_zero]
   rfl
 
-theorem nop (image : Image) (address : BitVec 64) (initial : MachineState)
+theorem Contract.nop (image : Image) (address : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length .nop) :
     Block image initial {} (· = { initial with
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr .refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp [stepOp, next]
 
-theorem jump (image : Image) (address target : BitVec 64) (initial : MachineState)
+theorem Contract.jmp (image : Image) (address target : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.jmp target)) :
     Block image initial {} (· = { initial with status := .running target }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr .refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   rfl
 
-theorem branch (image : Image) (address : BitVec 64) (condition : Condition) (target : BitVec 64)
+theorem Contract.jcc (image : Image) (address : BitVec 64) (condition : Condition) (target : BitVec 64)
     (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.jcc condition target)) :
     Block image initial {} (· = { initial with
       status := .running (if condition.holds initial then target else (address + BitVec.ofNat 64 length)) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr .refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp only [stepOp, next]
   split <;> rfl
 
-theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : MachineState)
+theorem Contract.push (image : Image) (address : BitVec 64) (source : Reg) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.push source))
@@ -737,7 +738,7 @@ theorem push (image : Image) (address : BitVec 64) (source : Reg) (initial : Mac
   simp only [stepOp, writable, ite_true]
   simp [next, MachineState.write, MachineState.writeMemory]
 
-theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial : MachineState)
+theorem Contract.pop (image : Image) (address : BitVec 64) (destination : Reg) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.pop destination))
@@ -751,7 +752,7 @@ theorem pop (image : Image) (address : BitVec 64) (destination : Reg) (initial :
   rw [one code location undefinedFlags]
   simp [stepOp, readable, next, MachineState.write]
 
-theorem call (image : Image) (address target : BitVec 64) (initial : MachineState)
+theorem Contract.call (image : Image) (address target : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.call target))
@@ -767,7 +768,7 @@ theorem call (image : Image) (address target : BitVec 64) (initial : MachineStat
   simp only [stepOp]
   rw [ite_eq_left writable]
 
-theorem return_ (image : Image) (address : BitVec 64) (initial : MachineState)
+theorem Contract.ret (image : Image) (address : BitVec 64) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length .ret)
@@ -778,7 +779,7 @@ theorem return_ (image : Image) (address : BitVec 64) (initial : MachineState)
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp_all [MachineState.write, stepOp]
-theorem move (image : Image) (address : BitVec 64) (destination source : Operand) (initial : MachineState)
+theorem Contract.mov (image : Image) (address : BitVec 64) (destination source : Operand) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.mov destination source))
