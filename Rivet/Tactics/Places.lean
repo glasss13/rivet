@@ -103,6 +103,11 @@ meta partial def part? (region : Expr) : MetaM (Option (Expr × Expr × Expr × 
   let some unfolded ← unfoldDefinition? region | return none
   part? unfolded
 
+-- Whether `inner` is a part of `r`, or a part of a part.
+meta partial def within (inner r : Expr) : MetaM Bool := do
+  let some (root, _) ← part? inner | return false
+  return (← same root r) || (← within root r)
+
 -- `r.Apart other`: a hypothesis, either way round; two parts of one region at literal offsets that do
 -- not meet; or a part whose region is apart from the other.
 meta partial def apart? (r other : Expr) : MetaM (Option Expr) := do

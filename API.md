@@ -102,8 +102,9 @@ What is read back, each step a lookup and none of them arithmetic:
   not list it, and through a nested block's postcondition where it says what one it lists holds;
 - a read (`readBytes m p n`; a byte is `n = 1`) that is placed, by the rule under Memory: past a
   store or a nested block by its region;
-- a goal `r.Same s.memory t.memory`: every store since `s` is placed in a region apart from `r`,
-  and every nested block's change lists only such regions.
+- a goal `r.Same m t.memory`: back from `t` to `m`, every store is placed in a region apart from
+  `r`, and every nested block's change lists only such regions; a hypothesis `r.Same m m'` ends
+  the walk at `m'`.
 
 A fact over many addresses (a `∀`) is carried by a lemma you prove once for its predicate, from
 `r.Same`:
