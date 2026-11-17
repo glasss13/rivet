@@ -129,7 +129,7 @@ stopped: at a store (named by its instruction and address) or a nested block, an
 `rivet_step` executes the instruction at the current state's `status = .running address` through
 its contract. It is written `rivet_step`, `rivet_step as t`, `rivet_step if h` or
 `rivet_step as t if h`. `rivet_step to 0x401380` steps until the block is at that address, and stops
-where a single step would.
+where a single step would; `rivet_step to 0x401380 as t` names the state it ends in.
 
 - **Facts.** The new state gets one fact per field: `status`, `registers`, `memory`,
   `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `xmmRegisters`. They are stated over the

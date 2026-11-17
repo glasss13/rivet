@@ -55,6 +55,19 @@ meta def findPc? (state : Expr) : MetaM (Option (Expr × Nat × Expr)) := do
       if let some pc ← Fetch.addressValue? address then return (address, pc, proof)
   return none
 
+-- Why the block's address is not known: no status, or one that is not a literal, as after `ret`.
+meta def noAddress (tactic : String) (state : Expr) : MetaM MessageData := do
+  for decl in ← getLCtx do
+    if decl.isImplementationDetail then continue
+    for (_, part) in ← ReadBack.parts decl.toExpr decl.type do
+      let some (_, lhs, rhs) := part.eq? | continue
+      unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
+      let some address := rhs.app1? ``ExecutionStatus.running | continue
+      return m!"{tactic}: `{state}` is at{indentExpr address}\nwhich is not a literal address. After `ret` it is \
+        the return address read from the stack: say where that is, \
+        `have : {state}.status = .running <address> := by rivet_known`."
+  return m!"{tactic}: no hypothesis `{state}.status = .running <address>`"
+
 private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := do
   let args := operation.getAppArgs
   let some ctor := operation.getAppFn.constName?
@@ -334,7 +347,7 @@ private meta def place (pc : Nat) (tag : Name) (goal : MVarId) (writes : Bool) (
       | throwError "rivet_step: unexpected side condition `{tag}` of {at_}"
     let some (region, proof) ← Places.has? r address length
       | throwError "rivet_step: the access `{tag}` of {at_} is not placed. State its place before this step, \
-          from one you have (`placed.first`, `placed.part`) or from its two bounds:\
+          from one you have (`placed.part`) or from its two bounds:\
           {indentExpr (mkApp3 (mkConst ``Region.Has) (mkConst `r) address length)}\nfor the region `r` it lies in. \
           {← Places.named}"
     unless ← isDefEq r region do throwError "rivet_step: unexpected side condition `{tag}` of {at_}"
@@ -373,8 +386,7 @@ open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
   let (image, old) ← goalParts (← getMainGoal)
   let program := mkApp (mkConst ``Image.program) image
-  let some (written, pc, location) ← findPc? old
-    | throwError "rivet_step: no hypothesis `{old}.status = .running <address>`"
+  let some (written, pc, location) ← findPc? old | throwError (← noAddress "rivet_step" old)
   reporting m!"rivet_step, at the instruction at 0x{Fetch.hex pc}" do
   -- An address given by a definition is passed as its value, so the next address is a literal too.
   let (address, location) ← if (← getBitVecValue? written).isSome then pure (written, location) else do
@@ -471,7 +483,7 @@ open Step in
     -- The status fact already tests the flags, spelled by the `rivet` set; spell the path
     -- condition the same way to match it.
     evalTactic (← `(tactic| by_cases $path : Condition.holds $condition $oldStx = true <;>
-      simp only [rivet] at $path:ident <;>
+      simp only [rivet, Classical.not_not] at $path:ident <;>
       simp only [$path:ident, rivet] at $status:ident))
   -- 5. In each goal: state the new state over the block's start, drop the old one, then give the new
   --    state and its facts their final names (yours, or inaccessible).
@@ -500,21 +512,29 @@ open Step in
     finished := finished.push goal
   setGoals (finished.toList ++ unsolved.toList ++ pending)
 
-syntax (name := rivetStepTo) "rivet_step" &" to " term : tactic
+syntax (name := rivetStepTo) "rivet_step" &" to " term (" as " ident)? : tactic
 
--- Steps until the block is at the address. A conditional jump on the way stops it, as a bare step does.
+-- Steps until the block is at the address, the last step naming its state when asked. A conditional
+-- jump on the way stops it, as a bare step does.
 open Step in
 @[tactic rivetStepTo] meta def Step.evalRivetStepTo : Tactic := fun stx => withMainContext do
   let some target ← Fetch.addressValue? (← Term.elabTermAndSynthesize stx[2] (mkApp (mkConst ``BitVec) (mkNatLit 64)))
     | throwError "rivet_step to: `{stx[2]}` is not an address"
+  let named? : Option Ident := if stx[3].getNumArgs > 0 then some ⟨stx[3][1]⟩ else none
+  let pcOf : TacticM Nat := withMainContext do
+    let (_, state) ← goalParts (← getMainGoal)
+    let some (_, pc, _) ← findPc? state | throwError (← noAddress "rivet_step to" state)
+    return pc
+  if (← pcOf) == target && named?.isSome then
+    throwError "rivet_step to: the block is already at 0x{Fetch.hex target}, so no step is named"
   repeat
-    let pc ← withMainContext do
-      let (_, state) ← goalParts (← getMainGoal)
-      let some (_, pc, _) ← findPc? state
-        | throwError "rivet_step to: no hypothesis `{state}.status = .running <address>`"
-      return pc
-    if pc == target then return
+    if (← pcOf) == target then return
+    let saved ← saveState
     evalTactic (← `(tactic| rivet_step))
+    if let some name := named? then
+      if (← pcOf) == target then
+        saved.restore
+        evalTactic (← `(tactic| rivet_step as $name))
 
 end Rivet.Internal
 end

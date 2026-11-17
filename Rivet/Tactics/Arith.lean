@@ -103,11 +103,17 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
       if error.isMaxRecDepth then throw error
       -- `grind` reports its own timeout as an ordinary failure, so compare the work done.
       if error.isMaxHeartbeat || (← IO.getNumHeartbeats) - start ≥ arithBudget * 1000 then
+        -- A product of two terms with variables, in the goal or a listed fact.
+        let product ← goal.withContext do
+          let types := (← getLCtx).foldl (init := #[readType]) fun types decl =>
+            if decl.isImplementationDetail then types else types.push decl.type
+          types.anyM fun type => return ((← instantiateMVars type).find? fun e =>
+            e.isAppOfArity ``HMul.hMul 6 && (e.getArg! 4).hasFVar && (e.getArg! 5).hasFVar).isSome
+        let hint := if product then m!"\n- A product of two variables can make `lia`'s proof too costly to check: \
+          name it first, `generalize x * y = p at *`." else m!""
         throwError "rivet_arith: no proof within its budget of {arithBudget} heartbeats; \
           `maxHeartbeats` does not change it.\n\
-          - List only the facts the goal needs.\n\
-          - A product of two registers can make `lia`'s proof too costly to check: name it first, \
-          `generalize x * y = p at *`."
+          - List only the facts the goal needs.{hint}"
       -- What you may have meant to list: hypotheses about the goal's variables, registers and reads.
       let unused : MessageData ← outer.withContext do
         let atoms := (← atomsOf outerType) ++ (← atomsOf readType)
