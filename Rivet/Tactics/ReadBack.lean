@@ -481,12 +481,13 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
     let shown ← instantiateMVars (← rest.getType)
     if shown.isAppOf ``Region.Has then
       return some (← addMessageContext m!"{indentExpr shown}\nis not placed: no hypothesis `r.Has q n` has its pointer. \
-        Prove the place, from one you have (`placed.first`, `placed.part`) or from its two bounds, and give it.")
+        Prove the place, from one you have (`placed.part`) or from its two bounds, and give it.")
     let reason ← stops shown
     unless (← reason.format).isEmpty do
       return some (← addMessageContext m!"{indentExpr shown}\nA read in it stopped short of the block's start.{reason}")
     if (← later).any (shown.containsFVar ·) then
-      if let some name := shown.getAppFn.constName? then
+      let env ← getEnv
+      if let some name := shown.getAppFn.constName?.filter fun name => (env.find? name).any (·.isDefinition) then
         let earlier := (← facts.findM? fun (_, part) => return part.getAppFn == shown.getAppFn).map (·.1)
         let given := match earlier with
           | some proof => m!"`{proof}.carry (by rivet_known)`"
