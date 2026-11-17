@@ -96,8 +96,6 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
       initHeartbeats := start
       maxHeartbeats := arithBudget * 1000
       options := Elab.async.set (maxHeartbeats.set context.options arithBudget) false })
-    -- `+ac`: `lia` alone does not equate two sums that differ only in order, and a word subtraction
-    -- beside a shift makes them: `(x + y / 4 + (100 - x)) % 100 ≤ 3` from `y < 16` and `x < 50`.
     (do evalTactic (← `(tactic| lia +ac)); close)
   try
     tryCatchRuntimeEx attempt fun error => do
