@@ -173,12 +173,16 @@ scope about the goal's terms that were not listed.
   and large `∨`s, can keep `lia` from a proof it finds without them: list only those it needs.
   Checking its proof is within the budget; a product of two registers can make that too costly:
   name it first, `generalize x * y = p at *`.
-- A term it does not read, such as a mask, needs its meaning as an equation, proved through
-  `toNat`. Not with `bv_decide`: its proofs depend on an axiom that trusts compiled code.
+- A term it does not read, such as a mask or a signed value, needs a law: its meaning in terms it
+  reads, proved once and tagged `@[rivet]`. Rivet then applies it wherever it writes a value, so
+  `rivet_arith` reads the term everywhere; state your own facts in the law's form too. Prove a law
+  through `toNat`, not with `bv_decide`: its proofs depend on an axiom that trusts compiled code.
+  Lean has the signed laws already.
 
   ```lean
-  have : x &&& 15#64 = x % 16#64 := by
+  @[rivet] theorem and_fifteen (x : BitVec 64) : x &&& 15#64 = x % 16#64 := by
     apply BitVec.eq_of_toNat_eq; simpa using Nat.and_two_pow_sub_one_eq_mod x.toNat 4
+  attribute [rivet] BitVec.toInt_eq_toNat_cond BitVec.msb_eq_decide BitVec.toNat_signExtend
   ```
 
 - Do not use `bv_omega`: it rewrites every fact about words in scope, can run for minutes, and

@@ -96,7 +96,7 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
       initHeartbeats := start
       maxHeartbeats := arithBudget * 1000
       options := Elab.async.set (maxHeartbeats.set context.options arithBudget) false })
-    (do evalTactic (← `(tactic| lia)); close)
+    (do evalTactic (← `(tactic| lia +ac)); close)
   try
     tryCatchRuntimeEx attempt fun error => do
       -- Its budget is its own; Lean's recursion limit is not, and stops the tactic.
@@ -128,8 +128,8 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
         and may stop before it has tried everything.{unused}\n\
         - Facts the goal does not need, such as `%` or `/` facts and large `∨`s, can keep `lia` from a \
         proof: list only those it needs.\n\
-        - A term `lia` does not read, such as a mask, needs its meaning as an equation, e.g. \
-        `x &&& 15#64 = x % 16#64`, proved through `toNat`.\n\
+        - A term `lia` does not read, such as a mask, needs a law: its meaning, e.g. \
+        `x &&& 15#64 = x % 16#64`, proved once and tagged `@[rivet]`.\n\
         - `lia` does not unfold definitions: unfold them, or list facts about them.\
         {indentD (withoutRestatements error.toMessageData)}"
   finally
