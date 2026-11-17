@@ -34,25 +34,12 @@ def Image.Reads (image : Image) (r : Region) : Prop := ∀ address, r.Contains a
 
 def Image.Writes (image : Image) (r : Region) : Prop := ∀ address, r.Contains address → image.writable address = true
 
-theorem Region.Apart.symm {first second : Region} (apart : first.Apart second) : second.Apart first :=
-  Or.symm apart
-
-theorem Region.Has.first {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size)
-    {less : Nat} (le : less ≤ size) : r.Has pointer less :=
-  ⟨placed.start, by have := placed.finish; omega⟩
-
 theorem Region.Has.part {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size)
     {inner : BitVec 64} {less : Nat} (start : pointer.toNat ≤ inner.toNat)
     (finish : inner.toNat + less ≤ pointer.toNat + size) : r.Has inner less :=
   ⟨by have := placed.start; omega, by have := placed.finish; omega⟩
 
-theorem Region.Has.fits {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size) :
-    pointer.toNat + size ≤ 2^64 := by
-  have := r.fits
-  have := placed.finish
-  omega
-
--- A permission, from the image's own list and for a part of a region that has it.
+-- A permission, from the image's own list.
 theorem Image.reads_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) (readable : r.readable = true) :
     image.Reads r := by
   intro address inside
@@ -65,6 +52,44 @@ theorem Image.writes_of_mem {image : Image} {r : Region} (member : r ∈ image.r
   simp only [Image.writable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
   exact ⟨r, member, writable, inside⟩
 
+-- Two parts of one region are apart when their offsets say so.
+theorem Region.part_apart (r : Region) {offset length offset' length' : Nat} (inside : offset + length ≤ r.length)
+    (inside' : offset' + length' ≤ r.length) (apart : offset + length ≤ offset' ∨ offset' + length' ≤ offset) :
+    (r.part offset length inside).Apart (r.part offset' length' inside') := by
+  simp only [Region.Apart]; omega
+
+-- A read placed in the region is the same in both.
+theorem Region.Same.read {r : Region} {earlier later : Memory} (same : r.Same earlier later) {pointer : BitVec 64} {size : Nat}
+    (placed : r.Has pointer size) : readBytes earlier pointer size = readBytes later pointer size := by
+  have := r.fits
+  have := placed.start
+  have := placed.finish
+  exact Internal.readBytes_congr (fun other low high => same other ⟨by omega, by omega⟩) (by omega)
+
+-- A read inside a store reads those bytes of the value stored.
+theorem Region.Has.readBytes_stored {r : Region} {pointer stored : BitVec 64} {size length : Nat}
+    (placed : r.Has stored length) (offset : Nat) (start : pointer.toNat = stored.toNat + offset)
+    (inside : offset + size ≤ length) (memory : Memory) (value : BitVec n) :
+    readBytes (memory.storeBytes stored length (littleEndianAt value stored)) pointer size =
+      value.extractLsb' (8 * offset) (8 * size) := by
+  have := r.fits
+  have := placed.finish
+  rw [Internal.Memory.readBytes_storeBytes_inside _ _ (by omega) (by omega) (by omega),
+    Internal.readBytes_littleEndianAt value offset start (by omega)]
+
+-- Laws Rivet's tactics build proofs with. Proofs never name them.
+namespace Internal
+
+theorem Region.Apart.symm {first second : Region} (apart : first.Apart second) : second.Apart first :=
+  Or.symm apart
+
+theorem Region.Has.fits {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size) :
+    pointer.toNat + size ≤ 2^64 := by
+  have := r.fits
+  have := placed.finish
+  omega
+
+-- A permission for a part of a region that has it.
 theorem Image.Reads.part {image : Image} {r : Region} (reads : image.Reads r) (offset length : Nat)
     (inside : offset + length ≤ r.length) : image.Reads (r.part offset length inside) := by
   intro address within
@@ -79,8 +104,7 @@ theorem Image.Writes.part {image : Image} {r : Region} (writes : image.Writes r)
   simp only [Region.Contains] at within ⊢
   omega
 
--- A part lies inside its region: it is apart from what the region is apart from. Two parts of one
--- region are apart when their offsets say so.
+-- A part lies inside its region: it is apart from what the region is apart from.
 theorem Region.Apart.part_left {r other : Region} (apart : r.Apart other) (offset length : Nat)
     (inside : offset + length ≤ r.length) : (r.part offset length inside).Apart other := by
   simp only [Region.Apart] at apart ⊢; omega
@@ -88,11 +112,6 @@ theorem Region.Apart.part_left {r other : Region} (apart : r.Apart other) (offse
 theorem Region.Apart.part_right {r other : Region} (apart : r.Apart other) (offset length : Nat)
     (inside : offset + length ≤ other.length) : r.Apart (other.part offset length inside) := by
   simp only [Region.Apart] at apart ⊢; omega
-
-theorem Region.part_apart (r : Region) {offset length offset' length' : Nat} (inside : offset + length ≤ r.length)
-    (inside' : offset' + length' ≤ r.length) (apart : offset + length ≤ offset' ∨ offset' + length' ≤ offset) :
-    (r.part offset length inside).Apart (r.part offset' length' inside') := by
-  simp only [Region.Apart]; omega
 
 theorem Image.Reads.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
     (reads : image.Reads r) (placed : r.Has pointer size) : permits image.readable pointer size = true := by
@@ -117,16 +136,8 @@ theorem refl {r : Region} {memory : Memory} : r.Same memory memory := fun _ _ =>
 theorem trans {r : Region} {first second third : Memory} (one : r.Same first second) (two : r.Same second third) :
     r.Same first third := fun address inside => (one address inside).trans (two address inside)
 
-theorem of_eq {r : Region} {earlier middle later : Memory} (same : later = middle) (rest : r.Same earlier middle) :
-    r.Same earlier later := same ▸ rest
-
--- A read placed in the region is the same in both.
-theorem read {r : Region} {earlier later : Memory} (same : r.Same earlier later) {pointer : BitVec 64} {size : Nat}
-    (placed : r.Has pointer size) : readBytes earlier pointer size = readBytes later pointer size := by
-  have := r.fits
-  have := placed.start
-  have := placed.finish
-  exact readBytes_congr (fun other low high => same other ⟨by omega, by omega⟩) (by omega)
+theorem of_eq {r : Region} {earlier middle later : Memory} (same : later = middle)
+    (rest : r.Same earlier middle) : r.Same earlier later := same ▸ rest
 
 -- A store placed in a region apart from this one.
 theorem store {r other : Region} {earlier memory : Memory} {pointer : BitVec 64} {size : Nat}
@@ -142,17 +153,6 @@ theorem store {r other : Region} {earlier memory : Memory} {pointer : BitVec 64}
   exact rest address inside
 
 end Region.Same
-
--- A read inside a store reads those bytes of the value stored.
-theorem Region.Has.readBytes_stored {r : Region} {pointer stored : BitVec 64} {size length : Nat}
-    (placed : r.Has stored length) (offset : Nat) (start : pointer.toNat = stored.toNat + offset)
-    (inside : offset + size ≤ length) (memory : Memory) (value : BitVec n) :
-    readBytes (memory.storeBytes stored length (littleEndianAt value stored)) pointer size =
-      value.extractLsb' (8 * offset) (8 * size) := by
-  have := r.fits
-  have := placed.finish
-  rw [Memory.readBytes_storeBytes_inside _ _ (by omega) (by omega) (by omega),
-    readBytes_littleEndianAt value offset start (by omega)]
 
 -- A block leaves alone every byte of a region its change misses.
 theorem MachineState.Except.same {t s : MachineState} {c : Changes} (kept : t.Except s c) {r : Region}
@@ -175,26 +175,26 @@ def Changes.Same (c : Changes) (later earlier : Memory) : Prop :=
 def Changes.Covers (c : Changes) (range : Nat × Nat) : Prop :=
   ∃ listed ∈ c.memory, listed.1 ≤ range.1 ∧ range.2 ≤ listed.2
 
-theorem Changes.Covers.listed {c : Changes} {range : Nat × Nat} (member : range ∈ c.memory) : c.Covers range :=
+theorem Changes.Covers.listed {c : Changes} {range : Nat × Nat} (member : range ∈ c.memory) : Changes.Covers c range :=
   ⟨range, member, Nat.le_refl _, Nat.le_refl _⟩
 
 -- A change that covers a region covers its parts.
-theorem Changes.Covers.part {c : Changes} {r : Region} (covers : c.Covers r.range) (offset length : Nat)
-    (inside : offset + length ≤ r.length) : c.Covers (r.part offset length inside).range := by
+theorem Changes.Covers.part {c : Changes} {r : Region} (covers : Changes.Covers c r.range) (offset length : Nat)
+    (inside : offset + length ≤ r.length) : Changes.Covers c (r.part offset length inside).range := by
   obtain ⟨listed, member, low, high⟩ := covers
   exact ⟨listed, member, by simp only at low ⊢; omega, by simp only at high ⊢; omega⟩
 
 namespace Changes.Same
 
-theorem refl {c : Changes} {memory : Memory} : c.Same memory memory := fun _ _ _ _ => rfl
+theorem refl {c : Changes} {memory : Memory} : Changes.Same c memory memory := fun _ _ _ _ => rfl
 
-theorem of_eq {c : Changes} {later middle earlier : Memory} (same : later = middle) (rest : c.Same middle earlier) :
-    c.Same later earlier := same ▸ rest
+theorem of_eq {c : Changes} {later middle earlier : Memory} (same : later = middle) (rest : Changes.Same c middle earlier) :
+    Changes.Same c later earlier := same ▸ rest
 
 -- A store placed in a region the change covers.
 theorem store {c : Changes} {memory earlier bytes : Memory} {r : Region} {pointer : BitVec 64} {size : Nat}
-    (placed : r.Has pointer size) (covers : c.Covers r.range) (rest : c.Same memory earlier) :
-    c.Same (memory.storeBytes pointer size bytes) earlier := by
+    (placed : r.Has pointer size) (covers : Changes.Covers c r.range) (rest : Changes.Same c memory earlier) :
+    Changes.Same c (memory.storeBytes pointer size bytes) earlier := by
   intro address length misses fits
   obtain ⟨listed, member, low, high⟩ := covers
   have away : address.toNat + length ≤ r.base ∨ r.base + r.length ≤ address.toNat := by
@@ -206,8 +206,8 @@ theorem store {c : Changes} {memory earlier bytes : Memory} {r : Region} {pointe
 
 -- A nested block whose change this one covers.
 theorem nested {c inner : Changes} {t u : MachineState} {earlier : Memory} (kept : t.Except u inner)
-    (within : ∀ range ∈ inner.memory, c.Covers range) (rest : c.Same u.memory earlier) :
-    c.Same t.memory earlier := by
+    (within : ∀ range ∈ inner.memory, Changes.Covers c range) (rest : Changes.Same c u.memory earlier) :
+    Changes.Same c t.memory earlier := by
   intro address size misses fits
   rw [kept.sameMemory address size (fun range member => by
     obtain ⟨listed, listedIn, low, high⟩ := within range member
@@ -215,9 +215,6 @@ theorem nested {c inner : Changes} {t u : MachineState} {earlier : Memory} (kept
   exact rest address size misses fits
 
 end Changes.Same
-
--- Laws Rivet's tactics build proofs with. Proofs never name them.
-namespace Internal
 
 -- A pointer as an expression plus a literal number of bytes, as words: `rsp - 8#64` is `rsp` plus
 -- `2^64 - 8`. Two pointers off one expression are then a literal number of bytes apart.
@@ -274,8 +271,8 @@ theorem Region.Has.apart {r other : Region} {pointer stored : BitVec 64} {size l
     (place : pointer = stored + BitVec.ofNat 64 distance) (after : length ≤ distance) (before : distance + size ≤ 2^64) :
     pointer.toNat + size ≤ stored.toNat ∨ stored.toNat + length ≤ pointer.toNat := by
   subst place
-  have := read.fits
-  have := store.fits
+  have := Region.Has.fits read
+  have := Region.Has.fits store
   bv_omega
 
 end Internal

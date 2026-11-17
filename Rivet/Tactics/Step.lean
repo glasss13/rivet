@@ -6,9 +6,8 @@ public import Rivet.Tactics.Places
 -- `rivet_step`: executes one instruction of a `Block` goal through its contract.
 public meta import Lean
 
--- The tactic implementation is public but not exposed; its helpers are private.
 public section
-namespace Rivet
+namespace Rivet.Internal
 open Lean Meta Elab Tactic
 
 -- Lean's recursion and heartbeat limits stop a tactic wherever they are reached, and nothing in
@@ -61,24 +60,24 @@ private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := 
   let some ctor := operation.getAppFn.constName?
     | throwError "rivet_step: unrecognized operation {operation}"
   let name ← match ctor with
-    | ``Op.nop => pure ``Rivet.nop | ``Op.movd => pure ``Rivet.movd
-    | ``Op.pshufd => pure ``Rivet.pshufd | ``Op.loadXmm => pure ``Rivet.load_xmm
-    | ``Op.storeXmm => pure ``Rivet.store_xmm | ``Op.lea => pure ``Rivet.lea
-    | ``Op.movzx => pure ``Rivet.movzx | ``Op.movsxd => pure ``Rivet.movsxd
-    | ``Op.mov => pure ``Rivet.move | ``Op.shift => pure ``Rivet.shift
-    | ``Op.imul => pure ``Rivet.imul | ``Op.not => pure ``Rivet.bitwise_not
-    | ``Op.mul => pure ``Rivet.mul | ``Op.tzcnt => pure ``Rivet.tzcnt
-    | ``Op.inc => pure ``Rivet.inc | ``Op.dec => pure ``Rivet.dec
-    | ``Op.jmp => pure ``Rivet.jump | ``Op.jcc => pure ``Rivet.branch
-    | ``Op.setcc => pure ``Rivet.setcc | ``Op.cmovcc => pure ``Rivet.cmovcc
-    | ``Op.push => pure ``Rivet.push | ``Op.pop => pure ``Rivet.pop
-    | ``Op.call => pure ``Rivet.call | ``Op.ret => pure ``Rivet.return_
+    | ``Op.nop => pure ``Rivet.Contract.nop | ``Op.movd => pure ``Rivet.Contract.movd
+    | ``Op.pshufd => pure ``Rivet.Contract.pshufd | ``Op.loadXmm => pure ``Rivet.Contract.loadXmm
+    | ``Op.storeXmm => pure ``Rivet.Contract.storeXmm | ``Op.lea => pure ``Rivet.Contract.lea
+    | ``Op.movzx => pure ``Rivet.Contract.movzx | ``Op.movsxd => pure ``Rivet.Contract.movsxd
+    | ``Op.mov => pure ``Rivet.Contract.mov | ``Op.shift => pure ``Rivet.Contract.shift
+    | ``Op.imul => pure ``Rivet.Contract.imul | ``Op.not => pure ``Rivet.Contract.not
+    | ``Op.mul => pure ``Rivet.Contract.mul | ``Op.tzcnt => pure ``Rivet.Contract.tzcnt
+    | ``Op.inc => pure ``Rivet.Contract.inc | ``Op.dec => pure ``Rivet.Contract.dec
+    | ``Op.jmp => pure ``Rivet.Contract.jmp | ``Op.jcc => pure ``Rivet.Contract.jcc
+    | ``Op.setcc => pure ``Rivet.Contract.setcc | ``Op.cmovcc => pure ``Rivet.Contract.cmovcc
+    | ``Op.push => pure ``Rivet.Contract.push | ``Op.pop => pure ``Rivet.Contract.pop
+    | ``Op.call => pure ``Rivet.Contract.call | ``Op.ret => pure ``Rivet.Contract.ret
     | ``Op.binary =>
       match (← whnf args[0]!).constName? with
-      | some ``BinaryOp.add => pure ``Rivet.add | some ``BinaryOp.sub => pure ``Rivet.sub
-      | some ``BinaryOp.sbb => pure ``Rivet.sbb | some ``BinaryOp.cmp => pure ``Rivet.compare
-      | some ``BinaryOp.test => pure ``Rivet.test | some ``BinaryOp.and => pure ``Rivet.bitwise_and
-      | some ``BinaryOp.or => pure ``Rivet.bitwise_or | _ => pure ``Rivet.bitwise_xor
+      | some ``BinaryOp.add => pure ``Rivet.Contract.add | some ``BinaryOp.sub => pure ``Rivet.Contract.sub
+      | some ``BinaryOp.sbb => pure ``Rivet.Contract.sbb | some ``BinaryOp.cmp => pure ``Rivet.Contract.cmp
+      | some ``BinaryOp.test => pure ``Rivet.Contract.test | some ``BinaryOp.and => pure ``Rivet.Contract.and
+      | some ``BinaryOp.or => pure ``Rivet.Contract.or | _ => pure ``Rivet.Contract.xor
     | _ => throwError "rivet_step: unsupported operation {operation}"
   return (name, if ctor == ``Op.binary then args.extract 1 3 else args)
 
@@ -517,5 +516,5 @@ open Step in
     if pc == target then return
     evalTactic (← `(tactic| rivet_step))
 
-end Rivet
+end Rivet.Internal
 end

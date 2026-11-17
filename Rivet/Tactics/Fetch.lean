@@ -3,9 +3,8 @@ public import Rivet.Interpreter.Memory
 public import Rivet.Laws.Program
 -- Proves which instruction a concrete program holds at an address, for `rivet_step`.
 public meta import Lean
--- The lookup routine is public but not exposed; its helpers are private.
 public section
-namespace Rivet
+namespace Rivet.Internal
 open Lean Meta Elab Tactic
 
 namespace Fetch
@@ -69,5 +68,5 @@ meta def prove (original address : Expr) (pc : Nat) : MetaM (Option (Expr × Exp
 
 end Fetch
 
-end Rivet
+end Rivet.Internal
 end

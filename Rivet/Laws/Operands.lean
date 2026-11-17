@@ -5,7 +5,8 @@ import all Rivet.Interpreter.Machine
 import all Rivet.Interpreter.Memory
 -- Laws of the closed operand checks, operand values, and address evaluation: the `rivet` simp set.
 @[expose] public section
-namespace Rivet
+namespace Rivet.Internal
+open MachineState Address
 
 @[rivet] theorem MachineState.canRead_reg8 (state : MachineState) (image : Image) (register : Reg8) :
     state.canRead image (.reg8 register) = true := by simp [canRead]
@@ -165,4 +166,4 @@ attribute [rivet] Width.bytes
 -- A condition as the flags it tests, and a status as its address.
 attribute [rivet] Condition.holds ExecutionStatus.running.injEq
 
-end Rivet
+end Rivet.Internal

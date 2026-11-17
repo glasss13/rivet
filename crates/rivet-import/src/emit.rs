@@ -85,7 +85,7 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
 ///
 /// `program.suffix_<a>` is the program from the instruction at address `a` on;
 /// suffixes are listed last to first because each one refers to the next.
-/// `program.from_<a> : program.FetchesFrom program.suffix_<a> a` follows from
+/// `program.from_<a> : FetchesFrom program program.suffix_<a> a` follows from
 /// the previous instruction's fact by `FetchesFrom.skip`, and Lean checks it.
 /// Instructions must have strictly increasing addresses.
 fn program(source: &mut String, instructions: &[Instruction]) -> std::fmt::Result {
@@ -126,11 +126,13 @@ fn program(source: &mut String, instructions: &[Instruction]) -> std::fmt::Resul
             .map(|previous| instructions[previous].address)
         {
             None => "fun _ _ => rfl".to_string(),
-            Some(previous) => format!("program.from_{previous:x}.skip (by decide)"),
+            Some(previous) => format!(
+                "Rivet.Internal.Program.FetchesFrom.skip program.from_{previous:x} (by decide)"
+            ),
         };
         writeln!(
             source,
-            "theorem program.from_{address:x} : program.FetchesFrom program.suffix_{address:x} {address:#x}#64 := {proof}"
+            "theorem program.from_{address:x} : Rivet.Internal.Program.FetchesFrom program program.suffix_{address:x} {address:#x}#64 := {proof}"
         )?;
     }
     Ok(())

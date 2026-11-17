@@ -6,7 +6,7 @@ public meta import Lean
 -- block's start as a step's facts are. A precondition left out is proved as `rivet_known` does, with no
 -- arithmetic; one that is not is an error naming it.
 public section
-namespace Rivet
+namespace Rivet.Internal
 open Lean Meta Elab Tactic
 
 syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Term.namedArgument <|> term:max))*
@@ -94,4 +94,4 @@ where
     (← goal.cases post #[{ varNames := [name] }, { varNames := [name] }]).flatMapM fun case =>
       ways case.mvarId case.fields[0]!.fvarId! name
 
-end Rivet
+end Rivet.Internal
