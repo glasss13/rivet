@@ -482,7 +482,7 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
     let hint := if related.isEmpty then m!"" else
       m!"\nFacts in scope about its variables: {MessageData.joinSep (related.toList.map fun (proof, _) => m!"`{proof}`") ", "}."
     return some (← addMessageContext m!"{indentExpr shown}\nis not a hypothesis and its sides are not the same.\
-      {← unfolded shown facts}\nRivet starts no arithmetic: prove it, `by rivet_arith` or `by rivet_arith only […]`, \
+      {← unfolded shown facts}\nRivet starts no arithmetic: prove it, `by rivet_arith [facts]`, \
       and give it.{hint}")
 where
   closeAll (goal : MVarId) : TacticM (Option MessageData) := do
