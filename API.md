@@ -165,6 +165,8 @@ scope about the goal's terms that were not listed.
 - It has a fixed budget of 20000 heartbeats that `maxHeartbeats` does not change, and its work
   does not count against the declaration. Facts the goal does not need, such as `%` or `/` facts
   and large `∨`s, can keep `lia` from a proof it finds without them: list only those it needs.
+  Checking its proof is within the budget; a product of two registers can make that too costly:
+  name it first, `generalize x * y = p at *`.
 - A term it does not read, such as a mask, needs its meaning as an equation, proved through
   `toNat`. Not with `bv_decide`: its proofs depend on an axiom that trusts compiled code.
 

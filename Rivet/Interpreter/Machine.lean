@@ -193,7 +193,7 @@ private def stepOp (image : Image) (operation : Op) (nextAddress : BitVec 64) (s
         | none => (state.readOperand64 destination).setWidth width
         | some value => BitVec.ofInt width value
       let product := sourceValue.toInt * multiplier.toInt
-      let result := BitVec.ofInt width product
+      let result := sourceValue * multiplier
       next nextAddress { state.writeOperand64 destination (result.setWidth 64) with
         carryFlag := result.toInt != product
         overflowFlag := result.toInt != product
