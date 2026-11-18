@@ -89,15 +89,31 @@ meta def hypotheses : MetaM (Array LocalDecl) := do
   (← getLCtx).foldlM (init := #[]) fun found decl => do
     if decl.isImplementationDetail || own.contains decl.toExpr then return found
     let type ← instantiateMVars decl.type
-    if !(← isProp type) || type.isAppOf ``MachineState.Except || type.isAppOf `Rivet.Block then return found
+    if !(← isProp type) || type.isAppOf ``MachineState.Except then return found
     return found.push decl
+
+-- A record is opened only as you could open it: by the fields you can name, `h.field`, and as a goal by a
+-- constructor you can name. A field or constructor made private has a private name, not the record's
+-- name and its own.
+meta def nameable (record part : Name) : Bool :=
+  part == .str record part.getString!
+
+meta def splits (type : Expr) : CoreM Bool := do
+  let some name := type.getAppFn.constName? | return false
+  let env ← getEnv
+  return isStructure env name && nameable name (getStructureCtor env name).name
 
 -- What a fact says, part by part: an `abbrev`'s body, and a record's fields; the records named in `whole` kept whole.
 meta partial def parts (proof type : Expr) (whole : Array Name := #[]) : MetaM (Array (Expr × Expr)) := do
   let type ← whnfR (← instantiateMVars type)
+  unless ← isProp type do return #[]
   let some name := type.getAppFn.constName? | return #[(proof, type)]
-  unless isStructure (← getEnv) name && !whole.contains name do return #[(proof, type)]
-  (getStructureFields (← getEnv) name).flatMapM fun field => do
+  let env ← getEnv
+  unless isStructure env name && !whole.contains name do return #[(proof, type)]
+  let fields := (getStructureFields env name).filter fun field =>
+    (getProjFnForField? env name field).any (nameable name)
+  if fields.isEmpty then return #[(proof, type)]
+  fields.flatMapM fun field => do
     let part ← mkProjection proof field
     parts part (← inferType part) whole
 

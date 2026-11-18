@@ -90,11 +90,11 @@ Rivet reads every value back to the block's start. `rivet_known` closes a goal t
 is a hypothesis or has two equal sides; `Block.done` and `rivet_call` close their goals with it.
 There are two closing tactics: `rivet_known`, which starts no arithmetic and never searches, and
 `rivet_arith` (below), which is yours. Rivet sees through an `abbrev` and a record's fields (a
-record is a `structure` in `Prop`), never a `def`. Every lookup does: a place, a permission and
-apartness. Finding the instruction is the exception: the program, and an address with no variables
-in it such as the importer's `F.entry`, are evaluated. A lookup reads your hypotheses back as it
-reads the goal, so a place stated over a named state, `buf.Has (u.registers .rdi) 8`, places what
-the step writes.
+record is a `structure` in `Prop`; the fields you can name, not private ones), never a `def`.
+Every lookup does: a place, a permission and apartness. Finding the instruction is the exception:
+the program, and an address with no variables in it such as the importer's `F.entry`, are
+evaluated. A lookup reads your hypotheses back as it reads the goal, so a place stated over a named
+state, `buf.Has (u.registers .rdi) 8`, places what the step writes.
 
 What is read back, each step a lookup and none of them arithmetic:
 

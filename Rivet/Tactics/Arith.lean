@@ -31,11 +31,8 @@ meta partial def withoutRestatements : MessageData → MessageData
 
 meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
   -- A record is proved field by field, as a listed record is given field by field. `lia` reads `∧` itself.
-  let record ← do
-    let type ← whnfR (← instantiateMVars (← getMainTarget))
-    let env ← getEnv
-    pure (type.getAppFn.constName?.any fun name => name != ``And && isStructure env name)
-  if record then
+  let type ← whnfR (← instantiateMVars (← getMainTarget))
+  if !type.isAppOf ``And && (← splits type) then
     let others := (← getGoals).tail
     for field in ← (← getMainGoal).constructor do
       setGoals [field]
@@ -70,7 +67,7 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
   let outerType ← goal.withContext do instantiateMVars (← goal.getType)
   let copy ← goal.withContext do mkFreshExprSyntheticOpaqueMVar outerType
   let close : TacticM Unit := outer.withContext do
-    outer.assign (← mkAuxTheorem outerType (← instantiateMVars copy))
+    outer.assign (← mkAuxTheorem outerType (← instantiateMVars copy) (zetaDelta := true))
   goal := copy.mvarId!
   -- The goal and the facts it may use, read back and in the `rivet` set's form, as every value Rivet
   -- writes is.
@@ -92,11 +89,12 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
     goal ← goal.tryClear fact
   setGoals [goal]
   let start ← IO.getNumHeartbeats
+  let proved ← IO.mkRef false
   let attempt := withTheReader Core.Context
     (fun context => { context.setOptions (Elab.async.set (maxHeartbeats.set context.options arithBudget) false) with
       initHeartbeats := start
       maxHeartbeats := arithBudget * 1000 })
-    (do evalTactic (← `(tactic| lia +ac)); close)
+    (do evalTactic (← `(tactic| lia +ac)); proved.set true; close)
   try
     tryCatchRuntimeEx attempt fun error => do
       -- Its budget is its own; Lean's recursion limit is not, and stops the tactic.
@@ -114,6 +112,8 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
         throwError "rivet_arith: no proof within its budget of {arithBudget} heartbeats; \
           `maxHeartbeats` does not change it.\n\
           - List only the facts the goal needs.{hint}"
+      -- `lia` found a proof and the kernel rejected it: Rivet's fault, not a missing fact.
+      if ← proved.get then throw error
       -- What you may have meant to list: hypotheses about the goal's variables, registers and reads.
       let unused : MessageData ← outer.withContext do
         let atoms := (← atomsOf outerType) ++ (← atomsOf readType)
