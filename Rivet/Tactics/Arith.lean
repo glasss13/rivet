@@ -123,6 +123,16 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
         if related.isEmpty then return m!""
         addMessageContext m!"\n- Facts in scope about its terms, not listed: \
           {MessageData.joinSep (related.toList.map fun (proof, _) => m!"`{proof}`") ", "}."
+      let partBase ← goal.withContext do
+        let found ← IO.mkRef false
+        let types := (← getLCtx).foldl (init := #[readType]) fun types decl =>
+          if decl.isImplementationDetail then types else types.push decl.type
+        for type in types do
+          forEachExpr (← instantiateMVars type) fun e => do
+            if !e.hasLooseBVars && e.isAppOfArity ``Region.base 1 && (← Places.part? e.appArg!).isSome then
+              found.set true
+        found.get
+      let partHint := if partBase then m!"\n- A part's base is a name here; `Region.part_base` gives its sum." else m!""
       throwError "rivet_arith: `lia` did not prove the goal from the listed facts. Below is where it \
         stopped. Its assignment may or may not be a counterexample: `lia` drops what it does not read, \
         and may stop before it has tried everything.{unused}\n\
@@ -130,7 +140,7 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
         proof: list only those it needs.\n\
         - A term `lia` does not read, such as a mask, needs a law: its meaning, e.g. \
         `x &&& 15#64 = x % 16#64`, proved once and tagged `@[rivet]`.\n\
-        - `lia` does not unfold definitions: unfold them, or list facts about them.\
+        - `lia` does not unfold definitions: unfold them, or list facts about them.{partHint}\
         {indentD (withoutRestatements error.toMessageData)}"
   finally
     IO.setNumHeartbeats start

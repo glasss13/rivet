@@ -150,15 +150,56 @@ meta partial def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) :
   let some proof ← grant? writes image root | return none
   return some (← mkAppM (if writes then ``Image.Writes.part else ``Image.Reads.part) #[proof, offset, length, inside])
 
+-- Each place that fills `r`, its pointer at the region's first byte: a hypothesis whose size is the
+-- region's length, or, for a part, its offset past each place that fills the region it is part of.
+-- Each is the pointer, the size, the place, and that the size is the region's length.
+meta partial def fills (r : Expr) : MetaM (Array (Expr × Expr × Expr × Expr)) := do
+  let part ← part? r
+  let whole := mkApp (mkConst ``Region.length) r
+  let written := match part with
+    | some (_, _, length, _) => length
+    | none => whole
+  let filling (size : Expr) : MetaM Expr := do
+    let proof ← match part with
+      | some (root, offset, length, inside) =>
+        mkAppM ``Nat.le_of_eq #[← mkAppM ``Region.part_length #[root, offset, length, inside]]
+      | none => mkAppM ``Nat.le_refl #[size]
+    mkExpectedTypeHint proof (← mkAppM ``LE.le #[whole, size])
+  let known ← known
+  let mut found := #[]
+  for (proof, type) in known ++ (← readBack known) do
+    let_expr Region.Has candidate at_ size := type | continue
+    unless ← same candidate r do continue
+    if ← same size written then found := found.push (at_, size, proof, ← filling size)
+    else if ← same size whole then
+      found := found.push (at_, written, ← mkExpectedTypeHint proof (mkApp3 (mkConst ``Region.Has) candidate at_ written),
+        ← filling written)
+  let some (root, offset, length, inside) := part | return found
+  let some bytes ← getNatValue? length | return found
+  if bytes == 0 then return found
+  let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, length])
+  for (_, _, placed, filled) in ← fills root do
+    let place ← mkAppM ``Region.Has.part_at #[placed, filled, offset, length, inside, positive]
+    let_expr Region.Has _ at_ _ := ← inferType place | continue
+    found := found.push (at_, length, place, ← filling length)
+  return found
+
 -- `r.Has pointer size`, where `r` may be unknown: a hypothesis, or one that covers it: the pointer a
--- literal number of bytes past its own, and the literal bytes asked for inside those it has. Returns the
--- region with the proof.
+-- literal number of bytes past its own, and the literal bytes asked for inside those it has. A part is
+-- placed by the place that fills its region. Returns the region with the proof.
 meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
   let r ← instantiateMVars r
   let pointer ← instantiateMVars pointer
   let size ← instantiateMVars size
   let fits (candidate : Expr) : MetaM Bool := if r.isMVar then pure true else same candidate r
-  lookup fun known => do
+  let cover (bytes : Nat) (candidate proof at_ length : Expr) : MetaM (Option (Expr × Expr)) := do
+    let some room := (← getNatValue? length) <|> (← getNatValue? (← whnfR length)) | return none
+    let some (distance, place) ← between? pointer at_ | return none
+    unless distance + bytes ≤ room do return none
+    let inside ← mkDecideProof (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit distance, size], length])
+    let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
+    return some (candidate, ← mkAppM ``Region.Has.cover #[proof, place, inside, positive])
+  let found ← lookup fun known => do
     for (proof, type) in known do
       let_expr Region.Has candidate at_ length := type | continue
       if at_ == pointer && length == size && (← fits candidate) then return some (candidate, proof)
@@ -166,14 +207,15 @@ meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
     if bytes == 0 then return none
     for (proof, type) in known do
       let_expr Region.Has candidate at_ length := type | continue
-      let some room ← getNatValue? length | continue
       unless ← fits candidate do continue
-      let some (distance, place) ← between? pointer at_ | continue
-      unless distance + bytes ≤ room do continue
-      let inside ← mkDecideProof (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit distance, size], length])
-      let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
-      return some (candidate, ← mkAppM ``Region.Has.cover #[proof, place, inside, positive])
+      if let some found ← cover bytes candidate proof at_ length then return some found
     return none
+  if found.isSome || r.isMVar then return found
+  let some bytes ← getNatValue? size | return none
+  if bytes == 0 || (← part? r).isNone then return none
+  for (at_, length, placed, _) in ← fills r do
+    if let some found ← cover bytes r placed at_ length then return some found
+  return none
 
 -- The region an access is in, with its place.
 meta def placed? (pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
