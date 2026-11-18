@@ -230,7 +230,7 @@ meta def readBackTactic (locations : Array Term := #[]) (goal := false)
   else if goal then `(tactic| simp only [$all,*] at $[$locations]* ⊢)
   else `(tactic| simp only [$all,*] at $[$locations]*)
 
--- Reads back, in place, the hypotheses that mention a later state, so they meet the goal's parts and
+-- Reads back, in place, the hypotheses that mention a later state or a region's length, so they meet the goal's parts and
 -- `rivet_arith` sees them as it sees the goal. A record's fields are read back one by one, beside it:
 -- `simp` does not rewrite inside a record. Read back, they may contradict each other: that proves the
 -- goal, and leaves none.
@@ -240,7 +240,7 @@ meta def known (goal : MVarId) : TacticM (Option MVarId) := goal.withContext do
   let mut moved := #[]
   for decl in ← hypotheses do
     let type ← instantiateMVars decl.type
-    unless later.any (type.containsFVar ·) do continue
+    unless later.any (type.containsFVar ·) || (type.find? (·.isAppOfArity ``Region.length 1)).isSome do continue
     for (proof, part) in ← parts decl.toExpr type #[``Region.Has] do
       if proof == decl.toExpr then moved := moved.push decl.fvarId; continue
       let name := (← goal.withContext do ppExpr proof).pretty.toName
