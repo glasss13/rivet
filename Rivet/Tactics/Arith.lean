@@ -93,10 +93,9 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
   setGoals [goal]
   let start ← IO.getNumHeartbeats
   let attempt := withTheReader Core.Context
-    (fun context => { context with
+    (fun context => { context.setOptions (Elab.async.set (maxHeartbeats.set context.options arithBudget) false) with
       initHeartbeats := start
-      maxHeartbeats := arithBudget * 1000
-      options := Elab.async.set (maxHeartbeats.set context.options arithBudget) false })
+      maxHeartbeats := arithBudget * 1000 })
     (do evalTactic (← `(tactic| lia +ac)); close)
   try
     tryCatchRuntimeEx attempt fun error => do
@@ -130,8 +129,8 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
           if decl.isImplementationDetail then types else types.push decl.type
         for type in types do
           forEachExpr (← instantiateMVars type) fun e => do
-            if !e.hasLooseBVars && e.isAppOfArity ``Region.base 1 && (← Places.part? e.appArg!).isSome then
-              found.set true
+            if !e.hasLooseBVars && e.isAppOfArity ``Region.base 1 then
+              if (← Places.part? e.appArg!).isSome then found.set true
         found.get
       let partHint := if partBase then m!"\n- A part's base is a name here; `Region.part_base` gives its sum." else m!""
       throwError "rivet_arith: `lia` did not prove the goal from the listed facts. Below is where it \
@@ -139,8 +138,8 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
         and may stop before it has tried everything.{unused}\n\
         - Facts the goal does not need, such as `%` or `/` facts and large `∨`s, can keep `lia` from a \
         proof: list only those it needs.\n\
-        - A term `lia` does not read, such as a mask, needs a law: its meaning, e.g. \
-        `x &&& 15#64 = x % 16#64`, proved once and tagged `@[rivet]`.\n\
+        - A term `lia` does not read, such as `toInt`, needs a law: its meaning, proved once and tagged \
+        `@[rivet]`.\n\
         - `lia` does not unfold definitions: unfold them, or list facts about them.{partHint}\
         {indentD (withoutRestatements error.toMessageData)}"
   finally

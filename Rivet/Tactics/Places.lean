@@ -159,19 +159,29 @@ meta partial def root? (region : Expr) : MetaM (Option (Array Expr)) := do
   let some unfolded ← unfoldDefinition? region | return none
   root? unfolded
 
--- Each place that fills `r`, its pointer at the region's first byte: a hypothesis whose size is the
--- region's length, or, for a part, its offset past each place that fills the region it is part of.
--- Each is the pointer, the size, the place, and that the size is the region's length.
-meta partial def fills (r : Expr) : MetaM (Array (Expr × Expr × Expr × Expr)) := do
-  let part ← part? r
+-- A region's length as its constructor was given it, and the law that says so: `r.length = n`.
+meta def length? (r : Expr) : MetaM (Option (Expr × Expr)) := do
   let whole := mkApp (mkConst ``Region.length) r
-  let written := match part with
-    | some (_, _, length, _) => length
-    | none => whole
+  let law ← match ← part? r with
+    | some (root, offset, length, inside) => some <$> mkAppM ``Region.part_length #[root, offset, length, inside]
+    | none => match ← root? r with
+      | some args => some <$> mkAppM ``Region.root_length args
+      | none => pure none
+  let some law := law | return none
+  let some (_, _, length) := (← inferType law).eq? | return none
+  return some (length, ← mkExpectedTypeHint law (← mkEq whole length))
+
+-- Each place that fills `r`, its pointer at the region's first byte: a hypothesis whose size is the
+-- region's length, as written or as its constructor gave it; a root where it starts; or, for a part,
+-- its offset past each place that fills the region it is part of. Each is the pointer, the size as the
+-- constructor gave it, the place, and that the region's length is at most that size.
+meta partial def fills (r : Expr) : MetaM (Array (Expr × Expr × Expr × Expr)) := do
+  let whole := mkApp (mkConst ``Region.length) r
+  let length? ← length? r
+  let written := (length?.map (·.1)).getD whole
   let filling (size : Expr) : MetaM Expr := do
-    let proof ← match part with
-      | some (root, offset, length, inside) =>
-        mkAppM ``Nat.le_of_eq #[← mkAppM ``Region.part_length #[root, offset, length, inside]]
+    let proof ← match length? with
+      | some (_, law) => mkAppM ``Nat.le_of_eq #[law]
       | none => mkAppM ``Nat.le_refl #[size]
     mkExpectedTypeHint proof (← mkAppM ``LE.le #[whole, size])
   let known ← known
@@ -179,15 +189,15 @@ meta partial def fills (r : Expr) : MetaM (Array (Expr × Expr × Expr × Expr))
   for (proof, type) in known ++ (← readBack known) do
     let_expr Region.Has candidate at_ size := type | continue
     unless ← same candidate r do continue
-    if ← same size written then found := found.push (at_, size, proof, ← filling size)
-    else if ← same size whole then
-      found := found.push (at_, written, ← mkExpectedTypeHint proof (mkApp3 (mkConst ``Region.Has) candidate at_ written),
-        ← filling written)
-  let some (root, offset, length, inside) := part | do
-    let some args ← root? r | return found
+    if ← same size written then found := found.push (at_, written, proof, ← filling written)
+    else if let (true, some (length, law)) := (← same size whole, length?) then
+      let motive ← withLocalDeclD `size (mkConst ``Nat) fun n =>
+        mkLambdaFVars #[n] (mkApp3 (mkConst ``Region.Has) candidate at_ n)
+      found := found.push (at_, length, ← mkEqNDRec motive proof law, ← filling length)
+  if let some args ← root? r then
     let place ← mkExpectedTypeHint (← mkAppM ``Region.root_has args) (mkApp3 (mkConst ``Region.Has) r args[0]! args[1]!)
-    let fills ← mkExpectedTypeHint (← mkAppM ``Nat.le_of_eq #[← mkAppM ``Region.root_length args]) (← mkAppM ``LE.le #[whole, args[1]!])
-    return found.push (args[0]!, args[1]!, place, fills)
+    return found.push (args[0]!, args[1]!, place, ← filling args[1]!)
+  let some (root, offset, length, inside) ← part? r | return found
   let some bytes ← getNatValue? length | return found
   if bytes == 0 then return found
   let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, length])

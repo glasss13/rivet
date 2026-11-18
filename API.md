@@ -166,22 +166,20 @@ scope about the goal's terms that were not listed.
 - A fact is a statement about the goal's terms. A listed record (`inv`) is given field by field,
   and a goal that is a record (`r.Has p n`) is proved field by field. A general fact (`∀ x, …`) is an error: give it its arguments (`lemma x`).
 - It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
-  `<<<`, `setWidth`, and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
+  `<<<`, `setWidth`, a mask with a literal (`x &&& 15#64`), and `BitVec.ofNat w n` when `n < 2^w`. The contracts state `not` as
   `-x - 1` and `movsxd` as a sum with an `if`, in these terms.
 - It has a fixed budget of 20000 heartbeats that `maxHeartbeats` does not change, and its work
   does not count against the declaration. Facts the goal does not need, such as `%` or `/` facts
   and large `∨`s, can keep `lia` from a proof it finds without them: list only those it needs.
   Checking its proof is within the budget; a product of two registers can make that too costly:
   name it first, `generalize x * y = p at *`.
-- A term it does not read, such as a mask or a signed value, needs a law: its meaning in terms it
-  reads, proved once and tagged `@[rivet]`. Rivet then applies it wherever it writes a value, so
+- A term it does not read, such as a signed value, needs a law: its meaning in terms it reads,
+  proved once and tagged `@[rivet]`. Rivet then applies it wherever it writes a value, so
   `rivet_arith` reads the term everywhere; state your own facts in the law's form too. Prove a law
   through `toNat`, not with `bv_decide`: its proofs depend on an axiom that trusts compiled code.
-  Lean has the signed laws already.
+  Lean has the signed laws already:
 
   ```lean
-  @[rivet] theorem and_fifteen (x : BitVec 64) : x &&& 15#64 = x % 16#64 := by
-    apply BitVec.eq_of_toNat_eq; simpa using Nat.and_two_pow_sub_one_eq_mod x.toNat 4
   attribute [rivet] BitVec.toInt_eq_toNat_cond BitVec.msb_eq_decide BitVec.toNat_signExtend
   ```
 
@@ -245,15 +243,18 @@ The model is flat, and so is what a theorem means: `Memory` is a byte per 64-bit
   writable` from a pointer, placed where it starts
   (`abbrev stack (a) : Region := Region.root (a.stackPointer - 112#64) 120 true true (by …)`), and
   `r.part offset length`, a region inside `r` (`abbrev saved (a) : Region := (stack a).part 16 128`).
-  Their numbers are only their laws: `Region.root_base`, `Region.part_base`, and the lengths and
-  permissions, which the `rivet` set reads.
+  Their numbers are only their laws: `Region.root_base`, `Region.part_base`, `Region.root_length`,
+  `Region.part_length`, and the permissions (`Region.root_readable`, `Region.root_writable`), so
+  `rfl`, `decide`, `dsimp`, `change` and `omega` do not see them: rewrite with the laws first. A place
+  that fills a region may state its size as the length the region was made with or as `r.length`.
 - `r.Has pointer size`, `r.Apart r'`, `r.Same m m'` (the two memories agree on every byte of `r`),
   `image.Reads r`, `image.Writes r`. A block that takes its regions as arguments states them:
   `(writes : image.Writes dst) (apart : dst.Apart slot)`. Statements always read the real memory.
 
 The laws, with their arguments. Bounds are numbers, so `rivet_arith` needs them as facts: a place's
 two (`placed.start`, `placed.finish`), its region's `r.fits`, and a part's base, by
-`Region.part_base` (it reads a part's base as a name otherwise, and a root's by `Region.root_base`).
+`Region.part_base` (it reads a part's base as a name otherwise; a root's base and every length it
+reads by their laws).
 
 ```lean
 Region.fits (r : Region) : r.base + r.length ≤ 2^64
