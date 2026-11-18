@@ -1,0 +1,10 @@
+name = "lz4_termination"
+version = "0.1.0"
+defaultTargets = ["Lz4Termination"]
+[[require]]
+name = "rivet"
+path = ".."
+[[lean_lib]]
+name = "Lz4Image"
+[[lean_lib]]
+name = "Lz4Termination"
