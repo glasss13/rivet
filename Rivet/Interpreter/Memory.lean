@@ -22,8 +22,10 @@ def Memory.storeBytes (memory : Memory) (base : BitVec 64) (length : Nat) (bytes
   base.toNat + length ≤ 2^64 &&
     (List.range length).all (fun offset => permission (base + BitVec.ofNat 64 offset))
 
--- A region does not wrap: a mapping that crossed 2^64 would be two regions.
+-- A region does not wrap: a mapping that crossed 2^64 would be two regions. Made only by
+-- `Region.root` and `Region.part`.
 structure Region where
+  private mk ::
   base : Nat
   length : Nat
   readable : Bool
@@ -35,6 +37,18 @@ def Region.Contains (region : Region) (address : BitVec 64) : Prop :=
 
 instance (region : Region) (address : BitVec 64) : Decidable (region.Contains address) :=
   inferInstanceAs (Decidable (_ ∧ _))
+
+-- `length` bytes from `start`, with their permissions. Closed, as `Region.part` is: what it is, is
+-- only its laws (`Region.root_base` and the others), so nothing computes a region's base.
+@[no_expose] def Region.root (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64 := by decide) : Region :=
+  { base := start.toNat, length, readable, writable, fits }
+
+-- `length` bytes of the region from `offset`, with its permissions.
+@[no_expose] def Region.part (r : Region) (offset length : Nat)
+    (inside : offset + length ≤ r.length := by simp only [rivet]) : Region :=
+  { base := r.base + offset, length, readable := r.readable, writable := r.writable,
+    fits := by have := r.fits; omega }
 
 structure Image where
   program : Program

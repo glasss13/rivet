@@ -16,25 +16,35 @@ structure Region.Has (r : Region) (pointer : BitVec 64) (size : Nat) : Prop wher
 def Region.Apart (first second : Region) : Prop :=
   first.base + first.length ≤ second.base ∨ second.base + second.length ≤ first.base
 
--- The address `offset` bytes into the region. Closed, so that nothing computes a part's base: it is a
--- sum only by `Region.part_base`.
-@[no_expose, irreducible] def Internal.Region.address (r : Region) (offset : Nat) : Nat := r.base + offset
+theorem Region.root_base (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).base = start.toNat := by
+  unfold Region.root; rfl
 
-theorem Internal.Region.address_eq (r : Region) (offset : Nat) : Region.address r offset = r.base + offset := by
-  unfold Region.address; rfl
+@[rivet] theorem Region.root_length (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).length = length := by
+  unfold Region.root; rfl
 
--- `length` bytes of the region from `offset`, with its permissions. A `def`: a part is a name.
-def Region.part (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length := by exact Nat.le_of_ble_eq_true rfl) :
-    Region :=
-  { base := Internal.Region.address r offset, length, readable := r.readable, writable := r.writable,
-    fits := by have := r.fits; have := Internal.Region.address_eq r offset; omega }
+-- A root is placed where it starts.
+theorem Region.root_has (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).Has start length :=
+  ⟨Nat.le_of_eq (Region.root_base ..), Nat.le_of_eq (by rw [Region.root_base, Region.root_length])⟩
 
 -- A part's base as a sum, when a proof needs the number.
 theorem Region.part_base (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length) :
-    (r.part offset length inside).base = r.base + offset := Internal.Region.address_eq r offset
+    (r.part offset length inside).base = r.base + offset := by
+  unfold Region.part; rfl
 
 @[rivet] theorem Region.part_length (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length) :
-    (r.part offset length inside).length = length := rfl
+    (r.part offset length inside).length = length := by
+  unfold Region.part; rfl
+
+@[rivet] theorem Region.root_readable (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).readable = readable := by
+  unfold Region.root; rfl
+
+@[rivet] theorem Region.root_writable (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).writable = writable := by
+  unfold Region.root; rfl
 
 -- A change lists a region as its range.
 abbrev Region.range (r : Region) : Nat × Nat := (r.base, r.base + r.length)

@@ -76,7 +76,8 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
   -- writes is.
   setGoals [goal]
   let used ← goal.withContext do given.mapM fun fact => Term.exprToSyntax (.fvar fact)
-  evalTactic (← `(tactic| try $(← readBackTactic used (goal := true)):tactic))
+  let rootBase ← `(Lean.Parser.Tactic.simpLemma| Rivet.Region.root_base)
+  evalTactic (← `(tactic| try $(← readBackTactic used (goal := true) (extra := #[rootBase])):tactic))
   let [read] ← getGoals | close; setGoals others; return
   goal := read
   let readType ← goal.withContext do instantiateMVars (← goal.getType)

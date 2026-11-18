@@ -217,14 +217,15 @@ simproc_decl placedRead (readBytes _ _ _) := fun e => do
   return .visit { expr := final, proof? := some proof }
 
 -- The read-back of the goal, or of hypotheses: registers, then memory.
-meta def readBackTactic (locations : Array Term := #[]) (goal := false) : TacticM (TSyntax `tactic) := withMainContext do
+meta def readBackTactic (locations : Array Term := #[]) (goal := false)
+    (extra : Array (TSyntax `Lean.Parser.Tactic.simpLemma) := #[]) : TacticM (TSyntax `tactic) := withMainContext do
   let mut names ← opened (← (← getMainGoal).getType)
   for decl in ← getLCtx do
     unless decl.isImplementationDetail do
       for name in ← opened decl.type do
         unless names.contains name do names := names.push name
-  let all ← lemmas names (← stepFacts) #[
-    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| placedRead)]
+  let all ← lemmas names (← stepFacts) (#[
+    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| placedRead)] ++ extra)
   if locations.isEmpty then `(tactic| simp only [$all,*])
   else if goal then `(tactic| simp only [$all,*] at $[$locations]* ⊢)
   else `(tactic| simp only [$all,*] at $[$locations]*)

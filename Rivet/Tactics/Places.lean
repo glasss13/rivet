@@ -150,6 +150,15 @@ meta partial def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) :
   let some proof ← grant? writes image root | return none
   return some (← mkAppM (if writes then ``Image.Writes.part else ``Image.Reads.part) #[proof, offset, length, inside])
 
+-- A region as a root, `Region.root start length readable writable fits`, through `abbrev`s.
+meta partial def root? (region : Expr) : MetaM (Option (Array Expr)) := do
+  let region := (← instantiateMVars region).headBeta
+  if region.isAppOfArity ``Region.root 5 then return some region.getAppArgs
+  let some name := region.getAppFn.constName? | return none
+  unless ← isReducible name do return none
+  let some unfolded ← unfoldDefinition? region | return none
+  root? unfolded
+
 -- Each place that fills `r`, its pointer at the region's first byte: a hypothesis whose size is the
 -- region's length, or, for a part, its offset past each place that fills the region it is part of.
 -- Each is the pointer, the size, the place, and that the size is the region's length.
@@ -174,7 +183,11 @@ meta partial def fills (r : Expr) : MetaM (Array (Expr × Expr × Expr × Expr))
     else if ← same size whole then
       found := found.push (at_, written, ← mkExpectedTypeHint proof (mkApp3 (mkConst ``Region.Has) candidate at_ written),
         ← filling written)
-  let some (root, offset, length, inside) := part | return found
+  let some (root, offset, length, inside) := part | do
+    let some args ← root? r | return found
+    let place ← mkExpectedTypeHint (← mkAppM ``Region.root_has args) (mkApp3 (mkConst ``Region.Has) r args[0]! args[1]!)
+    let fills ← mkExpectedTypeHint (← mkAppM ``Nat.le_of_eq #[← mkAppM ``Region.root_length args]) (← mkAppM ``LE.le #[whole, args[1]!])
+    return found.push (args[0]!, args[1]!, place, fills)
   let some bytes ← getNatValue? length | return found
   if bytes == 0 then return found
   let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, length])
@@ -212,7 +225,7 @@ meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
     return none
   if found.isSome || r.isMVar then return found
   let some bytes ← getNatValue? size | return none
-  if bytes == 0 || (← part? r).isNone then return none
+  if bytes == 0 then return none
   for (at_, length, placed, _) in ← fills r do
     if let some found ← cover bytes r placed at_ length then return some found
   return none
