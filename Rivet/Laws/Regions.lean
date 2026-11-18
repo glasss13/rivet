@@ -1,6 +1,7 @@
 module
 public import Rivet.Laws.Memory
 public import Rivet.Laws.Changes
+public import Rivet.Laws.SimpSet
 import all Rivet.Interpreter.Memory
 -- Memory as named regions. A region names a range of addresses. A pointer is placed in a region by
 -- `Has`, two regions are `Apart`, and two memories are the `Same` on a region.
@@ -15,11 +16,35 @@ structure Region.Has (r : Region) (pointer : BitVec 64) (size : Nat) : Prop wher
 def Region.Apart (first second : Region) : Prop :=
   first.base + first.length ≤ second.base ∨ second.base + second.length ≤ first.base
 
--- `length` bytes of the region from `offset`, with its permissions.
-abbrev Region.part (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length := by exact Nat.le_of_ble_eq_true rfl) :
-    Region :=
-  { base := r.base + offset, length, readable := r.readable, writable := r.writable,
-    fits := by have := r.fits; omega }
+theorem Region.root_base (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).base = start.toNat := by
+  unfold Region.root; rfl
+
+@[rivet] theorem Region.root_length (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).length = length := by
+  unfold Region.root; rfl
+
+-- A root is placed where it starts.
+theorem Region.root_has (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).Has start length :=
+  ⟨Nat.le_of_eq (Region.root_base ..), Nat.le_of_eq (by rw [Region.root_base, Region.root_length])⟩
+
+-- A part's base as a sum, when a proof needs the number.
+theorem Region.part_base (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length) :
+    (r.part offset length inside).base = r.base + offset := by
+  unfold Region.part; rfl
+
+@[rivet] theorem Region.part_length (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length) :
+    (r.part offset length inside).length = length := by
+  unfold Region.part; rfl
+
+@[rivet] theorem Region.root_readable (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).readable = readable := by
+  unfold Region.root; rfl
+
+@[rivet] theorem Region.root_writable (start : BitVec 64) (length : Nat) (readable writable : Bool)
+    (fits : start.toNat + length ≤ 2^64) : (Region.root start length readable writable fits).writable = writable := by
+  unfold Region.root; rfl
 
 -- A change lists a region as its range.
 abbrev Region.range (r : Region) : Nat × Nat := (r.base, r.base + r.length)
@@ -39,6 +64,16 @@ theorem Region.Has.part {r : Region} {pointer : BitVec 64} {size : Nat} (placed 
     (finish : inner.toNat + less ≤ pointer.toNat + size) : r.Has inner less :=
   ⟨by have := placed.start; omega, by have := placed.finish; omega⟩
 
+-- A place that fills its region places each part of it: the part's bytes are at its offset from that
+-- pointer.
+theorem Region.Has.part_at {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size)
+    (fills : r.length ≤ size) (offset length : Nat) (inside : offset + length ≤ r.length) (positive : 0 < length) :
+    (r.part offset length inside).Has (pointer + BitVec.ofNat 64 offset) length := by
+  have := r.fits
+  have := placed.start
+  have := placed.finish
+  constructor <;> simp only [Region.part_base, Region.part_length] <;> bv_omega
+
 -- A permission, from the image's own list.
 theorem Image.reads_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) (readable : r.readable = true) :
     image.Reads r := by
@@ -56,7 +91,7 @@ theorem Image.writes_of_mem {image : Image} {r : Region} (member : r ∈ image.r
 theorem Region.part_apart (r : Region) {offset length offset' length' : Nat} (inside : offset + length ≤ r.length)
     (inside' : offset' + length' ≤ r.length) (apart : offset + length ≤ offset' ∨ offset' + length' ≤ offset) :
     (r.part offset length inside).Apart (r.part offset' length' inside') := by
-  simp only [Region.Apart]; omega
+  simp only [Region.Apart, Region.part_base, Region.part_length]; omega
 
 -- A read placed in the region is the same in both.
 theorem Region.Same.read {r : Region} {earlier later : Memory} (same : r.Same earlier later) {pointer : BitVec 64} {size : Nat}
@@ -94,24 +129,24 @@ theorem Image.Reads.part {image : Image} {r : Region} (reads : image.Reads r) (o
     (inside : offset + length ≤ r.length) : image.Reads (r.part offset length inside) := by
   intro address within
   apply reads
-  simp only [Region.Contains] at within ⊢
+  simp only [Region.Contains, Region.part_base, Region.part_length] at within ⊢
   omega
 
 theorem Image.Writes.part {image : Image} {r : Region} (writes : image.Writes r) (offset length : Nat)
     (inside : offset + length ≤ r.length) : image.Writes (r.part offset length inside) := by
   intro address within
   apply writes
-  simp only [Region.Contains] at within ⊢
+  simp only [Region.Contains, Region.part_base, Region.part_length] at within ⊢
   omega
 
 -- A part lies inside its region: it is apart from what the region is apart from.
 theorem Region.Apart.part_left {r other : Region} (apart : r.Apart other) (offset length : Nat)
     (inside : offset + length ≤ r.length) : (r.part offset length inside).Apart other := by
-  simp only [Region.Apart] at apart ⊢; omega
+  simp only [Region.Apart, Region.part_base, Region.part_length] at apart ⊢; omega
 
 theorem Region.Apart.part_right {r other : Region} (apart : r.Apart other) (offset length : Nat)
     (inside : offset + length ≤ other.length) : r.Apart (other.part offset length inside) := by
-  simp only [Region.Apart] at apart ⊢; omega
+  simp only [Region.Apart, Region.part_base, Region.part_length] at apart ⊢; omega
 
 theorem Image.Reads.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
     (reads : image.Reads r) (placed : r.Has pointer size) : permits image.readable pointer size = true := by
@@ -182,7 +217,8 @@ theorem Changes.Covers.listed {c : Changes} {range : Nat × Nat} (member : range
 theorem Changes.Covers.part {c : Changes} {r : Region} (covers : Changes.Covers c r.range) (offset length : Nat)
     (inside : offset + length ≤ r.length) : Changes.Covers c (r.part offset length inside).range := by
   obtain ⟨listed, member, low, high⟩ := covers
-  exact ⟨listed, member, by simp only at low ⊢; omega, by simp only at high ⊢; omega⟩
+  exact ⟨listed, member, by simp only [Region.part_base] at low ⊢; omega,
+    by simp only [Region.part_base, Region.part_length] at high ⊢; omega⟩
 
 namespace Changes.Same
 

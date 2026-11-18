@@ -175,7 +175,13 @@ meta partial def sameMemory (c memory start : Expr) : MetaM Expr := do
   if let some (earlier, base, length, bytes, fact?) ← store? memory then
     let which := m!"the store of {length} bytes{← storedBy memory}, to{indentExpr base}\n"
     let some (r, placed) ← Places.placed? base length | throwError "{which}is not placed in a region."
-    let some inside ← covers c (mkApp (mkConst ``Region.range) r)
+    let mut found := (← covers c (mkApp (mkConst ``Region.range) r)).map (r, placed, ·)
+    for range in ← listItems (mkApp (mkConst ``Changes.memory) c) do
+      if found.isSome then break
+      let some listed := (← instantiateMVars range).app1? ``Region.range | continue
+      let some (_, place) ← Places.has? listed base length | continue
+      found := (← covers c range).map (listed, place, ·)
+    let some (r, placed, inside) := found
       | throwError "{which}is into `{r}`, which the change{indentExpr c}\ndoes not list. If the block does write it, list it."
     let rest ← sameMemory c earlier start
     let proof ← mkAppOptM ``Changes.Same.store #[c, earlier, start, bytes, r, base, length, placed, inside, rest]
@@ -211,14 +217,15 @@ simproc_decl placedRead (readBytes _ _ _) := fun e => do
   return .visit { expr := final, proof? := some proof }
 
 -- The read-back of the goal, or of hypotheses: registers, then memory.
-meta def readBackTactic (locations : Array Term := #[]) (goal := false) : TacticM (TSyntax `tactic) := withMainContext do
+meta def readBackTactic (locations : Array Term := #[]) (goal := false)
+    (extra : Array (TSyntax `Lean.Parser.Tactic.simpLemma) := #[]) : TacticM (TSyntax `tactic) := withMainContext do
   let mut names ← opened (← (← getMainGoal).getType)
   for decl in ← getLCtx do
     unless decl.isImplementationDetail do
       for name in ← opened decl.type do
         unless names.contains name do names := names.push name
-  let all ← lemmas names (← stepFacts) #[
-    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| placedRead)]
+  let all ← lemmas names (← stepFacts) (#[
+    ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| placedRead)] ++ extra)
   if locations.isEmpty then `(tactic| simp only [$all,*])
   else if goal then `(tactic| simp only [$all,*] at $[$locations]* ⊢)
   else `(tactic| simp only [$all,*] at $[$locations]*)
@@ -314,7 +321,8 @@ meta def stops (type : Expr) : MetaM MessageData := do
         | none =>
           why := why ++ m!"\nThe read{indentExpr read}\nis not placed, so it is not read back: no hypothesis `r.Has q n` \
             has its pointer. State it:{indentExpr (mkApp3 (mkConst ``Region.Has)
-              (mkConst `r) address size)}\nfor the region `r` it lies in. {← Places.named}"
+              (mkConst `r) address size)}\nfor the region `r` it lies in; `r.Has p r.length` places every part of `r`. \
+              {← Places.named}"
         | some (r, _) =>
           if let (final, _, some (reason, own)) ← regionBack r memory then
             why := why ++ m!"\nThe read{indentExpr read}\nplaced in `{r}`, {reason}"
@@ -480,8 +488,11 @@ meta partial def close (leaf : MVarId) (facts : Array (Expr × Expr)) : TacticM 
   rest.withContext do
     let shown ← instantiateMVars (← rest.getType)
     if shown.isAppOf ``Region.Has then
+      let parent ← match ← Places.part? shown.appFn!.appFn!.appArg! with
+        | some (root, _, _, _) => pure m!" Or place what it is part of: `{root}.Has p {root}.length` places each part of `{root}`."
+        | none => pure m!""
       return some (← addMessageContext m!"{indentExpr shown}\nis not placed: no hypothesis `r.Has q n` has its pointer. \
-        Prove the place, from one you have (`placed.part`) or from its two bounds, and give it.")
+        Prove the place, from one you have (`placed.part`) or from its two bounds, and give it.{parent}")
     let reason ← stops shown
     unless (← reason.format).isEmpty do
       return some (← addMessageContext m!"{indentExpr shown}\nA read in it stopped short of the block's start.{reason}")

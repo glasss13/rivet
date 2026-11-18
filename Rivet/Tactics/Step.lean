@@ -348,8 +348,8 @@ private meta def place (pc : Nat) (tag : Name) (goal : MVarId) (writes : Bool) (
     let some (region, proof) ← Places.has? r address length
       | throwError "rivet_step: the access `{tag}` of {at_} is not placed. State its place before this step, \
           from one you have (`placed.part`) or from its two bounds:\
-          {indentExpr (mkApp3 (mkConst ``Region.Has) (mkConst `r) address length)}\nfor the region `r` it lies in. \
-          {← Places.named}"
+          {indentExpr (mkApp3 (mkConst ``Region.Has) (mkConst `r) address length)}\nfor the region `r` it lies in; \
+          `r.Has p r.length` places every part of `r`. {← Places.named}"
     unless ← isDefEq r region do throwError "rivet_step: unexpected side condition `{tag}` of {at_}"
     named.assign proof
     let some grant ← Places.grant? writes image region

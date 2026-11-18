@@ -228,24 +228,32 @@ survive a call is in a region the callee does not list.
 
 Regions are the same. Two parts of one region at literal offsets, `(stack a).part 0 8` and
 `(stack a).part 8 136`, are apart when their bytes do not meet; at other offsets, that is
-`Region.part_apart`. A part has what its region has: it is apart from what the region is apart
-from, the image grants it what it grants the region, and a change that lists the region covers it,
-for a store and for a nested block whose change lists the part.
+`Region.part_apart`. A part has what its region has: its place, since a place that fills the region,
+`r.Has p r.length`, places each part at `p` plus its offset; what the region is apart from; what the
+image grants the region; and a change that lists the region covers it, for a store and for a nested
+block whose change lists the part. So place a frame once and its parts are placed. A store is
+covered by a region the change lists that its bytes lie in, so a block that writes one part of the
+frame lists that part.
 
 The model is flat, and so is what a theorem means: `Memory` is a byte per 64-bit address, and
 `Memory.storeBytes memory base length bytes` writes the addresses whose value lies in
 `[base.toNat, base.toNat + length)`. `readBytes memory address size` is the one way to read;
 `readBytes` and `littleEndianAt` are closed: use the laws.
 
-- `Region` (`base`, `length`, `readable`, `writable`), `Image` (`program`, `regions`). Name each
-  region with an `abbrev`. `r.part offset length` is a region inside `r`:
-  `abbrev saved (a) : Region := (stack a).part 16 128`.
+- `Region` (`base`, `length`, `readable`, `writable`), `Image` (`program`, `regions`). A region is
+  made two ways, each a name, and named with an `abbrev`: `Region.root start length readable
+  writable` from a pointer, placed where it starts
+  (`abbrev stack (a) : Region := Region.root (a.stackPointer - 112#64) 120 true true (by …)`), and
+  `r.part offset length`, a region inside `r` (`abbrev saved (a) : Region := (stack a).part 16 128`).
+  Their numbers are only their laws: `Region.root_base`, `Region.part_base`, and the lengths and
+  permissions, which the `rivet` set reads.
 - `r.Has pointer size`, `r.Apart r'`, `r.Same m m'` (the two memories agree on every byte of `r`),
   `image.Reads r`, `image.Writes r`. A block that takes its regions as arguments states them:
   `(writes : image.Writes dst) (apart : dst.Apart slot)`. Statements always read the real memory.
 
 The laws, with their arguments. Bounds are numbers, so `rivet_arith` needs them as facts: a place's
-two (`placed.start`, `placed.finish`) and its region's `r.fits`.
+two (`placed.start`, `placed.finish`), its region's `r.fits`, and a part's base, by
+`Region.part_base` (it reads a part's base as a name otherwise, and a root's by `Region.root_base`).
 
 ```lean
 Region.fits (r : Region) : r.base + r.length ≤ 2^64
@@ -254,6 +262,17 @@ Region.Has.finish (placed : r.Has pointer size) : pointer.toNat + size ≤ r.bas
 -- a place from one you have: any bytes inside it, by their bounds
 Region.Has.part (placed : r.Has pointer size) (start : pointer.toNat ≤ inner.toNat)
   (finish : inner.toNat + less ≤ pointer.toNat + size) : r.Has inner less
+-- a place that fills a region places each part (Rivet's lookups apply it)
+Region.Has.part_at (placed : r.Has pointer size) (fills : r.length ≤ size) (offset length : Nat)
+  (inside : offset + length ≤ r.length) (positive : 0 < length) :
+  (r.part offset length inside).Has (pointer + BitVec.ofNat 64 offset) length
+-- a root is placed where it starts; its base as a number
+Region.root_has (start : BitVec 64) (length : Nat) (readable writable : Bool) (fits) :
+  (Region.root start length readable writable fits).Has start length
+Region.root_base … : (Region.root start length readable writable fits).base = start.toNat
+-- a part's base as a number
+Region.part_base (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length) :
+  (r.part offset length inside).base = r.base + offset
 -- where a read stops at a store into its own region
 Memory.readBytes_storeBytes_outside (memory bytes : Memory)
   (outside : address.toNat + size ≤ base.toNat ∨ base.toNat + length ≤ address.toNat)
@@ -267,7 +286,8 @@ Region.Has.readBytes_stored (placed : r.Has stored length) (offset : Nat)
 -- a read placed in a region is the same in two memories that are the same on it
 Region.Same.read (same : r.Same earlier later) (placed : r.Has pointer size) :
   readBytes earlier pointer size = readBytes later pointer size
--- a permission, from the image's list; and the same for `Writes`, `Image.writes_of_mem`
+-- a permission, from the image's list; and the same for `Writes`, `Image.writes_of_mem`.
+-- `readable` is `Region.root_readable ..` (`Region.root_writable ..`)
 Image.reads_of_mem (member : r ∈ image.regions) (readable : r.readable = true) : image.Reads r
 -- two parts of one region whose bytes do not meet
 Region.part_apart (r : Region) (inside : offset + length ≤ r.length) (inside' : offset' + length' ≤ r.length)

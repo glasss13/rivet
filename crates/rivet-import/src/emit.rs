@@ -43,7 +43,7 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
     for segment in segments {
         writeln!(
             source,
-            "abbrev region_{:x} : Rivet.Region :=\n  {{ base := {:#x}, length := {:#x}, readable := {}, writable := {} }}",
+            "abbrev region_{:x} : Rivet.Region :=\n  Rivet.Region.root {:#x}#64 {:#x} {} {}",
             segment.address, segment.address, segment.size, segment.readable, segment.writable,
         )?;
     }
