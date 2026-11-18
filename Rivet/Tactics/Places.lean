@@ -47,26 +47,14 @@ meta def between? (pointer other : Expr) : MetaM (Option (Nat × Expr)) := do
 
 -- What the hypotheses say of places, regions and the image: each such statement in scope, a record's
 -- fields among them.
-meta partial def known : MetaM (Array (Expr × Expr)) := do
+meta def known : MetaM (Array (Expr × Expr)) := do
+  let statements := #[``Region.Has, ``Region.Apart, ``Image.Reads, ``Image.Writes]
   let mut found := #[]
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
-    found ← visit decl.toExpr decl.type found
+    for (proof, type) in ← ReadBack.parts decl.toExpr decl.type statements do
+      if type.getAppFn.constName?.any statements.contains then found := found.push (proof, type)
   return found
-where
-  visit (proof type : Expr) (found : Array (Expr × Expr)) : MetaM (Array (Expr × Expr)) := do
-    let type ← instantiateMVars type
-    let some name := type.getAppFn.constName? | return found
-    if [``Region.Has, ``Region.Apart, ``Image.Reads, ``Image.Writes].contains name then
-      return found.push (proof, type)
-    if isStructure (← getEnv) name && (← isProp type) then
-      return ← (getStructureFields (← getEnv) name).foldlM (init := found) fun found field => do
-        let part ← mkProjection proof field
-        visit part (← inferType part) found
-    if ← isReducible name then
-      let opened ← whnfR type
-      if opened != type then return ← visit proof opened found
-    return found
 
 -- The statements about a later state, read back to the block's start as a goal is.
 meta def readBack (statements : Array (Expr × Expr)) : MetaM (Array (Expr × Expr)) := do

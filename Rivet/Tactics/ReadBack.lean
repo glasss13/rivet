@@ -292,7 +292,7 @@ meta partial def leaves (goal : MVarId) : TacticM (Array (MVarId × Option Messa
     return found
   -- A place is one part: a lookup first, and its two bounds only when that finds nothing.
   if type.isAppOf ``Region.Has then return #[(goal, none)]
-  if type.getAppFn.constName?.any (isStructure (← getEnv)) then
+  if ← splits type then
     return ← (← goal.constructor).toArray.flatMapM leaves
   return #[(← goal.replaceTargetDefEq type, none)]
 
