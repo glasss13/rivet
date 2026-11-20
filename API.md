@@ -6,12 +6,14 @@ never names it. Start each proof file with
 
 ```lean
 module
-import Rivet
+public import Rivet
+@[expose] public section
 open Rivet
 ```
 
 Without `module`, Lean can compute through the model's internals, which is slow and can
-exhaust its recursion limit.
+exhaust its recursion limit. Without `public`, another file that imports this one does not see
+its theorems or Rivet's names.
 
 The whole model:
 
@@ -34,7 +36,8 @@ The whole model:
   instruction are all blocks.
 - `Changes`: what a block may change. `registers` is a list of registers; `memory` is a list of
   regions (`memory := [output a, scratch a]`; a region stands for its range `(low, high)`). Both
-  default to empty.
+  default to empty. Written on two lines, the second field must start in the same column as the
+  first, or Lean reports `expected '}'`.
 - `t.Except s c`: every register outside `c.registers` and every read outside `c.memory` is the
   same in `t` as in `s`. Flags, vector registers and the status are not compared: state what you
   need of them in `Q`. It compares the end with the start, so a register the block saves and
@@ -48,10 +51,12 @@ block may change what the block keeps, if the code after it restores it.
 - `rivet_call block args` runs a block you proved: `rivet_call copy a`, `rivet_call copy a as q`,
   `rivet_call copy a (room := proof) as q`. Give it the block's arguments up to its start state,
   which it takes from the goal. Each precondition is proved as `rivet_known` does; one that is not
-  is an error naming it, and you give it by name. The proof goes on from the state the block ends
-  in, with `q_post`, its postcondition, and `q_kept`, what it left alone, in scope (hidden without
-  `as q`). `q_post` is read back to the block's start. A postcondition that is an `∨` is one way
-  out per side, as a branch is: one goal for each, in order, with that side as `q_post`.
+  is an error naming it, and you give it by name. A proof you give is checked as written, over the
+  current state: `(room := by rivet_arith [bound])` reads it back, a hypothesis about `s` does not.
+  The proof goes on from the state the block ends in, with `q_post`, its postcondition, and
+  `q_kept`, what it left alone, in scope (hidden without `as q`). `q_post` is read back to the
+  block's start. A postcondition that is an `∨` is one way out per side, as a branch is: one goal
+  for each, in order, with that side as `q_post`.
 - `exact Block.done` ends the block at the current state. It proves `Q`, and that every store went
   into a region `c` lists, as `rivet_known` does. `Block.done proof` takes your proof of `Q`
   instead: `Block.done ⟨by rivet_known, by rivet_arith [bound]⟩`.
@@ -68,7 +73,8 @@ theorem Block.loop (invariant : MachineState → Prop) (measure : MachineState �
 ```
 
 A pass goes on from `current`. Where it jumps back, prove the invariant again with a smaller
-measure, `Block.done (Or.inl ⟨⟨…⟩, …⟩)`; where it leaves, prove `exit`, `Block.done (Or.inr ⟨…⟩)`.
+measure, `Block.done (Or.inl ⟨⟨…⟩, …⟩)`; where it leaves, `exact Block.done` proves `exit` when
+`rivet_known` can, as it tries either side of an `∨`.
 Registers the change does not list read back to `t` through `kept`.
 
 ```lean
@@ -91,7 +97,7 @@ theorem fill (dst : Region) (s : MachineState) (writes : image.Writes dst) (star
   · exact Block.done (Or.inl ⟨⟨by rivet_known,
       ⟨by rivet_arith [inv, fits, more], by rivet_arith [inv, fits, more]⟩,
       by rivet_arith [inv, more]⟩, by rivet_arith [inv]⟩)
-  · exact Block.done (Or.inr (by rivet_known))
+  · exact Block.done
 ```
 
 ## Reading back
@@ -224,8 +230,9 @@ scope about the goal's terms that were not listed.
   attribute [rivet] BitVec.toInt_eq_toNat_cond BitVec.msb_eq_decide BitVec.toNat_signExtend
   ```
 
-- Do not use `bv_omega`: it rewrites every fact about words in scope, can run for minutes, and
-  ignores `maxHeartbeats`.
+- Do not use `bv_omega` in a block's proof: it rewrites every fact about words in scope, can run
+  for minutes there, and ignores `maxHeartbeats`. In a lemma of its own, with only the facts it
+  needs, it is fine.
 
 ## Machine and programs
 
@@ -358,6 +365,6 @@ bytes: `simp only [readBytes_succ, BitVec.of_length_zero]; decide`.
   `F.Loaded memory`: on each segment memory is the segment's bytes,
   `segment_<a> : F.region_<a>.Same F.segment_<a> memory`.
   A constant read from a segment needs its place and its value as facts:
-  `have place : F.region_<a>.Has 0x403000#64 8 := ⟨by decide, by decide⟩`, then
+  `have place : F.region_<a>.Has 0x403000#64 8 := by rivet_known`, then
   `have value : readBytes s.memory 0x403000#64 8 = 42#64 := by rw [← loaded.segment_<a>.read place]; …`
   with the known-bytes recipe under Memory.
