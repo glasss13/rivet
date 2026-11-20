@@ -2,7 +2,7 @@ module
 public import Rivet.Laws.Instructions
 public import Rivet.Laws.Spelling
 public import Rivet.Tactics.Fetch
-public import Rivet.Tactics.Places
+public import Rivet.Tactics.Walk
 -- `rivet_step`: executes one instruction of a `Block` goal through its contract.
 public meta import Lean
 
@@ -22,17 +22,6 @@ meta def reporting {α} (doing : MessageData) (tactic : TacticM α) : TacticM α
 
 namespace Step
 
-universe u
-
--- Marks a state a step named, so later steps know its facts `t_<field>` from yours. The marker is an
--- implementation detail: it is not shown, and tactics skip it.
-inductive Introduced {α : Sort u} (x : α) : Prop
-  | intro
-
--- Marks a store's memory `mₙ`, with the instruction that made it, for errors that name the store.
-inductive StoredBy (memory : Memory) (address : Nat) (operation : Op) : Prop
-  | intro
-
 private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   unless type.isAppOfArity ``Block 5 do
@@ -40,33 +29,6 @@ private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   let state := type.getAppArgs[4]!
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
-
--- Where a state is: a hypothesis `state.status = .running address`, or a record's field that says so.
--- The address as written, its value, and the proof.
-meta def findPc? (state : Expr) : MetaM (Option (Expr × Nat × Expr)) := do
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    for (proof, part) in ← ReadBack.parts decl.toExpr decl.type do
-      let some (_, lhs, rhs) := part.eq? | continue
-      unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
-      unless rhs.isAppOfArity ``ExecutionStatus.running 1 do continue
-      -- A numeral, or a definition such as an imported `entry` that unfolds to one.
-      let address := rhs.appArg!
-      if let some pc ← Fetch.addressValue? address then return (address, pc, proof)
-  return none
-
--- Why the block's address is not known: no status, or one that is not a literal, as after `ret`.
-meta def noAddress (tactic : String) (state : Expr) : MetaM MessageData := do
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    for (_, part) in ← ReadBack.parts decl.toExpr decl.type do
-      let some (_, lhs, rhs) := part.eq? | continue
-      unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
-      let some address := rhs.app1? ``ExecutionStatus.running | continue
-      return m!"{tactic}: `{state}` is at{indentExpr address}\nwhich is not a literal address. After `ret` it is \
-        the return address read from the stack: say where that is, \
-        `have : {state}.status = .running <address> := by rivet_known`."
-  return m!"{tactic}: no hypothesis `{state}.status = .running <address>`"
 
 private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := do
   let args := operation.getAppArgs
@@ -120,195 +82,151 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     type := body.instantiate1 argument
   return (proof, sides)
 
+-- Why the block's address is not known: no status, or one that is not a literal, as after `ret`.
+meta def noAddress (tactic : String) (state : Expr) : MetaM MessageData := do
+  for decl in ← getLCtx do
+    if decl.isImplementationDetail then continue
+    for (_, part) in ← ReadBack.parts decl.toExpr decl.type do
+      let some (_, lhs, rhs) := part.eq? | continue
+      unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
+      let some address := rhs.app1? ``ExecutionStatus.running | continue
+      return m!"{tactic}: `{state}` is at{indentExpr address}\nwhich is not a literal address. After `ret` it is \
+        the return address read from the stack: say where that is, \
+        `have : {state}.status = .running <address> := by rivet_known`."
+  return m!"{tactic}: no hypothesis `{state}.status = .running <address>`"
+
+private meta def currentPc (state : Expr) : TacticM (Option (Expr × Nat × Expr)) := do
+  if let some found ← findPc? state then return found
+  let w ← ReadBack.Walk.make (← getMainGoal)
+  let status := mkApp (mkConst ``MachineState.status) state
+  let result ← w.walk status
+  let some address := result.expr.app1? ``ExecutionStatus.running | return none
+  let some pc ← Fetch.addressValue? address | return none
+  return some (address, pc, ← result.getProof' status)
+
 private meta def fields : List Name :=
   [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `overflowFlag, `memory, `status]
 
-private meta def isFact (decl : LocalDecl) : Bool :=
-  !decl.isImplementationDetail && decl.userName.toString.startsWith "rivet_fact_"
+private meta partial def dedupe (e : Expr) (excluded : List (Expr × Expr) := []) : MetaM Simp.Result := do
+  let_expr ite _ test _ yes no := e | return { expr := e }
+  if let some (_, h) := excluded.find? (·.1 == test) then
+    let proof ← mkAppOptM ``ite_eq_right #[test, e.getArg! 2, h, e.getArg! 0, yes, no]
+    return ← ({ expr := no, proof? := some proof } : Simp.Result).mkEqTrans (← dedupe no excluded)
+  withLocalDeclD `h (mkNot test) fun h => do
+    let rest ← dedupe no ((test, h) :: excluded)
+    let some proof := rest.proof? | return { expr := e }
+    let same := Lean.mkLambda `_ .default test (← mkEqRefl yes)
+    let congr ← mkAppOptM ``ite_congr #[e.getArg! 0, test, test, yes, no, yes, rest.expr,
+      e.getArg! 2, e.getArg! 2, ← mkEqRefl test, same, ← mkLambdaFVars #[h] proof]
+    return { expr := mkApp e.appFn! rest.expr, proof? := some congr }
 
-private meta def mark (goal : MVarId) (proof : Expr) : MetaM MVarId := goal.withContext do
-  let (marker, goal) ← (← goal.assert (← mkFreshUserName `mark) (← inferType proof) proof).intro1P
-  goal.setFVarKind marker .implDetail
-  return goal
-
-private meta def markersOf (subject : FVarId) : MetaM (Array FVarId) := do
-  let mut found := #[]
+private meta def dropStates (goal : MVarId) (history : ReadBack.History) : MetaM MVarId := goal.withContext do
+  let mut owners : Std.HashMap FVarId FVarId := {}
+  for (field, _, proof) in history.equations.toArray do
+    owners := owners.insert proof.fvarId! field.appArg!.fvarId!
+  for (memory, _, proof) in history.stores.toArray do
+    if history.instructions.contains (.fvar memory) then owners := owners.insert proof.fvarId! memory
+  let mut notes : Std.HashMap FVarId (Array LocalDecl) := {}
+  let mut used := collectFVars {} (← instantiateMVars (← goal.getType))
+  let mut subjects := #[]
   for decl in ← getLCtx do
-    unless decl.isImplementationDetail do continue
-    let type ← instantiateMVars decl.type
-    if (type.isAppOfArity ``Introduced 2 && type.appArg! == .fvar subject) ||
-        (type.isAppOfArity ``StoredBy 3 && type.getArg! 0 == .fvar subject) then found := found.push decl.fvarId
-  return found
-
--- A step's fact about a state: hidden for an unnamed state, `t_<field>` for a named one. A call's facts
--- are named as a step's hidden ones.
-private meta def noteState? (decl : LocalDecl) : MetaM (Option FVarId) := do
-  if decl.isImplementationDetail then return none
-  let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | return none
-  let some state := ReadBack.fieldOf? lhs | return none
-  let some field := lhs.getAppFn.constName? | return none
-  if ReadBack.isNote decl then return some state
-  unless decl.userName == (← state.getUserName).appendAfter s!"_{field.getString!}" do
-    return none
-  return if (← markersOf state).isEmpty then none else some state
-
--- A store's memory name `mₙ`, from its definition `mₙ_def`.
-private meta def memoryNamed? (decl : LocalDecl) : MetaM (Option FVarId) := do
-  if decl.isImplementationDetail then return none
-  let some (_, .fvar memory, _) := (← instantiateMVars decl.type).eq? | return none
-  unless decl.userName == (← memory.getUserName).appendAfter "_def" do return none
-  return if (← markersOf memory).isEmpty then none else some memory
-
--- The states with facts: those the steps introduced, and the ends of nested blocks, which stay, since
--- a field their postcondition does not state is stated over them.
-private meta def notedStates : MetaM (Array FVarId × Array FVarId) := do
-  let mut states := #[]
-  let mut ends := #[]
-  for decl in ← getLCtx do
-    if let some state ← noteState? decl then
-      if states.contains state || ends.contains state then continue
-      if (← ReadBack.keptBy (.fvar state)).isEmpty then states := states.push state
-      else ends := ends.push state
-  return (states, ends)
-
--- States the targets over the block's start, or over the end of the last nested block, through every
--- noted fact.
-private meta def restate (goal : MVarId) (targets : Array FVarId) (target : Bool := false) :
-    TacticM (Option MVarId) := goal.withContext do
-  let mut notes := #[]
-  for decl in ← getLCtx do
-    if (← noteState? decl).isSome then notes := notes.push decl
-  if notes.isEmpty || (targets.isEmpty && !target) then return some goal
-  let lemmas ← notes.mapM fun decl => do
-    let term ← Term.exprToSyntax (.fvar decl.fvarId)
-    `(Lean.Parser.Tactic.simpLemma| $term:term)
-  let stx ← `(tactic| simp only [$lemmas,*, rivet])
-  let { ctx, simprocs, .. } ← mkSimpContext stx (eraseLocal := false)
-  -- A branch's condition is restated on its own, last: it never closes its arm, even as `False`.
-  let path ← targets.filterM fun fact => return (← fact.getDecl).userName == `rivet_fact_path
-  -- A fact may stay over the end of a nested block.
-  let (some (facts, goal), _) ← simpGoal goal (ctx.setFailIfUnchanged false) simprocs (simplifyTarget := target)
-    (fvarIdsToSimp := targets.filter (!path.contains ·)) | return none
-  -- A register written twice is tested twice, and the second test can never hold: drop it, and
-  -- prove that for each register. Contextual simp would drop it too, but its cost doubles with
-  -- each register in the chain. Last fact first, since `replace` renames the facts after it.
-  let goal ← facts.foldrM (init := goal) fun fact goal => goal.withContext do
-    let some (_, _, function) := (← instantiateMVars (← fact.getType)).eq? | return goal
-    let .lam binder domain chain info := function | return goal
-    let mut kept := #[]
-    let mut tested := #[]
-    let mut rest := chain
-    repeat
-      let_expr ite _ test _ _ next := rest | break
-      let_expr Eq _ argument register := test | break
-      unless argument == .bvar 0 do break
-      unless tested.contains register do kept := kept.push rest.appFn!
-      tested := tested.push register
-      rest := next
-    if kept.size == tested.size then return goal
-    let same ← mkFreshExprMVar (← mkEq function (.lam binder domain (kept.foldr mkApp rest) info))
-    discard <| Tactic.run same.mvarId! do
-      evalTactic (← `(tactic| funext r; cases r <;> simp only [reduceCtorEq, ↓reduceIte]))
-    return (← goal.replace fact (← mkEqTrans (.fvar fact) same)).mvarId
-  if path.isEmpty then return goal
-  goal.withContext do
-    let some path := (← getLCtx).findFromUserName? `rivet_fact_path | unreachable!
-    let (result, _) ← simp (← instantiateMVars path.type) ctx simprocs
-    let proof ← match result.proof? with
-      | some equal => mkEqMP equal path.toExpr
-      | none => mkExpectedTypeHint path.toExpr result.expr
-    return (← goal.replace path.fvarId proof result.expr).mvarId
-
--- Drops the given states and every memory name that nothing else mentions, with their facts.
-private meta def dropStates (goal : MVarId) (states : Array FVarId) : MetaM MVarId :=
-    goal.withContext do
-  let mut subjects := states
-  let mut uses : Array Expr := #[← instantiateMVars (← goal.getType)]
-  let mut notes : Array (FVarId × LocalDecl) := #[]
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail || states.contains decl.fvarId then continue
-    if let some memory ← memoryNamed? decl then
-      subjects := subjects.push memory
-      notes := notes.push (memory, decl)
+    if (annotation? `Rivet.Step.state decl.type).isSome || history.instructions.contains decl.toExpr then
+      subjects := subjects.push decl.fvarId
       continue
-    match ← noteState? decl with
-    | some state => if states.contains state then notes := notes.push (state, decl)
-                    else uses := uses.push (← instantiateMVars decl.type)
-    | none => uses := uses.push (← instantiateMVars decl.type)
-  if subjects.isEmpty then return goal
-  let mut kept : Array FVarId := #[]
-  let mut grown := true
-  while grown do
-    grown := false
-    for subject in subjects do
-      if kept.contains subject || !uses.any (·.containsFVar subject) then continue
-      kept := kept.push subject
-      grown := true
-      for (about, decl) in notes do
-        if about == subject then uses := uses.push (← instantiateMVars decl.type)
-  let dropped := subjects.filter (!kept.contains ·)
-  let markers ← dropped.flatMapM markersOf
-  let goal ← goal.tryClearMany ((notes.filter (!kept.contains ·.1)).map (·.2.fvarId))
-  let goal ← goal.tryClearMany markers
-  goal.tryClearMany dropped
+    let owner := (decl.type.app3? ``StoredBy).bind (·.1.fvarId?) <|> owners[decl.fvarId]?
+    if let some subject := owner then
+      notes := notes.insert subject ((notes[subject]?.getD #[]).push decl)
+    else
+      used := collectFVars used (← instantiateMVars decl.type)
+      if let some value := decl.value? then used := collectFVars used (← instantiateMVars value)
+  let mut remaining := subjects
+  repeat
+    let mut unused := #[]
+    for subject in remaining.reverse do
+      let facts := notes[subject]?.getD #[]
+      if used.fvarSet.contains subject || facts.any (fun d => used.fvarSet.contains d.fvarId) then
+        for fact in facts do used := collectFVars used (← instantiateMVars fact.type)
+      else
+        unused := unused.push subject
+    if unused.size == remaining.size then break
+    remaining := unused
+  let drop := remaining.flatMap fun subject =>
+    #[subject] ++ (notes[subject]?.getD #[]).map (·.fvarId)
+  return (← goal.tryClearMany' drop).1
 
-private meta def checkpoint : TacticM Unit := withMainContext do
-  let (states, ends) ← notedStates
-  if states.isEmpty && ends.isEmpty then return
-  let mut targets := #[]
-  for decl in ← getLCtx do
-    unless isFact decl do continue
-    let type ← instantiateMVars decl.type
-    if (states ++ ends).any (type.containsFVar ·) then targets := targets.push decl.fvarId
-  let some goal ← restate (← getMainGoal) targets | replaceMainGoal []
-  goal.withContext do
-    for decl in ← getLCtx do
-      let definesMemory := (← memoryNamed? decl).isSome
-      unless (isFact decl && decl.userName != `rivet_fact_path) || definesMemory do continue
+private meta def checkpoint (w : ReadBack.Walk) (old : Expr) (names : Array Name) : TacticM Unit := withMainContext do
+  let goal ← getMainGoal
+  let mut replacements : Array Hypothesis := #[]
+  let mut replaced := #[]
+  for name in names do
+    let some decl := (← getLCtx).findFromUserName? name | continue
+    let result : Option (Expr × Expr) ← goal.withContext do
+      let id := decl.fvarId
       let type ← instantiateMVars decl.type
-      let some state := states.find? (type.containsFVar ·) | continue
-      let field :=
-        if definesMemory then "memory" else (decl.userName.toString.drop "rivet_fact_".length).toString
-      let read? := type.find? fun e =>
-        e.getAppNumArgs == 1 && e.appArg! == .fvar state &&
-          (e.getAppFn.constName?.map (·.getPrefix == ``MachineState)).getD false
-      let why := match read? with
-        | some read => m!"there is no fact `{read} = …` to restate `{read}` with"
-        | none => m!"it mentions `{Expr.fvar state}` other than through one of its fields"
-      throwError "rivet_step: the new state's `{field}` cannot be stated without the earlier \
-        state `{Expr.fvar state}`: {why}.{indentExpr type}"
-  replaceMainGoal [← dropStates goal states]
+      if name == `rivet_fact_path then
+        let result ← w.walk type
+        let proof ← mkEqMP (← result.getProof' type) (.fvar id)
+        return some (result.expr, proof)
+      let some (_, lhs, rhs) := type.eq? | throwError "rivet_step: expected a field equation{indentExpr type}"
+      let inherited := mkApp lhs.getAppFn old
+      let previous := w.history.equations[inherited]?
+      let result : Simp.Result ← if rhs == inherited then
+          pure <| previous.map (fun (v, h) => { expr := v, proof? := some h }) |>.getD { expr := rhs }
+        else if rhs.isLambda then
+          lambdaTelescope rhs fun args body => do
+            let mut rest := body
+            let mut writes := #[]
+            while rest.isAppOfArity ``ite 5 do
+              let value ← w.walk (rest.getArg! 3)
+              writes := writes.push (rest.appFn!.appFn!, value)
+              rest := rest.appArg!
+            unless rest == mkApp inherited args[0]! do
+              throwError "rivet_step: expected the preceding register file at the end of{indentExpr rhs}"
+            let mut value : Simp.Result := { expr := rest }
+            if let some (chain, equation) := previous then
+              value := { expr := chain.beta args, proof? := some (← mkCongrFun equation args[0]!) }
+            for (test, written) in writes.reverse do
+              value ← Simp.mkCongr (← Simp.mkCongrArg test written) value
+            value ← value.mkEqTrans (← dedupe value.expr)
+            return { expr := ← mkLambdaFVars args value.expr, proof? := some (← mkAppM ``funext #[← mkLambdaFVars args (← value.getProof' body)]) }
+        else w.walk rhs
+      if (← ReadBack.isStepState old) && result.expr.containsFVar old.fvarId! then
+        throwError "rivet_step: cannot state `{lhs}` without the earlier state `{old}`: {indentExpr result.expr}"
+      if result.expr == rhs && !rhs.isLambda then return none
+      let proof ← mkEqTrans (.fvar id) (← result.getProof' rhs)
+      return some (← mkEq lhs result.expr, proof)
+    if let some (type, value) := result then
+      replacements := replacements.push { userName := name, type, value }
+      replaced := replaced.push decl.fvarId
+  let (_, goal) ← goal.assertHypotheses replacements
+  let goal ← goal.tryClearMany replaced
+  replaceMainGoal [← dropStates goal w.history]
 
--- A store's result becomes a variable `mₙ`, defined over the start state and earlier names and
+-- A store's result becomes a variable `mₙ`, defined over the block’s start and earlier memories and
 -- placed before the new state, so later facts mention the name instead of repeating the stores.
-private meta def nameMemory (pc : Nat) (operation : Expr) : TacticM Unit := do
-  let fact := mkIdent `rivet_fact_memory
-  let stored : TacticM (Option (FVarId × Expr)) := withMainContext do
-    let some decl := (← getLCtx).findFromUserName? fact.getId | return none
-    let some (_, _, value) := (← instantiateMVars decl.type).eq? | return none
-    return if value.isAppOfArity ``MachineState.memory 1 then none else some (decl.fvarId, value)
-  let some (before, _) ← stored | return
-  replaceMainGoal (← restate (← getMainGoal) #[before]).toList
-  let some (_, value) ← stored | return
-  let definition ← withMainContext do
-    let lctx ← getLCtx
-    let some next := lctx.findFromUserName? `rivet_next | return none
-    let name (index : Nat) := Name.mkSimple s!"m{index.toSubscriptString}"
-    let mut index := 1 + (← lctx.foldlM (init := 0) fun count decl =>
-      return if (← memoryNamed? decl).isSome then count + 1 else count)
-    while lctx.usesUserName (name index) || lctx.usesUserName ((name index).appendAfter "_def") do
-      index := index + 1
-    let definition := mkIdent ((name index).appendAfter "_def")
-    let (reverted, goal) ← (← getMainGoal).revert #[next.fvarId]
-    replaceMainGoal [goal]
-    evalTactic (← `(tactic| obtain ⟨$(mkIdent (name index)), $definition⟩ :
-      ∃ memory : Memory, memory = $(← Term.exprToSyntax value) := ⟨_, rfl⟩))
-    let (_, goal) ← (← getMainGoal).introNP reverted.size
-    let memory ← goal.withContext do return (← getLCtx).findFromUserName? (name index)
-    replaceMainGoal [← mark goal (mkApp3 (mkConst ``StoredBy.intro) (.fvar memory.get!.fvarId) (mkNatLit pc) operation)]
-    return some definition
-  let some definition := definition | return
-  evalTactic (← `(tactic| replace $fact:ident := Eq.trans $fact (Eq.symm $definition)))
+private meta def nameMemory (pc : Nat) (operation : Expr) : TacticM Unit := withMainContext do
+  let goal ← getMainGoal
+  let lctx ← getLCtx
+  let some fact := lctx.findFromUserName? `rivet_fact_memory | return
+  let some (_, _, value) := (← instantiateMVars fact.type).eq? | return
+  unless value.isAppOfArity ``Memory.storeBytes 4 do return
+  let some next := lctx.findFromUserName? `rivet_next | return
+  let name (i : Nat) := Name.mkSimple s!"m{i.toSubscriptString}"
+  let mut i := 1
+  while lctx.usesUserName (name i) || lctx.usesUserName ((name i).appendAfter "_def") do i := i + 1
+  let (reverted, goal) ← goal.revert #[next.fvarId]
+  let goal ← goal.assertExt (name i) (mkConst ``Memory) value ((name i).appendAfter "_def")
+  let (memory, goal) ← goal.intro1P
+  let (definition, goal) ← goal.intro1P
+  let goal ← goal.withContext do
+    let proof := mkApp3 (mkConst ``StoredBy.intro) (.fvar memory) (mkNatLit pc) operation
+    let marker : Hypothesis := { userName := ← mkFreshUserName `mark, type := ← inferType proof, value := proof, kind := .implDetail }
+    return (← goal.assertHypotheses #[marker]).2
+  let (_, goal) ← goal.introNP reverted.size
+  goal.withContext do
+    let fact ← getFVarFromUserName `rivet_fact_memory
+    let result ← goal.replace fact.fvarId! (← mkEqTrans fact (← mkEqSymm (.fvar definition)))
+    replaceMainGoal [result.mvarId]
 
 -- Whether the tactic closes the goal. If it does not, nothing it did is kept.
 meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
@@ -321,43 +239,33 @@ meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
   saved.restore
   return false
 
-private meta def overStart (goal : MVarId) : TacticM (Option (MVarId × Bool)) := goal.withContext do
-  let (states, ends) ← notedStates
-  let mut goal := goal
-  let rewritten := (states ++ ends).any ((← instantiateMVars (← goal.getType)).containsFVar ·)
-  if rewritten then
-    let some next ← restate goal #[] (target := true) | return none
-    goal := next
-  return some (← dropStates goal states, rewritten)
-
--- A memory access is placed: `r.Has pointer size` for a region the image grants, both hypotheses in
--- scope. It is never left open.
-private meta def place (pc : Nat) (tag : Name) (goal : MVarId) (writes : Bool) (image pointer size : Expr) :
+-- A memory access is placed: `r.Has pointer size` for the first region it is placed in that the image
+-- grants. It is never left open.
+private meta def place (scope : ReadBack.Walk) (pc : Nat) (tag : Name) (goal : MVarId) (writes : Bool) (image pointer size : Expr) :
     TacticM Unit := goal.withContext do
   let at_ := m!"the instruction at 0x{Fetch.hex pc}"
-  let r ← mkFreshExprMVar (mkConst ``Region)
-  let placed ← mkFreshExprSyntheticOpaqueMVar (mkApp3 (mkConst ``Region.Has) r pointer size) tag
-  let granted ← mkFreshExprSyntheticOpaqueMVar
-    (mkApp2 (mkConst (if writes then ``Image.Writes else ``Image.Reads)) image r)
-  goal.assign (← mkAppM (if writes then ``Image.Writes.permits else ``Image.Reads.permits) #[granted, placed])
-  setGoals [placed.mvarId!]
-  let some (named, _) ← overStart placed.mvarId! | throwError "rivet_step: unexpected side condition `{tag}` of {at_}"
-  named.withContext do
-    let_expr Region.Has _ address length := ← instantiateMVars (← named.getType)
-      | throwError "rivet_step: unexpected side condition `{tag}` of {at_}"
-    let some (region, proof) ← Places.has? r address length
-      | throwError "rivet_step: the access `{tag}` of {at_} is not placed. State its place before this step, \
-          from one you have (`placed.part`) or from its two bounds:\
-          {indentExpr (mkApp3 (mkConst ``Region.Has) (mkConst `r) address length)}\nfor the region `r` it lies in; \
-          `r.Has p r.length` places every part of `r`. {← Places.named}"
-    unless ← isDefEq r region do throwError "rivet_step: unexpected side condition `{tag}` of {at_}"
-    named.assign proof
-    let some grant ← Places.grant? writes image region
-      | throwError "rivet_step: the image is not known to grant the access `{tag}` of {at_}: there is no hypothesis\
-          {indentExpr (← instantiateMVars (← granted.mvarId!.getType))}"
-    granted.mvarId!.assign grant
+  let result ← scope.walk pointer
+  let address := result.expr
+  let known ← scope.places
+  let places ← scope.placements address size
+  let some (first, _) := places[0]?
+    | throwError "rivet_step: the access `{tag}` of {at_} is not placed. State its place before this step, \
+        from one you have (`placed.part`) or from its two bounds:\
+        {indentExpr (mkApp3 (mkConst ``Region.Has) (mkConst `r) address size)}\nfor the region `r` it lies in; \
+        `r.Has p r.length` places every part of `r`. {← Places.named known}{← scope.notes pointer address}"
+  for (region, placed) in places do
+    let some grant ← Places.grant? known writes image region | continue
+    let mut proof := placed
+    if let some equal := result.proof? then
+      let f ← withLocalDeclD `p (← inferType pointer) fun p =>
+        mkLambdaFVars #[p] (mkApp3 (mkConst ``Region.Has) region p size)
+      proof ← mkEqMPR (← mkCongrArg f equal) placed
+    goal.assign (← mkAppM (if writes then ``Image.Writes.permits else ``Image.Reads.permits) #[grant, proof])
+    return
+  throwError "rivet_step: the image is not known to grant the access `{tag}` of {at_}: there is no hypothesis\
+    {indentExpr (mkApp2 (mkConst (if writes then ``Image.Writes else ``Image.Reads)) image first)}"
 
-private meta def discharge (pc : Nat) (goal : MVarId) : TacticM (Option MVarId) := do
+private meta def discharge (scope : ReadBack.Walk) (pc : Nat) (goal : MVarId) : TacticM (Option MVarId) := do
   let tag ← goal.getTag
   setGoals [goal]
   evalTactic (← `(tactic| try simp only [rivet]))
@@ -369,14 +277,35 @@ private meta def discharge (pc : Nat) (goal : MVarId) : TacticM (Option MVarId) 
     if let some image := permission.app1? ``Image.writable then return some (true, image, pointer, size)
     return none
   if let some (writes, image, pointer, size) := access? then
-    place pc tag reduced writes image pointer size
+    place scope pc tag reduced writes image pointer size
     return none
   if ← closes (← `(tactic| first | rfl | decide +kernel | with_reducible assumption)) reduced then return none
-  let some (named, rewritten) ← overStart reduced | return none
+  let some named ← scope.readBack reduced | return none
   named.setTag tag
-  if rewritten then
-    if ← closes (← `(tactic| with_reducible assumption)) named then return none
+  if ← closes (← `(tactic| with_reducible assumption)) named then return none
   return some named
+
+-- Instantiate the step with symbolic continuations while its binders enclose just one instruction.
+-- Their real proofs stay outside those binders, in the caller's local context.
+private meta def closeStep (root : MVarId) (goals : Array MVarId) : MetaM Unit := root.withContext do
+  let original ← getLCtx
+  let mut symbolic ← getMCtx
+  let mut binders := #[]
+  let mut arguments := #[]
+  for goal in goals do
+    let (param, type, app, argument) ← goal.withContext do
+      let locals := (← getLCtx).getFVars.filter fun x => !original.contains x.fvarId!
+      let args ← locals.filterM fun x => return !(← x.fvarId!.isLetVar)
+      let param := mkFVar (← mkFreshFVarId)
+      return (param, ← mkForallFVars locals (← goal.getType), mkAppN param args,
+        ← mkLambdaFVars locals (mkMVar goal))
+    symbolic := { symbolic with eAssignment := symbolic.eAssignment.insert goal app }
+    binders := binders.push (param, type)
+    arguments := arguments.push argument
+  let (body, _) := instantiateMVarsCore symbolic (mkMVar root)
+  let rule := binders.foldr (init := body) fun (param, type) body =>
+    .lam `next type (body.abstract #[param]) .default
+  root.assign (mkAppN rule arguments)
 
 end Step
 
@@ -386,7 +315,7 @@ open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
   let (image, old) ← goalParts (← getMainGoal)
   let program := mkApp (mkConst ``Image.program) image
-  let some (written, pc, location) ← findPc? old | throwError (← noAddress "rivet_step" old)
+  let some (written, pc, location) ← currentPc old | throwError (← noAddress "rivet_step" old)
   reporting m!"rivet_step, at the instruction at 0x{Fetch.hex pc}" do
   -- An address given by a definition is passed as its value, so the next address is a literal too.
   let (address, location) ← if (← getBitVecValue? written).isSome then pure (written, location) else do
@@ -411,6 +340,7 @@ open Step in
   -- 1. The contract, with side conditions as goals; discharge what we can.
   let mut unsolved : Array MVarId := #[]
   let mainGoal ← getMainGoal
+  let scope ← ReadBack.Walk.make mainGoal
   -- Goals left open by earlier steps (unproved side conditions) stay open, after ours.
   let pending := (← getGoals).filter (· != mainGoal)
   let contract : Expr ← do
@@ -426,7 +356,7 @@ open Step in
           throwError "rivet_step: unexpected instruction at {pc}"
         side.assign instructionProof
       | _ =>
-        if let some remaining ← discharge pc side then unsolved := unsolved.push remaining
+        if let some remaining ← discharge scope pc side then unsolved := unsolved.push remaining
     instantiateMVars proof
   -- 2. Continue from a fresh successor: build `Block.then contract (fun next _ equation => ?_)`
   --    directly, so no term is re-elaborated. Internal names are replaced at the end. The
@@ -457,12 +387,16 @@ open Step in
     unless isExists do break
     evalTactic (← `(tactic| obtain ⟨_, $equation⟩ := $equation))
   -- 3. One fact per field, normalized.
-  let mut internal : Array Name := #[]
-  for field in fields do
-    let fact := Name.mkSimple s!"rivet_fact_{field}"
-    evalTactic (← `(tactic| have $(mkIdent fact) := congrArg $(mkIdent (`Rivet.MachineState ++ field)) $equation))
-    internal := internal.push fact
-  evalTactic (← `(tactic| clear $equation))
+  let internal := fields.toArray.map fun field => Name.mkSimple s!"rivet_fact_{field}"
+  withMainContext do
+    let goal ← getMainGoal
+    let eqn ← getFVarFromUserName equation.getId
+    let mut projections := #[]
+    for (field, name) in fields.toArray.zip internal do
+      let value ← mkCongrArg (mkConst (`Rivet.MachineState ++ field)) eqn
+      projections := projections.push { userName := name, type := ← inferType value, value }
+    let (_, goal) ← goal.assertHypotheses projections
+    replaceMainGoal [← goal.clear eqn.fvarId!]
   let locations : Array (TSyntax `term) := internal.map (⟨mkIdent ·⟩)
   -- Operand reads and writes go through the `rivet` set's proved equations, never by
   -- unfolding: unfolding computes shift arithmetic on symbolic registers in unary.
@@ -471,9 +405,14 @@ open Step in
   -- register it was built with, and simp does not rewrite instances.
   evalTactic (← `(tactic| try simp only [rivet] at $locations*))
   -- Then the model's own writes, and the `rivet` set again on what they leave.
-  evalTactic (← `(tactic| try simp only [MachineState.write, MachineState.writeMemory, Width.bits, rivet]
-    at $locations*))
-  nameMemory pc operation
+  let pendingWrites ← withMainContext do
+    locations.filterM fun name => do
+      let decl ← (← getFVarFromUserName name.raw.getId).fvarId!.getDecl
+      return (decl.type.find? fun e => e.isConstOf ``MachineState.write ||
+        e.isConstOf ``MachineState.writeMemory || e.isConstOf ``Width.bits).isSome
+  unless pendingWrites.isEmpty do
+    evalTactic (← `(tactic| try simp only [MachineState.write, MachineState.writeMemory, Width.bits, rivet]
+      at $pendingWrites*))
   -- 4. Conditional jump: two tagged goals, each with its path condition.
   if isBranch then
     let condition ← Term.exprToSyntax operation.getAppArgs[0]!
@@ -485,31 +424,32 @@ open Step in
     evalTactic (← `(tactic| by_cases $path : Condition.holds $condition $oldStx = true <;>
       simp only [rivet, Classical.not_not] at $path:ident <;>
       simp only [$path:ident, rivet] at $status:ident))
-  -- 5. In each goal: state the new state over the block's start, drop the old one, then give the new
-  --    state and its facts their final names (yours, or inaccessible).
+  -- Normalize before naming the memory and state.
   let finalName ← match named? with
     | some name => pure name
     | none => mkFreshUserName `s
   let mut finished := #[]
   for (branch, index) in (← getGoals).zipIdx do
     setGoals [branch]
-    checkpoint
+    checkpoint scope old (internal.push `rivet_fact_path)
+    nameMemory pc operation
     let mut goal ← getMainGoal
     let lctx ← goal.withContext getLCtx
     if let some decl := lctx.findFromUserName? `rivet_next then
       goal ← goal.rename decl.fvarId finalName
-      if named?.isSome then
-        goal ← goal.withContext do mark goal (← mkAppOptM ``Introduced.intro #[none, Expr.fvar decl.fvarId])
+      goal.setFVarType decl.fvarId (mkAnnotation `Rivet.Step.state decl.type)
     for fact in internal do
       if let some decl := lctx.findFromUserName? fact then
         let field := (fact.toString.drop "rivet_fact_".length).toString
         goal ← goal.rename decl.fvarId (← match named? with
           | some state => pure (state.appendAfter s!"_{field}")
-          | none => ReadBack.noteName)
+          | none => mkFreshUserName `h)
     if let (some condition, some decl) := (condition?, lctx.findFromUserName? `rivet_fact_path) then
       goal ← goal.rename decl.fvarId condition
     if isBranch then goal.setTag (if index == 0 then `taken else `fallthrough)
+    goal.modifyLCtx fun ctx => ctx.foldl (init := { auxDeclToFullName := ctx.auxDeclToFullName }) LocalContext.addDecl
     finished := finished.push goal
+  closeStep mainGoal (finished ++ unsolved)
   setGoals (finished.toList ++ unsolved.toList ++ pending)
 
 syntax (name := rivetStepTo) "rivet_step" &" to " term (" as " ident)? : tactic
@@ -523,7 +463,7 @@ open Step in
   let named? : Option Ident := if stx[3].getNumArgs > 0 then some ⟨stx[3][1]⟩ else none
   let pcOf : TacticM Nat := withMainContext do
     let (_, state) ← goalParts (← getMainGoal)
-    let some (_, pc, _) ← findPc? state | throwError (← noAddress "rivet_step to" state)
+    let some (_, pc, _) ← currentPc state | throwError (← noAddress "rivet_step to" state)
     return pc
   if (← pcOf) == target && named?.isSome then
     throwError "rivet_step to: the block is already at 0x{Fetch.hex target}, so no step is named"

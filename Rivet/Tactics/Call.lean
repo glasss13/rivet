@@ -2,9 +2,7 @@ module
 public import Rivet.Tactics.ReadBack
 public meta import Lean
 -- `rivet_call block args (name := proof)* (as q)?`: runs the block from the current state and goes on
--- from the state it ends in, with what it left alone and its postcondition in scope, read back to the
--- block's start as a step's facts are. A precondition left out is proved as `rivet_known` does, with no
--- arithmetic; one that is not is an error naming it.
+-- from its end with the postcondition and the change in scope.
 public section
 namespace Rivet.Internal
 open Lean Meta Elab Tactic
@@ -34,12 +32,18 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
     let some index := names.idxOf? name | throwError "rivet_call: the block has no argument `{name}`"
     let hole := holes[index]!.mvarId!
     hole.assign (← Tactic.elabTermEnsuringType argument[3] (← hole.getType))
+  let cached ← IO.mkRef (none : Option ReadBack.Walk)
+  let index : TacticM ReadBack.Walk := do
+    if let some w ← cached.get then return w
+    let w ← ReadBack.Walk.make main
+    cached.set (some w)
+    return w
   for (hole, name) in holes.zip names do
     let goal := hole.mvarId!
     if ← goal.isAssigned then continue
     unless ← isProp (← goal.getType) do throwError "rivet_call: give the block its argument `{name}`"
     try
-      discard <| Tactic.run goal do evalTactic (← `(tactic| rivet_known))
+      discard <| Tactic.run goal do ReadBack.proveKnown goal index
     catch error =>
       throwError "rivet_call: the block's precondition `{name}` is not proved. Give it: `({name} := …)`.\n\
         {error.toMessageData}"
@@ -56,36 +60,11 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
       let target := mkApp5 (mkConst ``Block) goalArgs[0]! goalArgs[1]! goalArgs[2]! goalArgs[3]! next
       let rest ← mkFreshExprSyntheticOpaqueMVar target (← main.getTag)
       main.assign (← mkAppM ``Block.then #[call, ← mkLambdaFVars #[next, kept, post] rest])
-      (← ways rest.mvarId! post.fvarId! postName).mapM fun (goal, post) => do
-        -- The postcondition read back once, now, as a step's facts are when it ends.
-        let (goal, post) ← readBack goal post
-        goal.withContext do
-          -- Each part that says what a field of the new state is, on its own, as a step's facts are: all but
-          -- a register the change does not list, which reads back as it was.
-          let changed ← ReadBack.changedRegisters args[2]!
-          let mut goal := goal
-          for (proof, part) in ← ReadBack.parts (.fvar post) (← post.getType) do
-            let some (_, lhs, _) := part.eq? | continue
-            unless ReadBack.fieldOf? lhs == some next.fvarId! do continue
-            if lhs.getAppNumArgs == 2 && !((← whnfR (lhs.getArg! 1)).constName?.any changed.contains) then continue
-            goal := (← (← goal.assert (← ReadBack.noteName) part proof).intro1P).2
-          return goal
+      (← ways rest.mvarId! post.fvarId! postName).filterMapM fun (goal, post) => goal.withContext do
+        let walk ← ReadBack.Walk.make goal (except := #[post])
+        walk.readBack goal #[post] (target := false)
   setGoals (rest.toList ++ pending)
 where
-  readBack (goal : MVarId) (post : FVarId) : TacticM (MVarId × FVarId) := goal.withContext do
-    let type ← instantiateMVars (← post.getType)
-    let facts := (← ReadBack.stepFacts).filter (· != .fvar post)
-    let all ← ReadBack.lemmas (← ReadBack.opened type) facts #[
-      ← `(Lean.Parser.Tactic.simpLemma| rivet), ← `(Lean.Parser.Tactic.simpLemma| ReadBack.placedRead)]
-    setGoals [goal]
-    let { ctx, simprocs, .. } ← mkSimpContext (← `(tactic| simp only [$all,*])) (eraseLocal := false)
-    let (result, _) ← simp type ctx simprocs
-    if result.expr == type then return (goal, post)
-    let proof ← match result.proof? with
-      | some equal => mkEqMP equal (.fvar post)
-      | none => mkExpectedTypeHint (.fvar post) result.expr
-    let replaced ← goal.replace post proof result.expr
-    return (replaced.mvarId, replaced.fvarId)
   -- A postcondition that is an `∨` is one way out per side: a goal for each.
   ways (goal : MVarId) (post : FVarId) (name : Name) : MetaM (Array (MVarId × FVarId)) := goal.withContext do
     let type ← whnfR (← instantiateMVars (← post.getType))

@@ -70,6 +70,10 @@ attribute [rivet] bne_iff_ne Int.not_lt Int.not_le
   all_goals rw [Bool.eq_iff_iff]; simp only [decide_eq_true_eq, Bool.or_eq_true]
   · rw [inside low high]; omega
   all_goals omega
+@[rivet] theorem msb_eq_ssubOverflow_zero_iff (x : BitVec w) :
+    (x.msb = x.ssubOverflow 0#w) ↔ 0 ≤ x.toInt := by
+  simpa using msb_sub_eq_ssubOverflow_iff x 0
+
 @[rivet] theorem toInt_lt_or_eq_iff_le {x y : BitVec w} : (x.toInt < y.toInt ∨ x = y) ↔ x.toInt ≤ y.toInt := by
   rw [← BitVec.toInt_inj]; omega
 @[rivet] theorem toInt_le_and_ne_iff_lt {x y : BitVec w} : (y.toInt ≤ x.toInt ∧ ¬x = y) ↔ y.toInt < x.toInt := by
