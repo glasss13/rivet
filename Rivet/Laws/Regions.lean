@@ -124,29 +124,71 @@ theorem Region.Has.fits {r : Region} {pointer : BitVec 64} {size : Nat} (placed 
   have := placed.finish
   omega
 
--- A permission for a part of a region that has it.
-theorem Image.Reads.part {image : Image} {r : Region} (reads : image.Reads r) (offset length : Nat)
-    (inside : offset + length ≤ r.length) : image.Reads (r.part offset length inside) := by
+-- `inner`'s bytes lie in `outer`.
+def Region.Inside (inner outer : Region) : Prop :=
+  outer.base ≤ inner.base ∧ inner.base + inner.length ≤ outer.base + outer.length
+
+-- `r` starts `offset` bytes into `stem`.
+def Region.At (r stem : Region) (offset : Nat) : Prop := r.base = stem.base + offset
+
+theorem Region.At.refl (r : Region) : Region.At r r 0 := (Nat.add_zero _).symm
+
+theorem Region.At.part {r stem : Region} {before : Nat} (at_ : Region.At r stem before) (offset length : Nat)
+    (inside : offset + length ≤ r.length) (sum : Nat) (same : before + offset = sum) :
+    Region.At (r.part offset length inside) stem sum := by
+  simp only [Region.At, Region.part_base] at *; omega
+
+theorem Region.Inside.refl (r : Region) : Region.Inside r r := ⟨Nat.le_refl _, Nat.le_refl _⟩
+
+theorem Region.Inside.part (r : Region) (offset length : Nat) (inside : offset + length ≤ r.length) :
+    Region.Inside (r.part offset length inside) r := by
+  simp only [Region.Inside, Region.part_base, Region.part_length]; omega
+
+theorem Region.Inside.trans {a b c : Region} (first : Region.Inside a b) (second : Region.Inside b c) :
+    Region.Inside a c := by
+  simp only [Region.Inside] at *; omega
+
+-- Two ranges of one region, compared by their numbers.
+theorem Region.Inside.of_at {a b stem : Region} {i j n m : Nat} (first : Region.At a stem i)
+    (second : Region.At b stem j) (length : a.length = n) (room : b.length = m) (fits : j ≤ i ∧ i + n ≤ j + m) :
+    Region.Inside a b := by
+  simp only [Region.Inside, Region.At] at *; omega
+
+theorem Region.Apart.of_at {a b stem : Region} {i j n m : Nat} (first : Region.At a stem i)
+    (second : Region.At b stem j) (length : a.length = n) (room : b.length = m) (apart : i + n ≤ j ∨ j + m ≤ i) :
+    a.Apart b := by
+  simp only [Region.Apart, Region.At] at *; omega
+
+theorem Region.Apart.inside {a b x y : Region} (apart : x.Apart y) (first : Region.Inside a x)
+    (second : Region.Inside b y) : a.Apart b := by
+  simp only [Region.Apart, Region.Inside] at *; omega
+
+theorem Region.Has.inside {a b : Region} {pointer : BitVec 64} {size : Nat} (placed : a.Has pointer size)
+    (inside : Region.Inside a b) : b.Has pointer size := by
+  have := placed.start
+  have := placed.finish
+  simp only [Region.Inside] at inside
+  exact ⟨by omega, by omega⟩
+
+theorem Image.Reads.inside {image : Image} {a b : Region} (reads : image.Reads b) (inside : Region.Inside a b) :
+    image.Reads a := by
   intro address within
   apply reads
-  simp only [Region.Contains, Region.part_base, Region.part_length] at within ⊢
+  simp only [Region.Contains, Region.Inside] at *
   omega
 
-theorem Image.Writes.part {image : Image} {r : Region} (writes : image.Writes r) (offset length : Nat)
-    (inside : offset + length ≤ r.length) : image.Writes (r.part offset length inside) := by
+theorem Image.Writes.inside {image : Image} {a b : Region} (writes : image.Writes b) (inside : Region.Inside a b) :
+    image.Writes a := by
   intro address within
   apply writes
-  simp only [Region.Contains, Region.part_base, Region.part_length] at within ⊢
+  simp only [Region.Contains, Region.Inside] at *
   omega
 
--- A part lies inside its region: it is apart from what the region is apart from.
-theorem Region.Apart.part_left {r other : Region} (apart : r.Apart other) (offset length : Nat)
-    (inside : offset + length ≤ r.length) : (r.part offset length inside).Apart other := by
-  simp only [Region.Apart, Region.part_base, Region.part_length] at apart ⊢; omega
-
-theorem Region.Apart.part_right {r other : Region} (apart : r.Apart other) (offset length : Nat)
-    (inside : offset + length ≤ other.length) : r.Apart (other.part offset length inside) := by
-  simp only [Region.Apart, Region.part_base, Region.part_length] at apart ⊢; omega
+-- A place that fills its region puts an access a literal distance into it in exactly those bytes of it.
+theorem Region.Has.exact {r : Region} {pointer inner : BitVec 64} {size distance less : Nat}
+    (placed : r.Has pointer size) (fills : r.length ≤ size) (place : inner = pointer + BitVec.ofNat 64 distance)
+    (inside : distance + less ≤ r.length) (positive : 0 < less) : (r.part distance less inside).Has inner less :=
+  place ▸ placed.part_at fills distance less inside positive
 
 theorem Image.Reads.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
     (reads : image.Reads r) (placed : r.Has pointer size) : permits image.readable pointer size = true := by
@@ -210,15 +252,11 @@ def Changes.Same (c : Changes) (later earlier : Memory) : Prop :=
 def Changes.Covers (c : Changes) (range : Nat × Nat) : Prop :=
   ∃ listed ∈ c.memory, listed.1 ≤ range.1 ∧ range.2 ≤ listed.2
 
-theorem Changes.Covers.listed {c : Changes} {range : Nat × Nat} (member : range ∈ c.memory) : Changes.Covers c range :=
-  ⟨range, member, Nat.le_refl _, Nat.le_refl _⟩
-
--- A change that covers a region covers its parts.
-theorem Changes.Covers.part {c : Changes} {r : Region} (covers : Changes.Covers c r.range) (offset length : Nat)
-    (inside : offset + length ≤ r.length) : Changes.Covers c (r.part offset length inside).range := by
-  obtain ⟨listed, member, low, high⟩ := covers
-  exact ⟨listed, member, by simp only [Region.part_base] at low ⊢; omega,
-    by simp only [Region.part_base, Region.part_length] at high ⊢; omega⟩
+-- A change covers the bytes inside a region it lists.
+theorem Changes.Covers.inside {c : Changes} {a b : Region} (member : b.range ∈ c.memory) (inside : Region.Inside a b) :
+    Changes.Covers c a.range := by
+  simp only [Region.Inside] at inside
+  exact ⟨b.range, member, by simp only; omega, by simp only; omega⟩
 
 namespace Changes.Same
 

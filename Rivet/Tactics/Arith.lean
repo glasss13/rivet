@@ -71,11 +71,9 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
   goal := copy.mvarId!
   -- The goal and the facts it may use, read back and in the `rivet` set's form, as every value Rivet
   -- writes is.
-  setGoals [goal]
-  let used ← goal.withContext do given.mapM fun fact => Term.exprToSyntax (.fvar fact)
   let rootBase ← `(Lean.Parser.Tactic.simpLemma| Rivet.Region.root_base)
-  evalTactic (← `(tactic| try $(← readBackTactic used (goal := true) (extra := #[rootBase])):tactic))
-  let [read] ← getGoals | close; setGoals others; return
+  let scope ← Walk.make goal (except := given) (extra := #[rootBase])
+  let some read ← scope.readBack goal given | close; setGoals others; return
   goal := read
   let readType ← goal.withContext do instantiateMVars (← goal.getType)
   -- `lia` never instantiates a general fact, but `grind` still prepares each one, within the budget.
@@ -117,7 +115,7 @@ meta partial def arith (stx : Syntax) : TacticM Unit := withMainContext do
       -- What you may have meant to list: hypotheses about the goal's variables, registers and reads.
       let unused : MessageData ← outer.withContext do
         let atoms := (← atomsOf outerType) ++ (← atomsOf readType)
-        let related := (← facts outer).filter fun (proof, part) =>
+        let related := (← scope.parts).filter fun (proof, part) =>
           !proof.hasAnyFVar (fun fact => given.contains fact || listed.any (·.containsFVar fact)) &&
             atoms.any fun atom => (part.find? (· == atom)).isSome
         if related.isEmpty then return m!""

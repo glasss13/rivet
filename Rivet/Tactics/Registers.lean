@@ -8,6 +8,14 @@ public section
 namespace Rivet.Internal
 open Lean Meta Elab Tactic
 
+namespace Step
+
+-- Marks a store's memory `mₙ`, with the instruction that made it, for errors that name the store.
+inductive StoredBy (memory : Memory) (address : Nat) (operation : Op) : Prop
+  | intro
+
+end Step
+
 namespace ReadBack
 
 meta partial def listItems (list : Expr) : MetaM (Array Expr) := do
@@ -22,14 +30,6 @@ meta def changedRegisters (c : Expr) : MetaM (Array Name) := do
       | throwError "a change names its registers; this is not a register name:{indentExpr register}"
     return name
 
--- The state a field of a named state is of: `t.status`, `t.memory`, `t.registers` or one register,
--- `t.registers .rsp`.
-meta def fieldOf? (e : Expr) : Option FVarId := do
-  let field ← e.getAppFn.constName?
-  guard (field.getPrefix == ``MachineState)
-  guard (e.getAppNumArgs == 1 || (field == ``MachineState.registers && e.getAppNumArgs == 2))
-  (e.getArg! 0).fvarId?
-
 -- A fact Rivet states and hides: a step's about an unnamed state, and a call's.
 private meta def noteModule : Name := `Rivet.Step.note
 
@@ -39,58 +39,52 @@ meta def noteName : CoreM Name :=
 meta def isNote (decl : LocalDecl) : Bool :=
   decl.userName.hasMacroScopes && (extractMacroScopes decl.userName).ctx == noteModule
 
--- What each step says of the state it ends in, and what a call's postcondition says of the state it
--- ends in. One register, `t.registers .rsp = …`, only a call says.
-meta def stepFacts : MetaM (Array Expr) := do
-  let mut found := #[]
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    let some (_, lhs, _) := (← instantiateMVars decl.type).eq? | continue
-    if (fieldOf? lhs).isSome && (lhs.getAppNumArgs == 1 || isNote decl) then found := found.push decl.toExpr
-  return found
+-- What the block did, read from the context once: what each step says of the state it ends in, and what
+-- a call's postcondition says of the state it ends in (one register, `t.registers .rsp = …`, only a call
+-- says); each store's memory and what it is; and each nested block's `t.Except earlier c`, newest first.
+meta structure History where
+  instructions : Std.HashMap Expr (Expr × Expr) := {}
+  equations : Std.HashMap Expr (Expr × Expr) := {}
+  stores : Std.HashMap FVarId (Expr × Expr) := {}
+  nested : Std.HashMap Expr (Array (Expr × Expr × Expr)) := {}
+  later : Std.HashSet FVarId := {}
+  users : Array LocalDecl := #[]
+  lets : Array FVarId := #[]
 
--- A store's memory, and what it is.
-meta def storeFacts : MetaM (Array (FVarId × Expr × Expr)) := do
-  let mut found := #[]
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    let some (_, .fvar memory, stored) := (← instantiateMVars decl.type).eq? | continue
-    if (← memory.getType).isConstOf ``Memory then found := found.push (memory, stored, decl.toExpr)
-  return found
+meta def isStepState (state : Expr) : MetaM Bool := do
+  let .fvar id := state | return false
+  return (annotation? `Rivet.Step.state (← id.getType)).isSome
 
--- Every `state.Except earlier c` in scope, newest first: the nested blocks that ended in `state`.
-meta def keptBy (state : Expr) : MetaM (Array (Expr × Expr × Expr)) := do
-  let mut found := #[]
+meta def History.read : MetaM History := do
+  let mut h : History := {}
   for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    let_expr MachineState.Except t earlier c := ← instantiateMVars decl.type | continue
-    if t == state then found := found.push (earlier, c, decl.toExpr)
-  return found.reverse
-
--- The states a step or a nested block ended in, and the memories the stores made: what is read back.
-meta def later : MetaM (Array FVarId) := do
-  let mut found := (← storeFacts).map (·.1)
-  for fact in ← stepFacts do
-    let some (_, lhs, _) := (← instantiateMVars (← inferType fact)).eq? | continue
-    -- Its status alone does not make a state a later one: the block's start has one too.
-    if lhs.isAppOf ``MachineState.status then continue
-    let some state := fieldOf? lhs | continue
-    unless found.contains state do found := found.push state
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    let_expr MachineState.Except t _ _ := ← instantiateMVars decl.type | continue
-    if t.isFVar && !found.contains t.fvarId! then found := found.push t.fvarId!
-  return found
-
--- The hypotheses a goal's parts may follow from: not the steps' facts, the stores' or the nested
--- blocks' `Except`, which the read-back uses itself.
-meta def hypotheses : MetaM (Array LocalDecl) := do
-  let own := (← stepFacts) ++ (← storeFacts).map (·.2.2)
-  (← getLCtx).foldlM (init := #[]) fun found decl => do
-    if decl.isImplementationDetail || own.contains decl.toExpr then return found
+    if (annotation? `Rivet.Step.state decl.type).isSome then
+      h := { h with later := h.later.insert decl.fvarId }
+      continue
+    if decl.isImplementationDetail && !isNote decl then
+      if let some (memory, pc, op) := decl.type.app3? ``Step.StoredBy then
+        h := { h with instructions := h.instructions.insert memory (pc, op) }
+      continue
     let type ← instantiateMVars decl.type
-    if !(← isProp type) || type.isAppOf ``MachineState.Except then return found
-    return found.push decl
+    if let some (t, earlier, c) := type.app3? ``MachineState.Except then
+      if t == earlier then continue
+      h := { h with nested := h.nested.insert t (#[(earlier, c, decl.toExpr)] ++ h.nested[t]?.getD #[]) }
+      if t.isFVar then h := { h with later := h.later.insert t.fvarId! }
+      continue
+    if let some (_, lhs, rhs) := type.eq? then
+      if let .app (.const field _) state := lhs then
+        if field.getPrefix == ``MachineState && (← isStepState state) then
+          h := { h with equations := h.equations.insertIfNew lhs (rhs, decl.toExpr) }
+          continue
+      if let .fvar id := lhs then
+        if rhs.isAppOfArity ``Memory.storeBytes 4 then
+          h := { h with stores := h.stores.insertIfNew lhs.fvarId! (rhs, decl.toExpr), later := h.later.insert id }
+          continue
+    if decl.isLet && !decl.userName.hasMacroScopes then h := { h with lets := h.lets.push decl.fvarId }
+    if ← isProp type then h := { h with users := h.users.push decl }
+  return h
+
+meta def History.keptBy (h : History) (state : Expr) := h.nested[state]?.getD #[]
 
 -- A record is opened only as you could open it: by the fields you can name, `h.field`, and as a goal by a
 -- constructor you can name. A field or constructor made private has a private name, not the record's
@@ -117,33 +111,23 @@ meta partial def parts (proof type : Expr) (whole : Array Name := #[]) : MetaM (
     let part ← mkProjection proof field
     parts part (← inferType part) whole
 
--- The `abbrev`s `e` applies to a later state, unfolded where it is read back so that what they read
--- is read back too.
-meta def opened (e : Expr) : MetaM (Array Name) := do
-  let later ← later
-  let found ← IO.mkRef (#[] : Array Name)
-  forEachExpr (← instantiateMVars e) fun e => do
-    let some name := e.getAppFn.constName? | return
-    if (← found.get).contains name || (← isProjectionFn name) || !(← isReducible name) then return
-    if e.getAppArgs.any fun argument => later.any (argument.containsFVar ·) then found.modify (·.push name)
-  found.get
-
-meta def lemmas (names : Array Name) (facts : Array Expr) (fixed : Array (TSyntax `Lean.Parser.Tactic.simpLemma)) :
-    TermElabM (Array (TSyntax `Lean.Parser.Tactic.simpLemma)) := do
-  let names ← names.mapM fun name => `(Lean.Parser.Tactic.simpLemma| $(mkIdent name):ident)
-  let facts ← facts.mapM fun fact => do `(Lean.Parser.Tactic.simpLemma| $(← Term.exprToSyntax fact):term)
-  return fixed ++ names ++ facts
-
--- Reads the registers and addresses of `target` back. No arithmetic.
-meta def registersBack (target : Expr) : TermElabM (TSyntax `tactic) := do
-  let all ← lemmas (← opened target) (← stepFacts) #[← `(Lean.Parser.Tactic.simpLemma| rivet)]
-  `(tactic| simp only [$all,*])
+-- An `abbrev` applied to a state or to what a later state holds, unfolded where it is read back, so that
+-- what it reads is read back too and your facts reach inside it.
+meta def openAbbrev (later : Std.HashSet FVarId) : Simp.DSimproc := fun e => do
+  let some name := e.getAppFn.constName? | return .continue
+  if (← isProjectionFn name) || !(← isReducible name) then return .continue
+  let toState ← e.getAppArgs.anyM fun argument => do
+    if argument.hasAnyFVar later.contains then return true
+    return argument.isFVar && (← inferType argument).isConstOf ``MachineState
+  unless toState do return .continue
+  let some unfolded ← unfoldDefinition? e | return .continue
+  return .visit unfolded.headBeta
 
 -- A register a nested block's change does not list, read back across it.
-simproc [rivet] unchangedRegister (MachineState.registers _ _) := fun e => do
+meta def unchangedRegister (history : History) : Simp.Simproc := fun e => do
   let_expr MachineState.registers state register := e | return .continue
   let some name := register.constName? | return .continue
-  for (earlier, c, kept) in ← keptBy state do
+  for (earlier, c, kept) in history.keptBy state do
     let some changed ← try some <$> changedRegisters c catch _ => pure none | continue
     if changed.contains name then continue
     let out ← mkDecideProof

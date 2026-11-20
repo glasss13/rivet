@@ -2,12 +2,11 @@ module
 public import Rivet.Laws.Regions
 public import Rivet.Tactics.Registers
 public meta import Lean
--- Pointers and regions, compared without arithmetic on the hypotheses. A pointer is placed by a
--- hypothesis `r.Has q n`. Two pointers that are one expression plus or minus literals are a literal
--- number of bytes apart, and what a place covers and whether two places meet is then evaluated. A
--- region is the same: two parts of one region at literal offsets are compared by evaluation, and a part
--- has what its region has. Otherwise that two regions are apart, and that the image grants one, are
--- hypotheses. A hypothesis about a later state is read back to the block's start, as a goal is.
+-- Where bytes are, compared without arithmetic on the hypotheses. Bytes are a range of a region: a region
+-- cut from a root through parts at literal offsets is that many bytes into it. Two ranges are asked one
+-- thing: is one inside the other, or are they apart? A pointer is placed by a hypothesis `r.Has q n`, or a
+-- root where it starts; two pointers that are one expression plus or minus literals are a literal number
+-- of bytes apart. That two regions are apart, and that the image grants one, are otherwise hypotheses.
 public section
 namespace Rivet.Internal
 open Lean Meta
@@ -17,67 +16,53 @@ namespace Places
 -- The same as written, through `abbrev`s.
 meta def same (a b : Expr) : MetaM Bool := withNewMCtxDepth <| withReducible <| isDefEq a b
 
--- A pointer as an expression plus a literal: the expression, the literal, and the equation
+-- A pointer as an expression plus a literal: the expression, the literal, and how to prove
 -- `pointer = base + BitVec.ofNat 64 offset`. Literals added and subtracted fold; a literal pointer is
--- off `0#64`; any other pointer is itself plus zero.
-meta partial def offset (pointer : Expr) : MetaM (Expr × Nat × Expr) := do
+-- off `0#64`; any other pointer is itself plus zero. Here, and below, the numbers are compared first and
+-- only the answer is proved.
+meta partial def offset (pointer : Expr) : MetaM (Expr × Nat × MetaM Expr) := do
   let pointer ← instantiateMVars pointer
   if let some ⟨width, value⟩ ← getBitVecValue? pointer then
-    if width == 64 then return (toExpr 0#64, value.toNat, mkApp (mkConst ``Offset.literal) pointer)
-  let folded (inner literal : Expr) (law : Name) (sum : Nat → Nat → Nat) : MetaM (Option (Expr × Nat × Expr)) := do
+    if width == 64 then return (toExpr 0#64, value.toNat, pure (mkApp (mkConst ``Offset.literal) pointer))
+  let folded (inner literal : Expr) (law : Name) (sum : Nat → Nat → Nat) :
+      MetaM (Option (Expr × Nat × MetaM Expr)) := do
     let some ⟨width, value⟩ ← getBitVecValue? literal | return none
     unless width == 64 do return none
     let (base, bytes, proof) ← offset inner
     let total := sum bytes value.toNat % 2^64
-    return some (base, total, ← mkAppM law #[proof, literal, mkNatLit total, ← mkEqRefl (mkNatLit total)])
+    return some (base, total, do mkAppM law #[← proof, literal, mkNatLit total, ← mkEqRefl (mkNatLit total)])
   let found ← match_expr pointer with
     | HAdd.hAdd _ _ _ _ base literal => folded base literal ``Offset.add (· + ·)
     | HSub.hSub _ _ _ _ base literal => folded base literal ``Offset.sub (fun bytes value => bytes + (2^64 - value))
     | _ => pure none
-  return found.getD (pointer, 0, mkApp (mkConst ``Offset.refl) pointer)
+  if let some found := found then return found
+  -- Through an `abbrev`: `frameBase a` may be `a.stackPointer - 16624#64`.
+  if let some name := pointer.getAppFn.constName? then
+    if (← isReducible name) && !(← isProjectionFn name) then
+      if let some unfolded ← unfoldDefinition? pointer then
+        let (base, bytes, proof) ← offset unfolded.headBeta
+        return (base, bytes, do
+          let proof ← proof
+          mkExpectedTypeHint proof (← mkEq pointer (← inferType proof).eq?.get!.2.2))
+  return (pointer, 0, pure (mkApp (mkConst ``Offset.refl) pointer))
 
 -- How many bytes `pointer` is past `other`, as words, when both are off one expression: the number,
 -- and the equation `pointer = other + BitVec.ofNat 64 distance`.
-meta def between? (pointer other : Expr) : MetaM (Option (Nat × Expr)) := do
+meta def between? (pointer other : Expr) : MetaM (Option (Nat × MetaM Expr)) := do
   let (base, bytes, placed) ← offset pointer
   let (otherBase, otherBytes, otherPlaced) ← offset other
   unless ← same base otherBase do return none
   let distance := (bytes + (2^64 - otherBytes)) % 2^64
-  return some (distance, ← mkAppM ``Offset.between #[placed, otherPlaced, mkNatLit distance, ← mkEqRefl (mkNatLit bytes)])
+  return some (distance, do mkAppM ``Offset.between #[← placed, ← otherPlaced, mkNatLit distance, ← mkEqRefl (mkNatLit bytes)])
 
--- What the hypotheses say of places, regions and the image: each such statement in scope, a record's
--- fields among them.
-meta def known : MetaM (Array (Expr × Expr)) := do
-  let statements := #[``Region.Has, ``Region.Apart, ``Image.Reads, ``Image.Writes]
-  let mut found := #[]
-  for decl in ← getLCtx do
-    if decl.isImplementationDetail then continue
-    for (proof, type) in ← ReadBack.parts decl.toExpr decl.type statements do
-      if type.getAppFn.constName?.any statements.contains then found := found.push (proof, type)
-  return found
-
--- The statements about a later state, read back to the block's start as a goal is.
-meta def readBack (statements : Array (Expr × Expr)) : MetaM (Array (Expr × Expr)) := do
-  let later ← ReadBack.later
-  let moved := statements.filter fun (_, type) => later.any (type.containsFVar ·)
-  if moved.isEmpty then return #[]
-  let types := moved.map (·.2)
-  let tactic ← (ReadBack.registersBack (mkAndN types.toList)).run'
-  let results ← IO.mkRef #[]
-  discard <| (Elab.Tactic.run (← mkFreshExprMVar (mkConst ``True)).mvarId! do
-    let { ctx, simprocs, .. } ← Elab.Tactic.mkSimpContext tactic (eraseLocal := false)
-    for type in types do results.modify (·.push (← simp type ctx simprocs).1)).run'
-  (moved.zip (← results.get)).filterMapM fun ((proof, type), result) => do
-    if result.expr == type then return none
-    return some (← match result.proof? with
-      | some equal => mkEqMP equal proof
-      | none => mkExpectedTypeHint proof result.expr, result.expr)
-
--- A lookup among the hypotheses as written, then among them read back.
-meta def lookup (find : Array (Expr × Expr) → MetaM (Option α)) : MetaM (Option α) := do
-  let known ← known
-  if let some found ← find known then return some found
-  find (← readBack known)
+-- The regions a statement names.
+meta def regions (type : Expr) : Array Expr :=
+  match_expr type with
+  | Region.Has r _ _ => #[r]
+  | Region.Apart r other => #[r, other]
+  | Image.Reads _ r => #[r]
+  | Image.Writes _ r => #[r]
+  | _ => #[]
 
 -- A region as a part of another, `r.part offset length`, through `abbrev`s: the region it is part of,
 -- the two numbers, and the proof it lies inside.
@@ -91,53 +76,6 @@ meta partial def part? (region : Expr) : MetaM (Option (Expr × Expr × Expr × 
   let some unfolded ← unfoldDefinition? region | return none
   part? unfolded
 
--- Whether `inner` is a part of `r`, or a part of a part.
-meta partial def within (inner r : Expr) : MetaM Bool := do
-  let some (root, _) ← part? inner | return false
-  return (← same root r) || (← within root r)
-
--- `r.Apart other`: a hypothesis, either way round; two parts of one region at literal offsets that do
--- not meet; or a part whose region is apart from the other.
-meta partial def apart? (r other : Expr) : MetaM (Option Expr) := do
-  let found ← lookup fun known => do
-    for (proof, type) in known do
-      let_expr Region.Apart first second := type | continue
-      if (← same first r) && (← same second other) then return some proof
-      if (← same first other) && (← same second r) then return some (← mkAppM ``Region.Apart.symm #[proof])
-    return none
-  if found.isSome then return found
-  let left ← part? r
-  let right ← part? other
-  if let (some (root, offset, length, inside), some (root', offset', length', inside')) := (left, right) then
-    if ← same root root' then
-      let (some a, some b, some c, some d) :=
-        (← getNatValue? offset, ← getNatValue? length, ← getNatValue? offset', ← getNatValue? length')
-        | return none
-      unless a + b ≤ c || c + d ≤ a do return none
-      let apart := mkOr (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[offset, length], offset'])
-        (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[offset', length'], offset])
-      return some (← mkAppOptM ``Region.part_apart #[root, offset, length, offset', length', inside, inside', ← mkDecideProof apart])
-  if let some (root, offset, length, inside) := left then
-    if let some proof ← apart? root other then
-      return some (← mkAppM ``Region.Apart.part_left #[proof, offset, length, inside])
-  if let some (root, offset, length, inside) := right then
-    if let some proof ← apart? r root then
-      return some (← mkAppM ``Region.Apart.part_right #[proof, offset, length, inside])
-  return none
-
--- `image.Reads r` or `image.Writes r`: a hypothesis, or of the region `r` is a part of.
-meta partial def grant? (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
-  let name := if writes then ``Image.Writes else ``Image.Reads
-  let found ← lookup fun known => do
-    for (proof, type) in known do
-      unless type.isAppOfArity name 2 do continue
-      if (← same (type.getArg! 0) image) && (← same (type.getArg! 1) r) then return some proof
-    return none
-  if found.isSome then return found
-  let some (root, offset, length, inside) ← part? r | return none
-  let some proof ← grant? writes image root | return none
-  return some (← mkAppM (if writes then ``Image.Writes.part else ``Image.Reads.part) #[proof, offset, length, inside])
-
 -- A region as a root, `Region.root start length readable writable fits`, through `abbrev`s.
 meta partial def root? (region : Expr) : MetaM (Option (Array Expr)) := do
   let region := (← instantiateMVars region).headBeta
@@ -147,103 +85,152 @@ meta partial def root? (region : Expr) : MetaM (Option (Array Expr)) := do
   let some unfolded ← unfoldDefinition? region | return none
   root? unfolded
 
--- A region's length as its constructor was given it, and the law that says so: `r.length = n`.
-meta def length? (r : Expr) : MetaM (Option (Expr × Expr)) := do
-  let whole := mkApp (mkConst ``Region.length) r
+-- A region's length as its constructor was given it, and how to prove `r.length = n`.
+meta def length? (r : Expr) : MetaM (Option (Expr × MetaM Expr)) := do
   let law ← match ← part? r with
-    | some (root, offset, length, inside) => some <$> mkAppM ``Region.part_length #[root, offset, length, inside]
+    | some (root, offset, length, inside) => pure (some (length, mkAppM ``Region.part_length #[root, offset, length, inside]))
     | none => match ← root? r with
-      | some args => some <$> mkAppM ``Region.root_length args
+      | some args => pure (some (args[1]!, mkAppM ``Region.root_length args))
       | none => pure none
-  let some law := law | return none
-  let some (_, _, length) := (← inferType law).eq? | return none
-  return some (length, ← mkExpectedTypeHint law (← mkEq whole length))
+  let some (length, law) := law | return none
+  return some (length, do mkExpectedTypeHint (← law) (← mkEq (mkApp (mkConst ``Region.length) r) length))
 
--- Each place that fills `r`, its pointer at the region's first byte: a hypothesis whose size is the
--- region's length, as written or as its constructor gave it; a root where it starts; or, for a part,
--- its offset past each place that fills the region it is part of. Each is the pointer, the size as the
--- constructor gave it, the place, and that the region's length is at most that size.
-meta partial def fills (r : Expr) : MetaM (Array (Expr × Expr × Expr × Expr)) := do
-  let whole := mkApp (mkConst ``Region.length) r
-  let length? ← length? r
-  let written := (length?.map (·.1)).getD whole
-  let filling (size : Expr) : MetaM Expr := do
-    let proof ← match length? with
-      | some (_, law) => mkAppM ``Nat.le_of_eq #[law]
-      | none => mkAppM ``Nat.le_refl #[size]
-    mkExpectedTypeHint proof (← mkAppM ``LE.le #[whole, size])
-  let known ← known
-  let mut found := #[]
-  for (proof, type) in known ++ (← readBack known) do
-    let_expr Region.Has candidate at_ size := type | continue
-    unless ← same candidate r do continue
-    if ← same size written then found := found.push (at_, written, proof, ← filling written)
-    else if let (true, some (length, law)) := (← same size whole, length?) then
-      let motive ← withLocalDeclD `size (mkConst ``Nat) fun n =>
-        mkLambdaFVars #[n] (mkApp3 (mkConst ``Region.Has) candidate at_ n)
-      found := found.push (at_, length, ← mkEqNDRec motive proof law, ← filling length)
-  if let some args ← root? r then
-    let place ← mkExpectedTypeHint (← mkAppM ``Region.root_has args) (mkApp3 (mkConst ``Region.Has) r args[0]! args[1]!)
-    return found.push (args[0]!, args[1]!, place, ← filling args[1]!)
-  let some (root, offset, length, inside) ← part? r | return found
-  let some bytes ← getNatValue? length | return found
-  if bytes == 0 then return found
-  let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, length])
-  for (_, _, placed, filled) in ← fills root do
-    let place ← mkAppM ``Region.Has.part_at #[placed, filled, offset, length, inside, positive]
-    let_expr Region.Has _ at_ _ := ← inferType place | continue
-    found := found.push (at_, length, place, ← filling length)
-  return found
+-- Where a region's bytes are: the region it is cut from through parts at literal offsets, how many bytes
+-- into it, and how to prove `r.At stem offset`.
+meta partial def stem (r : Expr) : MetaM (Expr × Nat × MetaM Expr) := do
+  if let some (parent, offset, length, inside) ← part? r then
+    if let some bytes ← getNatValue? offset then
+      let (root, before, at_) ← stem parent
+      let sum := mkNatLit (before + bytes)
+      return (root, before + bytes, do mkAppM ``Region.At.part #[← at_, offset, length, inside, sum, ← mkEqRefl sum])
+  return (r, 0, mkAppM ``Region.At.refl #[r])
 
--- `r.Has pointer size`, where `r` may be unknown: a hypothesis, or one that covers it: the pointer a
--- literal number of bytes past its own, and the literal bytes asked for inside those it has. A part is
--- placed by the place that fills its region. Returns the region with the proof.
-meta def has? (r pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
-  let r ← instantiateMVars r
-  let pointer ← instantiateMVars pointer
-  let size ← instantiateMVars size
-  let fits (candidate : Expr) : MetaM Bool := if r.isMVar then pure true else same candidate r
-  let cover (bytes : Nat) (candidate proof at_ length : Expr) : MetaM (Option (Expr × Expr)) := do
-    let some room := (← getNatValue? length) <|> (← getNatValue? (← whnfR length)) | return none
-    let some (distance, place) ← between? pointer at_ | return none
-    unless distance + bytes ≤ room do return none
-    let inside ← mkDecideProof (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit distance, size], length])
-    let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
-    return some (candidate, ← mkAppM ``Region.Has.cover #[proof, place, inside, positive])
-  let found ← lookup fun known => do
-    for (proof, type) in known do
-      let_expr Region.Has candidate at_ length := type | continue
-      if at_ == pointer && length == size && (← fits candidate) then return some (candidate, proof)
-    let some bytes ← getNatValue? size | return none
-    if bytes == 0 then return none
-    for (proof, type) in known do
-      let_expr Region.Has candidate at_ length := type | continue
-      unless ← fits candidate do continue
-      if let some found ← cover bytes candidate proof at_ length then return some found
-    return none
-  if found.isSome || r.isMVar then return found
-  let some bytes ← getNatValue? size | return none
-  if bytes == 0 then return none
-  for (at_, length, placed, _) in ← fills r do
-    if let some found ← cover bytes r placed at_ length then return some found
+-- Two ranges of one region, as numbers: the offsets, the lengths, and how to prove the four facts the laws take.
+meta def ranges? (a b : Expr) : MetaM (Option (Nat × Nat × Nat × Nat × MetaM (Array Expr))) := do
+  let (stemA, i, atA) ← stem a
+  let (stemB, j, atB) ← stem b
+  unless ← same stemA stemB do return none
+  let (some (n, lengthA), some (m, lengthB)) := (← length? a, ← length? b) | return none
+  let (some n, some m) := (← getNatValue? n, ← getNatValue? m) | return none
+  return some (i, n, j, m, return #[← atA, ← atB, ← lengthA, ← lengthB])
+
+-- `a`'s bytes lie in `b`: two ranges of one region, by their numbers, or a part of a region inside `b`.
+meta partial def inside? (a b : Expr) : MetaM (Option Expr) := do
+  if ← same a b then return some (← mkAppM ``Region.Inside.refl #[a])
+  if let some (i, n, j, m, proofs) ← ranges? a b then
+    if j ≤ i && i + n ≤ j + m then
+      let fits := mkAnd (← mkAppM ``LE.le #[mkNatLit j, mkNatLit i])
+        (← mkAppM ``LE.le #[← mkAppM ``HAdd.hAdd #[mkNatLit i, mkNatLit n], ← mkAppM ``HAdd.hAdd #[mkNatLit j, mkNatLit m]])
+      return some (← mkAppM ``Region.Inside.of_at ((← proofs).push (← mkDecideProof fits)))
+  let some (parent, offset, length, inside) ← part? a | return none
+  let some rest ← inside? parent b | return none
+  return some (← mkAppM ``Region.Inside.trans #[← mkAppM ``Region.Inside.part #[parent, offset, length, inside], rest])
+
+-- `r.Apart other`: two ranges of one region that do not meet, by their numbers; or a hypothesis, either way
+-- round, about regions the two lie in.
+meta def apart? (known : Array (Expr × Expr)) (r other : Expr) : MetaM (Option Expr) := do
+  if let some (i, n, j, m, proofs) ← ranges? r other then
+    if i + n ≤ j || j + m ≤ i then
+      let sum (a b : Nat) := mkAppM ``HAdd.hAdd #[mkNatLit a, mkNatLit b]
+      let apart := mkOr (← mkAppM ``LE.le #[← sum i n, mkNatLit j]) (← mkAppM ``LE.le #[← sum j m, mkNatLit i])
+      return some (← mkAppM ``Region.Apart.of_at ((← proofs).push (← mkDecideProof apart)))
+  for (proof, type) in known do
+    let_expr Region.Apart first second := type | continue
+    if let (some left, some right) := (← inside? r first, ← inside? other second) then
+      return some (← mkAppM ``Region.Apart.inside #[proof, left, right])
+    if let (some left, some right) := (← inside? r second, ← inside? other first) then
+      return some (← mkAppM ``Region.Apart.inside #[← mkAppM ``Region.Apart.symm #[proof], left, right])
   return none
 
--- The region an access is in, with its place.
-meta def placed? (pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
-  has? (← mkFreshExprMVar (mkConst ``Region)) pointer size
+-- `image.Reads r` or `image.Writes r`: a hypothesis about a region `r` lies in.
+meta def grant? (known : Array (Expr × Expr)) (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
+  let name := if writes then ``Image.Writes else ``Image.Reads
+  for (proof, type) in known do
+    unless type.isAppOfArity name 2 do continue
+    unless ← same (type.getArg! 0) image do continue
+    if let some inside ← inside? r (type.getArg! 1) then
+      return some (← mkAppM (if writes then ``Image.Writes.inside else ``Image.Reads.inside) #[proof, inside])
+  return none
+
+-- A root is placed where it starts: the place for the root of each region.
+meta def rootPlaces (regions : Array Expr) : MetaM (Array (Expr × Expr)) := do
+  let mut roots : Std.HashSet Expr := {}
+  let mut found := #[]
+  for r in regions do
+    let root := (← stem r).1
+    let some args ← root? root | continue
+    let key := mkAppN (mkConst ``Region.root) (args.extract 0 4)
+    if roots.contains key then continue
+    roots := roots.insert key
+    let place := mkApp3 (mkConst ``Region.Has) root args[0]! args[1]!
+    found := found.push (← mkExpectedTypeHint (← mkAppM ``Region.root_has args) place, place)
+  return found
+
+-- Each place that has the access, in scope order, with its region: a place `r.Has q m` with that pointer and
+-- size, or one that covers it, the pointer a literal number of bytes past its own. A place that fills its
+-- region puts the access in exactly those bytes of it, a part.
+meta def places (known : Array (Expr × Expr)) (pointer size : Expr) : MetaM (Array (Expr × Expr)) := do
+  let pointer ← instantiateMVars pointer
+  let size ← instantiateMVars size
+  let bytes? ← getNatValue? size
+  let mut found := #[]
+  for (proof, type) in known do
+    let_expr Region.Has candidate at_ length := type | continue
+    if (← same at_ pointer) && (← same length size) then found := found.push (candidate, proof); continue
+    let some bytes := bytes? | continue
+    if bytes == 0 then continue
+    let some room := (← getNatValue? length) <|> (← getNatValue? (← whnfR length)) | continue
+    let some (distance, place) ← between? pointer at_ | continue
+    unless distance + bytes ≤ room do continue
+    let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, size])
+    let sum ← mkAppM ``HAdd.hAdd #[mkNatLit distance, size]
+    if let some (written, law) ← length? candidate then
+      if ← same written length then
+        let law ← law
+        let filled ← mkExpectedTypeHint (← mkAppM ``Nat.le_of_eq #[law])
+          (← mkAppM ``LE.le #[mkApp (mkConst ``Region.length) candidate, length])
+        let inside ← mkAppM ``Nat.le_trans #[← mkDecideProof (← mkAppM ``LE.le #[sum, written]),
+          ← mkAppM ``Nat.le_of_eq #[← mkEqSymm law]]
+        let exact ← mkAppM ``Region.Has.exact #[proof, filled, ← place, inside, positive]
+        let_expr Region.Has part _ _ := ← inferType exact | continue
+        found := found.push (part, exact)
+        continue
+    let inside ← mkDecideProof (← mkAppM ``LE.le #[sum, length])
+    found := found.push (candidate, ← mkAppM ``Region.Has.cover #[proof, ← place, inside, positive])
+  return found
+
+-- `r.Has pointer size`: a place of the access in bytes inside `r`; or, for a part of a region at any offset,
+-- its offset past a place that fills the region.
+meta partial def has? (known : Array (Expr × Expr)) (r pointer size : Expr) : MetaM (Option Expr) := do
+  let r ← instantiateMVars r
+  let known := known ++ (← rootPlaces #[r])
+  for (region, proof) in ← places known pointer size do
+    if let some inside ← inside? region r then return some (← mkAppM ``Region.Has.inside #[proof, inside])
+  let some (parent, offset, length, inside) ← part? r | return none
+  unless (← getNatValue? length).any (0 < ·) && (← same length size) do return none
+  let positive ← mkDecideProof (← mkAppM ``LT.lt #[mkNatLit 0, length])
+  let whole := mkApp (mkConst ``Region.length) parent
+  let written? ← length? parent
+  for (proof, type) in known ++ (← rootPlaces #[parent]) do
+    let_expr Region.Has candidate _ filled := type | continue
+    unless ← same candidate parent do continue
+    let fills ← if ← same filled whole then mkAppM ``Nat.le_refl #[whole] else
+      let some (written, law) := written? | continue
+      unless ← same filled written do continue
+      mkExpectedTypeHint (← mkAppM ``Nat.le_of_eq #[← law]) (← mkAppM ``LE.le #[whole, filled])
+    let place ← mkAppM ``Region.Has.part_at #[proof, fills, offset, length, inside, positive]
+    let_expr Region.Has _ placed _ := ← inferType place | continue
+    if placed == pointer then return some place
+  return none
+
+-- The first place of an access, with its region.
+meta def placed? (known : Array (Expr × Expr)) (pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
+  return (← places known pointer size)[0]?
 
 -- For an error only: the regions named in scope, by a place, a permission or apartness.
-meta def named : MetaM MessageData := do
+meta def named (known : Array (Expr × Expr)) : MetaM MessageData := do
   let mut found : Array Expr := #[]
-  let mut candidates := #[]
-  for (_, type) in ← known do
-    match_expr type with
-    | Region.Has r _ _ => candidates := candidates.push r
-    | Region.Apart r other => candidates := candidates ++ #[r, other]
-    | Image.Reads _ r => candidates := candidates.push r
-    | Image.Writes _ r => candidates := candidates.push r
-    | _ => pure ()
-  for r in candidates do
+  for r in known.flatMap (regions ·.2) do
     unless ← found.anyM (same · r) do found := found.push r
   if found.isEmpty then return m!"No region is named in scope."
   return m!"The regions named in scope: {MessageData.joinSep (found.toList.map fun r => m!"`{r}`") ", "}."
