@@ -12,7 +12,7 @@ namespace ReadBack
 -- `Changes.Covers c r.range`: a region the change lists that `r` lies in.
 meta def covers (c r : Expr) : MetaM (Option Expr) := do
   let listed ← listItems (mkApp (mkConst ``Changes.memory) c)
-  let pairType ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Nat]
+  let pairType ← rangeType
   for (item, index) in listed.zipIdx do
     let some region := (← instantiateMVars item).app1? ``Region.range | continue
     let some inside ← Places.inside? r region | continue
@@ -28,10 +28,9 @@ meta def covers (c r : Expr) : MetaM (Option Expr) := do
 meta partial def sameMemory (scope : Walk) (c memory start : Expr) : MetaM Expr := do
   let history := scope.history
   if memory == start then return ← mkAppOptM ``Changes.Same.refl #[c, memory]
-  let pairType ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Nat]
   if let some (earlier, base, length, bytes, fact?) ← store? history memory then
-    let which := do return m!"the store of {length} bytes{← storedBy history memory}, to{indentExpr base}\n"
-    let places ← scope.placements (← scope.places) base length
+    let which := describeStore history memory length base
+    let places ← scope.placements base length
     let some (first, _) := places[0]? | throwError "{← which}is not placed in a region."
     let mut found := none
     for (r, placed) in places do
@@ -45,25 +44,20 @@ meta partial def sameMemory (scope : Walk) (c memory start : Expr) : MetaM Expr 
   if let some state := memory.app1? ``MachineState.memory then
     if let some (earlier, fact) := history.equations[memory]? then
       return ← mkAppM ``Changes.Same.of_eq #[fact, ← sameMemory scope c earlier start]
-    let nested := history.keptBy state
-    if let some ((earlier, inner, kept) : Expr × Expr × Expr) := nested[0]? then
-      let motive ← withLocalDeclD `range pairType fun range => do
-        mkLambdaFVars #[range] (← mkAppM ``Changes.Covers #[c, range])
-      let mut proof ← mkAppOptM ``List.forall_mem_nil #[pairType, motive]
-      let mut rest ← mkListLit pairType []
-      for range in (← listItems (mkApp (mkConst ``Changes.memory) inner)).reverse do
-        let inside ← match (← instantiateMVars range).app1? ``Region.range with
-          | some r => covers c r
-          | none => pure none
-        let some inside := inside
-          | throwError "the nested block that ended in {← describe state} may change{indentExpr range}\nwhich no region \
-              the change{indentExpr c}\nlists holds."
-        proof ← mkAppM ``Iff.mpr #[← mkAppOptM ``List.forall_mem_cons #[pairType, motive, range, rest],
-          ← mkAppM ``And.intro #[← mkExpectedTypeHint inside (motive.beta #[range]), proof]]
-        rest ← mkAppM ``List.cons #[range, rest]
-      let earlierMemory := mkApp (mkConst ``MachineState.memory) earlier
-      return ← mkAppOptM ``Changes.Same.nested #[c, inner, state, earlier, start, kept, proof,
-        ← sameMemory scope c earlierMemory start]
+    let motive ← withLocalDeclD `range (← rangeType) fun range => do
+      mkLambdaFVars #[range] (← mkAppM ``Changes.Covers #[c, range])
+    let mut missing := none
+    for (earlier, inner, kept) in history.keptBy state do
+      match ← allRanges inner motive fun range => do
+          let some r := (← instantiateMVars range).app1? ``Region.range | return none
+          covers c r with
+      | .inl proof =>
+        return ← mkAppOptM ``Changes.Same.nested #[c, inner, state, earlier, start, kept, proof,
+          ← sameMemory scope c (mkApp (mkConst ``MachineState.memory) earlier) start]
+      | .inr range => missing := missing <|> some range
+    if let some range := missing then
+      throwError "the nested block that ended in {← describe state} may change{indentExpr range}\nwhich no region \
+        the change{indentExpr c}\nlists holds."
   throwError "the memory{indentExpr memory}\nis not traced back to the block's start."
 
 -- A goal's parts, each with what it is for when that is not what it says.
@@ -102,21 +96,17 @@ meta partial def leaves (scope : Walk) (goal : MVarId) : TacticM (Array (MVarId 
     goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registersGoal, memory])
     return found
   -- A place is one part: a lookup first, and its two bounds only when that finds nothing.
-  if type.isAppOf ``Region.Has then return #[(goal, none)]
-  if ← splits type then
+  if !type.isAppOf ``Region.Has && (← splits type) then
     return ← (← goal.constructor).toArray.flatMapM (leaves scope)
   return #[(← goal.replaceTargetDefEq type, none)]
 
 -- Where each read of a part stopped short of the block's start.
-meta def stops (scope : Walk) (known : Array (Expr × Expr)) (type : Expr) : MetaM MessageData := do
+meta def stops (scope : Walk) (type : Expr) : MetaM MessageData := do
   let history := scope.history
   let reads ← IO.mkRef (#[] : Array Expr)
   forEachExpr type fun e => do
     if e.hasLooseBVars then return
-    if e.isAppOfArity ``MachineState.registers 2 || e.isAppOfArity ``readBytes 3 ||
-        ((e.isAppOfArity ``MachineState.status 1 || e.isAppOfArity ``MachineState.zeroFlag 1 ||
-          e.isAppOfArity ``MachineState.carryFlag 1 || e.isAppOfArity ``MachineState.signFlag 1 ||
-          e.isAppOfArity ``MachineState.overflowFlag 1) && e.appArg!.isFVar) then
+    if (location? e).isSome then
       unless (← reads.get).contains e do reads.modify (·.push e)
   let mut why := m!""
   for read in ← reads.get do
@@ -129,17 +119,21 @@ meta def stops (scope : Walk) (known : Array (Expr × Expr)) (type : Expr) : Met
           `{register}` is in its change{indentExpr c}\nand its postcondition does not say what it holds."
     | readBytes memory address size =>
       if moves history memory then
-        match ← Places.placed? known address size with
+        match (← scope.placements address size)[0]? with
         | none =>
           why := why ++ m!"\nThe read{indentExpr read}\nis not placed, so it is not read back: no hypothesis `r.Has q n` \
             has its pointer. State it:{indentExpr (mkApp3 (mkConst ``Region.Has)
               (mkConst `r) address size)}\nfor the region `r` it lies in; `r.Has p r.length` places every part of `r`. \
-              {← Places.named known}"
+              {← Places.named (← scope.places)}"
         | some (r, _) =>
-          if let (final, _, some whyStopped) ← scope.regionStep known r memory then
+          if let (final, _, some whyStopped) ← scope.regionStep r memory then
             let (reason, own) ← whyStopped
             why := why ++ m!"\nThe read{indentExpr read}\nplaced in `{r}`, {reason}"
             if let (true, some (_, base, length, _, _)) := (own, ← store? history final) then
+              if (← Places.between? address base).isSome then
+                why := why ++ m!"\nThe store holds only some of the read's bytes. Rivet reads back a read wholly outside \
+                  a store or wholly inside it: read the bytes as two such reads."
+                continue
               let number (e : Expr) := mkAppM ``BitVec.toNat #[e]
               let ends (e n : Expr) := do mkAppM ``HAdd.hAdd #[← number e, n]
               let misses := mkOr (← mkAppM ``LE.le #[← ends address size, ← number base])
@@ -243,7 +237,7 @@ meta partial def close (scope : Walk) (leaf : MVarId) (facts : Array (Expr × Ex
     leaf.withContext do
   let type ← instantiateMVars (← leaf.getType)
   if type.isAppOfArity ``Eq 3 then
-    let result ← scope.walk type scope.count
+    let result ← scope.walk type
     if result.expr.isConstOf ``True then
       leaf.assign (← mkEqMPR (← result.getProof' type) (mkConst ``True.intro))
       return none
@@ -263,7 +257,7 @@ meta partial def close (scope : Walk) (leaf : MVarId) (facts : Array (Expr × Ex
           step? := some proof
           break
       if step?.isNone then
-        let (prev, step, why) ← scope.regionStep (← scope.places) r final
+        let (prev, step, why) ← scope.regionStep r final
         next := prev
         step? := step
         stop? ← liftMetaM (why.mapM id)
@@ -303,20 +297,20 @@ meta partial def close (scope : Walk) (leaf : MVarId) (facts : Array (Expr × Ex
     let shown ← instantiateMVars (← rest.getType)
     for (source, part) in facts do
       unless part.getAppFn == shown.getAppFn || part.isForall do continue
-      let result ← scope.walk part scope.count
+      let result ← scope.walk part
       unless ← Places.same result.expr shown do continue
       rest.assign (← match result.proof? with
         | some equal => mkEqMP equal source
         | none => mkExpectedTypeHint source shown)
       return none
-    let notes ← scope.notes shown
+    let notes ← scope.notes type shown
     if shown.isAppOf ``Region.Has then
       let parent ← match ← Places.part? shown.appFn!.appFn!.appArg! with
         | some (root, _, _, _) => pure m!" Or place what it is part of: `{root}.Has p {root}.length` places each part of `{root}`."
         | none => pure m!""
       return some (← addMessageContext m!"{indentExpr shown}\nis not placed: no hypothesis `r.Has q n` has its pointer. \
         Prove the place, from one you have (`placed.part`) or from its two bounds, and give it.{parent}{notes}")
-    let reason ← stops scope (← scope.places) shown
+    let reason ← stops scope shown
     unless (← reason.format).isEmpty do
       return some (← addMessageContext m!"{indentExpr shown}\nA read in it stopped short of the block's start.{reason}{notes}")
     if shown.hasAnyFVar scope.history.later.contains then

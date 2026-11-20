@@ -30,15 +30,6 @@ meta def changedRegisters (c : Expr) : MetaM (Array Name) := do
       | throwError "a change names its registers; this is not a register name:{indentExpr register}"
     return name
 
--- A fact Rivet states and hides: a step's about an unnamed state, and a call's.
-private meta def noteModule : Name := `Rivet.Step.note
-
-meta def noteName : CoreM Name :=
-  return { extractMacroScopes (← mkFreshUserName `h) with ctx := noteModule }.review
-
-meta def isNote (decl : LocalDecl) : Bool :=
-  decl.userName.hasMacroScopes && (extractMacroScopes decl.userName).ctx == noteModule
-
 -- What the block did, read from the context once: what each step says of the state it ends in, and what
 -- a call's postcondition says of the state it ends in (one register, `t.registers .rsp = …`, only a call
 -- says); each store's memory and what it is; and each nested block's `t.Except earlier c`, newest first.
@@ -61,7 +52,7 @@ meta def History.read : MetaM History := do
     if (annotation? `Rivet.Step.state decl.type).isSome then
       h := { h with later := h.later.insert decl.fvarId }
       continue
-    if decl.isImplementationDetail && !isNote decl then
+    if decl.isImplementationDetail then
       if let some (memory, pc, op) := decl.type.app3? ``Step.StoredBy then
         h := { h with instructions := h.instructions.insert memory (pc, op) }
       continue
@@ -80,7 +71,7 @@ meta def History.read : MetaM History := do
         if rhs.isAppOfArity ``Memory.storeBytes 4 then
           h := { h with stores := h.stores.insertIfNew lhs.fvarId! (rhs, decl.toExpr), later := h.later.insert id }
           continue
-    if decl.isLet && !decl.userName.hasMacroScopes then h := { h with lets := h.lets.push decl.fvarId }
+    if decl.isLet then h := { h with lets := h.lets.push decl.fvarId }
     if ← isProp type then h := { h with users := h.users.push decl }
   return h
 
@@ -123,13 +114,17 @@ meta def openAbbrev (later : Std.HashSet FVarId) : Simp.DSimproc := fun e => do
   let some unfolded ← unfoldDefinition? e | return .continue
   return .visit unfolded.headBeta
 
+-- The nested block that ended in `state` and leaves the register alone: its start, change and `Except`.
+meta def History.leaves (history : History) (state : Expr) (name : Name) : MetaM (Option (Expr × Expr × Expr)) :=
+  (history.keptBy state).findM? fun (_, c, _) => do
+    let some changed ← try some <$> changedRegisters c catch _ => pure none | return false
+    return !changed.contains name
+
 -- A register a nested block's change does not list, read back across it.
 meta def unchangedRegister (history : History) : Simp.Simproc := fun e => do
   let_expr MachineState.registers state register := e | return .continue
   let some name := register.constName? | return .continue
-  for (earlier, c, kept) in history.keptBy state do
-    let some changed ← try some <$> changedRegisters c catch _ => pure none | continue
-    if changed.contains name then continue
+  if let some (earlier, c, kept) ← history.leaves state name then
     let out ← mkDecideProof
       (mkNot (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.registers) c, register]))
     return .visit { expr := mkApp2 (mkConst ``MachineState.registers) earlier register,

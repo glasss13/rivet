@@ -82,11 +82,24 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     type := body.instantiate1 argument
   return (proof, sides)
 
+-- Why the block's address is not known: no status, or one that is not a literal, as after `ret`.
+meta def noAddress (tactic : String) (state : Expr) : MetaM MessageData := do
+  for decl in ← getLCtx do
+    if decl.isImplementationDetail then continue
+    for (_, part) in ← ReadBack.parts decl.toExpr decl.type do
+      let some (_, lhs, rhs) := part.eq? | continue
+      unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
+      let some address := rhs.app1? ``ExecutionStatus.running | continue
+      return m!"{tactic}: `{state}` is at{indentExpr address}\nwhich is not a literal address. After `ret` it is \
+        the return address read from the stack: say where that is, \
+        `have : {state}.status = .running <address> := by rivet_known`."
+  return m!"{tactic}: no hypothesis `{state}.status = .running <address>`"
+
 private meta def currentPc (state : Expr) : TacticM (Option (Expr × Nat × Expr)) := do
   if let some found ← findPc? state then return found
   let w ← ReadBack.Walk.make (← getMainGoal)
   let status := mkApp (mkConst ``MachineState.status) state
-  let result ← w.walk status w.count
+  let result ← w.walk status
   let some address := result.expr.app1? ``ExecutionStatus.running | return none
   let some pc ← Fetch.addressValue? address | return none
   return some (address, pc, ← result.getProof' status)
@@ -151,7 +164,7 @@ private meta def checkpoint (w : ReadBack.Walk) (old : Expr) (names : Array Name
       let id := decl.fvarId
       let type ← instantiateMVars decl.type
       if name == `rivet_fact_path then
-        let result ← w.walk type w.count
+        let result ← w.walk type
         let proof ← mkEqMP (← result.getProof' type) (.fvar id)
         return some (result.expr, proof)
       let some (_, lhs, rhs) := type.eq? | throwError "rivet_step: expected a field equation{indentExpr type}"
@@ -164,7 +177,7 @@ private meta def checkpoint (w : ReadBack.Walk) (old : Expr) (names : Array Name
             let mut rest := body
             let mut writes := #[]
             while rest.isAppOfArity ``ite 5 do
-              let value ← w.walk (rest.getArg! 3) w.count
+              let value ← w.walk (rest.getArg! 3)
               writes := writes.push (rest.appFn!.appFn!, value)
               rest := rest.appArg!
             unless rest == mkApp inherited args[0]! do
@@ -176,7 +189,7 @@ private meta def checkpoint (w : ReadBack.Walk) (old : Expr) (names : Array Name
               value ← Simp.mkCongr (← Simp.mkCongrArg test written) value
             value ← value.mkEqTrans (← dedupe value.expr)
             return { expr := ← mkLambdaFVars args value.expr, proof? := some (← mkAppM ``funext #[← mkLambdaFVars args (← value.getProof' body)]) }
-        else w.walk rhs w.count
+        else w.walk rhs
       if (← ReadBack.isStepState old) && result.expr.containsFVar old.fvarId! then
         throwError "rivet_step: cannot state `{lhs}` without the earlier state `{old}`: {indentExpr result.expr}"
       if result.expr == rhs && !rhs.isLambda then return none
@@ -231,15 +244,15 @@ meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
 private meta def place (scope : ReadBack.Walk) (pc : Nat) (tag : Name) (goal : MVarId) (writes : Bool) (image pointer size : Expr) :
     TacticM Unit := goal.withContext do
   let at_ := m!"the instruction at 0x{Fetch.hex pc}"
-  let result ← scope.walk pointer scope.count
+  let result ← scope.walk pointer
   let address := result.expr
   let known ← scope.places
-  let places ← Places.places known address size
+  let places ← scope.placements address size
   let some (first, _) := places[0]?
     | throwError "rivet_step: the access `{tag}` of {at_} is not placed. State its place before this step, \
         from one you have (`placed.part`) or from its two bounds:\
         {indentExpr (mkApp3 (mkConst ``Region.Has) (mkConst `r) address size)}\nfor the region `r` it lies in; \
-        `r.Has p r.length` places every part of `r`. {← Places.named known}{← scope.notes address}"
+        `r.Has p r.length` places every part of `r`. {← Places.named known}{← scope.notes pointer address}"
   for (region, placed) in places do
     let some grant ← Places.grant? known writes image region | continue
     let mut proof := placed
@@ -430,7 +443,7 @@ open Step in
         let field := (fact.toString.drop "rivet_fact_".length).toString
         goal ← goal.rename decl.fvarId (← match named? with
           | some state => pure (state.appendAfter s!"_{field}")
-          | none => ReadBack.noteName)
+          | none => mkFreshUserName `h)
     if let (some condition, some decl) := (condition?, lctx.findFromUserName? `rivet_fact_path) then
       goal ← goal.rename decl.fvarId condition
     if isBranch then goal.setTag (if index == 0 then `taken else `fallthrough)

@@ -201,7 +201,7 @@ meta def places (known : Array (Expr × Expr)) (pointer size : Expr) : MetaM (Ar
 
 -- `r.Has pointer size`: a place of the access in bytes inside `r`; or, for a part of a region at any offset,
 -- its offset past a place that fills the region.
-meta partial def has? (known : Array (Expr × Expr)) (r pointer size : Expr) : MetaM (Option Expr) := do
+meta def has? (known : Array (Expr × Expr)) (r pointer size : Expr) : MetaM (Option Expr) := do
   let r ← instantiateMVars r
   let known := known ++ (← rootPlaces #[r])
   for (region, proof) in ← places known pointer size do
@@ -222,10 +222,6 @@ meta partial def has? (known : Array (Expr × Expr)) (r pointer size : Expr) : M
     let_expr Region.Has _ placed _ := ← inferType place | continue
     if placed == pointer then return some place
   return none
-
--- The first place of an access, with its region.
-meta def placed? (known : Array (Expr × Expr)) (pointer size : Expr) : MetaM (Option (Expr × Expr)) := do
-  return (← places known pointer size)[0]?
 
 -- For an error only: the regions named in scope, by a place, a permission or apartness.
 meta def named (known : Array (Expr × Expr)) : MetaM MessageData := do
