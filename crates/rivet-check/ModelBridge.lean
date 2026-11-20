@@ -94,11 +94,15 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let memory : Memory := fun address =>
     let value := request.memory[(address - base).toNat]?.getD 0
     ⟨value % 256, Nat.mod_lt _ (by decide)⟩
-  let image : Image := { program, regions := [
-    { base := request.memoryBase, length := request.writableBase - request.memoryBase,
-      readable := true, writable := false, fits := by omega },
-    { base := request.writableBase, length := request.memoryBase + request.memory.size - request.writableBase,
-      readable := true, writable := true, fits := by omega }] }
+  let region (start length : Nat) (writable : Bool) (fits : start + length ≤ 2^64) : List Region :=
+    if _ : 0 < length then
+      [Region.root (BitVec.ofNat 64 start) length true writable (by
+        rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]; exact fits)]
+    else []
+  let regions :=
+    region request.memoryBase (request.writableBase - request.memoryBase) false (by omega) ++
+    region request.writableBase (request.memoryBase + request.memory.size - request.writableBase) true (by omega)
+  let image : Image := { program, regions }
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
