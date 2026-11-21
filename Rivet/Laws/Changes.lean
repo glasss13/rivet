@@ -4,9 +4,10 @@ public import Rivet.Interpreter.Machine
 @[expose] public section
 namespace Rivet
 
--- Registers, and intervals `[low, high)` of address values.
+-- Registers, vector registers, and intervals `[low, high)` of address values.
 structure Changes where
   registers : List Reg := []
+  xmm : List Xmm := []
   memory : List (Nat × Nat) := []
 
 -- What writing an operand changes: its whole 64-bit register, or the bytes it stores.
@@ -26,9 +27,10 @@ def Changes.Misses (c : Changes) (low high : Nat) : Prop :=
 -- equal sides. Rivet's own: `Block.done` and `rivet_call` use it, and it starts no arithmetic.
 syntax (name := Internal.rivetKnown) "rivet_known" : tactic
 
--- `t` is `s` except for `c`. Flags, vector registers and the status are not compared.
+-- `t` is `s` except for `c`. Flags and the status are not compared.
 structure MachineState.Except (t s : MachineState) (c : Changes) : Prop where
   sameRegisters : ∀ register, register ∉ c.registers → t.registers register = s.registers register
+  sameXmm : ∀ register, register ∉ c.xmm → t.xmmRegisters register = s.xmmRegisters register
   sameMemory : ∀ (address : BitVec 64) (size : Nat), c.Misses address.toNat (address.toNat + size) →
     address.toNat + size ≤ 2^64 → readBytes t.memory address size = readBytes s.memory address size
 
@@ -36,7 +38,26 @@ structure MachineState.Except (t s : MachineState) (c : Changes) : Prop where
 namespace Internal
 
 theorem MachineState.Except.refl {s : MachineState} {c : Changes} : s.Except s c :=
-  ⟨fun _ _ => rfl, fun _ _ _ _ => rfl⟩
+  ⟨fun _ _ => rfl, fun _ _ => rfl, fun _ _ _ _ => rfl⟩
+
+-- The vector registers outside `c`, kept from `s` to `t`: by a step that wrote none, and by a nested
+-- block whose change lists only vector registers `c` lists.
+def Changes.SameXmm (c : Changes) (t s : MachineState) : Prop :=
+  ∀ register, register ∉ c.xmm → t.xmmRegisters register = s.xmmRegisters register
+
+namespace Changes.SameXmm
+
+theorem refl {c : Changes} {s : MachineState} : Changes.SameXmm c s s := fun _ _ => rfl
+
+theorem of_eq {c : Changes} {t u s : MachineState} (same : t.xmmRegisters = u.xmmRegisters)
+    (rest : Changes.SameXmm c u s) : Changes.SameXmm c t s :=
+  fun register out => same ▸ rest register out
+
+theorem nested {c inner : Changes} {t u s : MachineState} (kept : t.Except u inner)
+    (within : ∀ register ∈ inner.xmm, register ∈ c.xmm) (rest : Changes.SameXmm c u s) : Changes.SameXmm c t s :=
+  fun register out => (kept.sameXmm register fun listed => out (within register listed)).trans (rest register out)
+
+end Changes.SameXmm
 
 end Internal
 

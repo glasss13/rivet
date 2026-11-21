@@ -107,10 +107,10 @@ meta def moves (history : History) (memory : Expr) : Bool :=
     | some state => state.hasAnyFVar history.later.contains
     | none => memory.isAppOfArity ``Memory.storeBytes 4
 
--- What a location is of: the state of a register, its low bits as an instruction reads them, its status
--- or a flag; or the memory of a read.
+-- What a location is of: the state of a register or a vector register, its low bits as an instruction
+-- reads them, its status or a flag; or the memory of a read.
 meta def location? (e : Expr) : Option Expr :=
-  let register (e : Expr) := e.isAppOfArity ``MachineState.registers 2 && (e.getArg! 1).isConst
+  let register (e : Expr) := (registerFile? e).isSome && (e.getArg! 1).isConst
   if register e then some (e.getArg! 0)
   else if e.isAppOfArity ``BitVec.setWidth 3 && register (e.getArg! 2) then some ((e.getArg! 2).getArg! 0)
   else if e.isAppOfArity ``readBytes 3 then some (e.getArg! 0)
@@ -244,7 +244,7 @@ meta partial def Walk.walk (w : Walk) (e : Expr) (limit : Nat := w.count) : Meta
   let procs := w.reductions.push (({} : Simp.Simprocs).addCore #[.star] `rivetLocation false (.inl fun sub => do
     if sub != e && !sub.hasLooseBVars && (location? sub).isSome then return .done (← w.walk sub limit)
     if let some (rhs, proof) := w.history.equations[sub]? then return .visit { expr := rhs, proof? := some proof }
-    if sub.isAppOfArity ``MachineState.registers 2 || sub.isAppOfArity ``MachineState.xmmRegisters 2 then
+    if (registerFile? sub).isSome then
       if let some result ← w.select sub then return .visit result
       return ← unchangedRegister w.history sub
     return .continue))
@@ -363,9 +363,7 @@ meta def Walk.make (goal : MVarId) (except : Array FVarId := #[])
           continue
       let state := (of.app1? ``MachineState.memory).getD of
       let register := if lhs.isAppOfArity ``BitVec.setWidth 3 then lhs.getArg! 2 else lhs
-      let kept ← match register.app2? ``MachineState.registers with
-        | some (_, .const name _) => history.leaves state name
-        | _ => pure none
+      let kept ← history.leaves register
       unless state.isFVar && !(← isStepState state) && !history.stores.contains state.fvarId! && kept.isNone do
         skipped := skipped.push (source, lhs, if state.isFVar then m!"the walk goes back past this state"
           else m!"the walk stops only at a state: the block's start, or a nested block's end")

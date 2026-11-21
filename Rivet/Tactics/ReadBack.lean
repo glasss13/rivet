@@ -60,40 +60,71 @@ meta partial def sameMemory (scope : Walk) (c memory start : Expr) : MetaM Expr 
         the change{indentExpr c}\nlists holds."
   throwError "the memory{indentExpr memory}\nis not traced back to the block's start."
 
+-- `c.SameXmm state s`, with no vector register looked at: no step from `s` to `state` wrote one, and each
+-- nested block's change lists only vector registers `c` lists.
+meta partial def sameXmm (history : History) (c state s : Expr) : MetaM (Option Expr) := do
+  if state == s then return some (← mkAppOptM ``Changes.SameXmm.refl #[c, s])
+  if let some (file, equation) := history.equations[mkApp (mkConst ``MachineState.xmmRegisters) state]? then
+    let some earlier := file.app1? ``MachineState.xmmRegisters | return none
+    let some rest ← sameXmm history c earlier s | return none
+    return some (← mkAppM ``Changes.SameXmm.of_eq #[equation, rest])
+  let listed ← changedRegisters c ``Changes.xmm
+  for (earlier, inner, kept) in history.keptBy state do
+    unless (← changedRegisters inner ``Changes.xmm).all listed.contains do continue
+    let some rest ← sameXmm history c earlier s | continue
+    let within ← withLocalDeclD `register (mkConst ``Xmm) fun register => do
+      mkForallFVars #[register] (← mkArrow
+        (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.xmm) inner, register])
+        (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.xmm) c, register]))
+    return some (← mkAppM ``Changes.SameXmm.nested #[kept, ← mkDecideProof within, rest])
+  return none
+
+-- `∀ register, register ∉ c.… → …`, the statement of `Except` for a register file: a case for each
+-- register, closed if the change lists it and a part to prove if not.
+meta def unlisted (c : Expr) (listed : Name) (statement : Expr) : MetaM (Expr × Array (MVarId × Option MessageData)) := do
+  let changed ← changedRegisters c listed
+  let goal ← mkFreshExprSyntheticOpaqueMVar statement
+  let (register, cases) ← goal.mvarId!.intro `register
+  let (_, cases) ← cases.intro `out
+  let mut found := #[]
+  for case in ← cases.cases register do
+    let leaf ← case.mvarId.withContext do
+      let some out := (← getLCtx).findFromUserName? `out | unreachable!
+      let some name := case.ctorName | unreachable!
+      if changed.contains name then
+        let some inside := (← instantiateMVars out.type).not? | unreachable!
+        case.mvarId.assign (← mkAbsurd (← case.mvarId.getType) (← mkDecideProof inside) out.toExpr)
+        return none
+      return some (← case.mvarId.clear out.fvarId, m!"`{mkConst name}` is not in the change{indentExpr c}\n\
+        so it must end as it started. If it does change, list it.")
+    if let some (leaf, note) := leaf then found := found.push (leaf, some note)
+  return (goal, found)
+
 -- A goal's parts, each with what it is for when that is not what it says.
 meta partial def leaves (scope : Walk) (goal : MVarId) : TacticM (Array (MVarId × Option MessageData)) :=
     goal.withContext do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   if type.isForall then return ← leaves scope (← goal.intro1P).2
-  -- `t.Except s c`: each register outside `c` is as it was, and each store is into a region `c` lists.
+  -- `t.Except s c`: each register and vector register outside `c` is as it was, and each store is into a
+  -- region `c` lists.
   if let some (t, s, c) := type.app3? ``MachineState.Except then
     if t == s then
       goal.assign (← mkAppOptM ``MachineState.Except.refl #[s, c])
       return #[]
-    let changed ← changedRegisters c
     let statement ← inferType (← mkAppOptM ``MachineState.Except.mk #[t, s, c])
-    let .forallE _ registersType _ _ := statement
+    let .forallE _ registersType (.forallE _ xmmType _ _) _ := statement
       | throwError "rivet_known: unexpected statement{indentExpr statement}"
-    let registersGoal ← mkFreshExprSyntheticOpaqueMVar registersType
-    let (register, cases) ← registersGoal.mvarId!.intro `register
-    let (_, cases) ← cases.intro `out
-    let mut found := #[]
-    for case in ← cases.cases register do
-      let leaf ← case.mvarId.withContext do
-        let some out := (← getLCtx).findFromUserName? `out | unreachable!
-        let some name := case.ctorName | unreachable!
-        if changed.contains name then
-          let some inside := (← instantiateMVars out.type).not? | unreachable!
-          case.mvarId.assign (← mkAbsurd (← case.mvarId.getType) (← mkDecideProof inside) out.toExpr)
-          return none
-        return some (← case.mvarId.clear out.fvarId, m!"`{mkConst name}` is not in the change{indentExpr c}\n\
-          so it must end as it started. If it does change, list it.")
-      if let some (leaf, note) := leaf then found := found.push (leaf, some note)
+    let (registers, found) ← unlisted c ``Changes.registers registersType
+    let (xmm, found) ← match ← sameXmm scope.history c t s with
+      | some same => pure (same, found)
+      | none => do
+        let (xmm, parts) ← unlisted c ``Changes.xmm xmmType
+        pure (xmm, found ++ parts)
     let memory ← try
         sameMemory scope c (mkApp (mkConst ``MachineState.memory) t) (mkApp (mkConst ``MachineState.memory) s)
       catch error =>
         throwError "the change{indentExpr c}\ndoes not cover what the block wrote: {error.toMessageData}"
-    goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registersGoal, memory])
+    goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registers, xmm, memory])
     return found
   -- A place is one part: a lookup first, and its two bounds only when that finds nothing.
   if !type.isAppOf ``Region.Has && (← splits type) then
@@ -110,13 +141,16 @@ meta def stops (scope : Walk) (type : Expr) : MetaM MessageData := do
       unless (← reads.get).contains e do reads.modify (·.push e)
   let mut why := m!""
   for read in ← reads.get do
-    match_expr read with
-    | MachineState.registers state register =>
+    if let some (listed, _) := registerFile? read then
+      let state := read.appFn!.appArg!
+      let register := read.appArg!
       let name := (← whnfR register).constName?.getD .anonymous
-      let inside ← (history.keptBy state).filterM fun (_, c, _) => return (← changedRegisters c).contains name
+      let inside ← (history.keptBy state).filterM fun (_, c, _) => return (← changedRegisters c listed).contains name
       if let some (_, c, _) := inside[0]? then
         why := why ++ m!"\nThe read of `{register}` stopped at the nested block that ended in {← describe state}: \
           `{register}` is in its change{indentExpr c}\nand its postcondition does not say what it holds."
+      continue
+    match_expr read with
     | readBytes memory address size =>
       if moves history memory then
         match (← scope.placements address size)[0]? with
@@ -156,7 +190,7 @@ meta def atomsOf (e : Expr) : MetaM (Array Expr) := do
   let isAtom (sub : Expr) : MetaM Bool := do
     if sub.isFVar then
       return !((← inferType sub).getAppFn.constName?.any (isStructure env)) && !(← isProof sub)
-    if sub.isAppOfArity ``MachineState.registers 2 || sub.isAppOfArity ``readBytes 3 then return true
+    if (registerFile? sub).isSome || sub.isAppOfArity ``readBytes 3 then return true
     let some name := sub.getAppFn.constName? | return false
     unless sub.getAppNumArgs == 1 && sub.appArg!.isFVar do return false
     unless (← getProjectionFnInfo? name).isSome do return false
