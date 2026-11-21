@@ -83,8 +83,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     throw "invalid XMM register values"
   unless request.memory.size ≤ 65536 && request.memory.all (· < 256) do
     throw "invalid memory"
-  let program := request.program.toList
-  let some first := program.head? | throw "empty program"
+  let some first := request.program[0]? | throw "empty program"
   let Decidable.isTrue ranges := (inferInstance : Decidable (request.memoryBase ≤ request.writableBase ∧
       request.writableBase ≤ request.memoryBase + request.memory.size ∧
       request.memoryBase + request.memory.size ≤ 2^64))
@@ -102,7 +101,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let regions :=
     region request.memoryBase (request.writableBase - request.memoryBase) false (by omega) ++
     region request.writableBase (request.memoryBase + request.memory.size - request.writableBase) true (by omega)
-  let image : Image := { program, regions }
+  let image : Image := { program := .leaf request.program.toList, regions }
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128

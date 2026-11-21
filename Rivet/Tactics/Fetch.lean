@@ -20,11 +20,15 @@ meta def addressValue? (address : Expr) : MetaM (Option Nat) := do
     (evalNat value).run
   catch _ => return none
 
-private meta def firstMatch (list : Expr) (pc : Nat) (limit : Nat := 0) : MetaM (Option Expr) := do
-  let mut current := list
-  let mut visited := 0
+-- The instruction `program.fetch` finds at `pc`: down the tree to one leaf, then along it.
+private meta def fetched (program : Expr) (pc : Nat) : MetaM (Option Expr) := do
+  let mut current ← whnf program
+  while current.isAppOfArity ``Program.branch 3 do
+    let some split ← addressValue? (current.getArg! 0) | return none
+    current ← whnf (current.getArg! (if pc < split then 1 else 2))
+  unless current.isAppOfArity ``Program.leaf 1 do return none
+  current := current.getArg! 0
   repeat
-    if limit != 0 && visited ≥ limit then return none
     current ← whnf current
     unless current.isAppOfArity ``List.cons 3 do return none
     let instruction ← whnf (current.getArg! 1)
@@ -33,7 +37,6 @@ private meta def firstMatch (list : Expr) (pc : Nat) (limit : Nat := 0) : MetaM 
     let some length ← (evalNat (← whnf (instruction.getArg! 1))).run | return none
     if address == pc && 0 < length && length ≤ 15 then return some instruction
     current := current.getArg! 2
-    visited := visited + 1
   return none
 
 private meta def programOf (program : Expr) : MetaM Expr := do
@@ -47,24 +50,11 @@ private meta def programOf (program : Expr) : MetaM Expr := do
   return if image.isAppOfArity ``Image.mk 2 then image.getArg! 0 else program
 
 meta def prove (original address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
-  let program ← programOf original
-  -- State the result about the caller's program, so it matches their goal syntactically.
-  let restate (instruction proof : Expr) : MetaM (Expr × Expr) := do
-    let fetched ← mkAppM ``Program.fetch #[original, address]
-    return (instruction, ← mkExpectedTypeHint proof (← mkEq fetched (← mkAppM ``Option.some #[instruction])))
-  if let some name := program.constName? then
-    let stepName := name ++ Name.mkSimple s!"from_{hex pc}"
-    if (← getEnv).contains stepName then
-      let same := mkApp2 (mkConst stepName) address (mkApp2 (mkConst ``BitVec.le_refl) (mkNatLit 64) address)
-      let some (_, _, suffixFetch) := (← instantiateMVars (← inferType same)).eq? | return none
-      let some instruction ← firstMatch (suffixFetch.appFn!.appArg!) pc (limit := 1) | return none
-      let result ← mkAppM ``Option.some #[instruction]
-      let head ← mkExpectedTypeHint (← mkEqRefl result) (← mkEq suffixFetch result)
-      return some (← restate instruction (← mkEqTrans same head))
-  let some instruction ← firstMatch program pc | return none
+  let some instruction ← fetched (← programOf original) pc | return none
   let result ← mkAppM ``Option.some #[instruction]
-  let fetched ← mkAppM ``Program.fetch #[program, address]
-  return some (← restate instruction (← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetched result)))
+  -- State the result about the caller's program, so it matches their goal syntactically.
+  let fetch ← mkAppM ``Program.fetch #[original, address]
+  return some (instruction, ← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetch result))
 
 end Fetch
 

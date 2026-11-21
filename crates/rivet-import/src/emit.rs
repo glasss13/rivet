@@ -80,62 +80,64 @@ fn loadable_segments(source: &mut String, segments: &[Segment<'_>]) -> std::fmt:
     Ok(())
 }
 
-/// Emits `program` as a chain of suffixes, so that a proof can fetch any
-/// instruction in time independent of the program size.
+/// Emits `program` as a balanced search tree over leaves of up to 16 instructions, so that a
+/// proof fetches any instruction in a few comparisons and a scan of one leaf.
 ///
-/// `program.suffix_<a>` is the program from the instruction at address `a` on;
-/// suffixes are listed last to first because each one refers to the next.
-/// `program.from_<a> : FetchesFrom program program.suffix_<a> a` follows from
-/// the previous instruction's fact by `FetchesFrom.skip`, and Lean checks it.
-/// Instructions must have strictly increasing addresses.
+/// `program.leaf_<a>` is the leaf whose first instruction is at address `a`, and
+/// `program.tree<h>_<a>` the tree over 16 of the trees one level down, the first of them at `a`.
+/// Every definition is small: Lean elaborates many small definitions far faster than one large
+/// one. Instructions must have strictly increasing addresses.
 fn program(source: &mut String, instructions: &[Instruction]) -> std::fmt::Result {
-    let Some(first) = instructions.first() else {
-        return writeln!(source, "def program : Rivet.Program := []");
-    };
-    writeln!(
-        source,
-        "\n-- The program from each instruction on, last to first."
-    )?;
-    for (index, instruction) in instructions.iter().enumerate().rev() {
-        let rest = match instructions.get(index + 1) {
-            Some(next) => format!("program.suffix_{:x}", next.address),
-            None => "[]".to_string(),
-        };
-        writeln!(
-            source,
-            "def program.suffix_{:x} : Rivet.Program := {{ address := {:#x}#64, length := {}, op := {} }} :: {rest}",
-            instruction.address,
-            instruction.address,
-            instruction.length,
-            operation(&instruction.op),
-        )?;
+    if instructions.is_empty() {
+        return writeln!(source, "def program : Rivet.Program := .leaf []");
+    }
+    writeln!(source, "\n-- The program's instructions, 16 to a leaf.")?;
+    let mut trees = Vec::new();
+    for leaf in instructions.chunks(16) {
+        let name = format!("program.leaf_{:x}", leaf[0].address);
+        writeln!(source, "def {name} : Rivet.Program := .leaf [")?;
+        for (index, instruction) in leaf.iter().enumerate() {
+            writeln!(
+                source,
+                "  {{ address := {:#x}#64, length := {}, op := {} }}{}",
+                instruction.address,
+                instruction.length,
+                operation(&instruction.op),
+                if index + 1 < leaf.len() { "," } else { "]" }
+            )?;
+        }
+        trees.push((leaf[0].address, name));
     }
     writeln!(
         source,
-        "def program : Rivet.Program := program.suffix_{:x}",
-        first.address
+        "\n-- A search tree over the leaves: each branch splits at its right side's first address."
     )?;
-    writeln!(
-        source,
-        "\n-- At and above each address, `program` fetches as that address's suffix."
-    )?;
-    for (index, instruction) in instructions.iter().enumerate() {
-        let address = instruction.address;
-        let proof = match index
-            .checked_sub(1)
-            .map(|previous| instructions[previous].address)
-        {
-            None => "fun _ _ => rfl".to_string(),
-            Some(previous) => format!(
-                "Rivet.Internal.Program.FetchesFrom.skip program.from_{previous:x} (by decide)"
-            ),
-        };
-        writeln!(
-            source,
-            "theorem program.from_{address:x} : Rivet.Internal.Program.FetchesFrom program program.suffix_{address:x} {address:#x}#64 := {proof}"
-        )?;
+    let mut height = 1;
+    while trees.len() > 16 {
+        let mut level = Vec::new();
+        for group in trees.chunks(16) {
+            let name = format!("program.tree{height}_{:x}", group[0].0);
+            writeln!(source, "def {name} : Rivet.Program := {}", branches(group))?;
+            level.push((group[0].0, name));
+        }
+        trees = level;
+        height += 1;
     }
-    Ok(())
+    writeln!(source, "def program : Rivet.Program := {}", branches(&trees))
+}
+
+/// A balanced tree over `trees`, each given as its first address and its name.
+fn branches(trees: &[(u64, String)]) -> String {
+    if let [(_, name)] = trees {
+        return name.clone();
+    }
+    let (left, right) = trees.split_at(trees.len() / 2);
+    format!(
+        "(.branch {:#x}#64 {} {})",
+        right[0].0,
+        branches(left),
+        branches(right)
+    )
 }
 
 fn name(value: impl std::fmt::Debug) -> String {
