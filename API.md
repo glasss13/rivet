@@ -1,8 +1,8 @@
 # Rivet API
 
-Everything a proof can use. Names are in `Rivet`, instruction contracts in `Rivet.Contract`.
-`Rivet.Internal` is what the tactics build proofs with; a proof never names it. Start each proof
-file with
+Public names live in `Rivet`; instruction specs live in `Rivet.Contract`. Never reference `Rivet.Internal`.
+
+Start every proof file with:
 
 ```lean
 module
@@ -11,50 +11,30 @@ public import Rivet
 open Rivet
 ```
 
-Without `module`, Lean computes through the model's internals, which is slow and can exhaust its
-recursion limit. Without `public`, files that import this one do not see its names.
+`module` stops Lean from unfolding model internals (preventing slowness and recursion-limit hits). `public import` and `@[expose] public section` make theorems visible to importing files.
 
-## Blocks
+## Blocks & Loops
 
-- `Block image s c Q`: from `s`, for every value of the undefined flags, execution reaches in
-  finitely many steps a state `t` with `Q t` that is `s` except for the change `c`. Functions,
-  loops, stretches of code and instructions are all blocks.
-- `Changes`: `registers`, a list of registers, and `memory`, a list of regions
-  (`memory := [output a, scratch a]`), both empty by default. On two lines, the second field must
-  start in the first's column, or Lean reports `expected '}'`.
-- `t.Except s c`: every register outside `c.registers` and every read outside `c.memory` is the
-  same in `t` as in `s`. Flags, vector registers and the status are not compared; state them in
-  `Q`. A register the block saves and restores is not in the change.
+- `Block image s c Q` (5th arg `t := s` is the current state while stepping): from `s`, for all undefined flag values, execution terminates in a state `t` with `Q t` and `t.Except s c`.
+- `Changes`: `{ registers := [...], memory := [...] }` (both default `[]`). Multi-line fields must start in the same column, or Lean reports `expected '}'`.
+- `t.Except s c`: every register not in `c.registers` and every memory read disjoint from `c.memory` equals `s`. Does not cover flags, `xmmRegisters`, or `status` (state those in `Q`). Saved-and-restored registers do not need to be in `c.registers`.
 
-While you step from `s`, the goal is `Block image s c Q t`, at the state `t` reached so far. Each
-instruction and each block you call runs as a nested block. Only the end is compared with the
-start, so a nested block may change what the block keeps if later code restores it.
+Closing and composing blocks:
 
-- `rivet_call copy a (room := proof) as q` runs a block you proved from the current state; give its
-  arguments up to its start state. Its preconditions are proved as `rivet_known` does; one that is
-  not is an error naming it, and you give it by name. A proof you give is checked as written, over
-  the current state: `by rivet_arith [bound]` reads it back, a hypothesis about `s` does not. The
-  proof goes on from the block's end with `q_post`, its postcondition read back to the start, and
-  `q_kept`, what it left alone (hidden without `as q`). An `∨` postcondition gives one goal per
-  side, in order.
-- `exact Block.done` ends the block: it proves `Q` and that every store went into a region `c`
-  lists, as `rivet_known` does. `Block.done ⟨by rivet_known, by rivet_arith [bound]⟩` takes your
-  proof of `Q`.
-- `Block.then inner rest` runs a block given as a term, such as a loop:
-  `refine Block.then (c₁ := c) (P := P) (Block.loop …) fun u kept post => ?_`, going on from `u`
-  with `kept : u.Except t c` and `post : P u`.
-- `Block.loop`: a loop whose head is `t`, as a block of its own.
+- `exact Block.done` — ends the block, proving `Q` and `t.Except s c` via `rivet_known` (tries both sides of `∨` in `Q`).
+- `exact Block.done proofOfQ` — supply `Q` explicitly (e.g. `⟨by rivet_known, by rivet_arith [bound]⟩`); `t.Except s c` is still proved automatically.
+- `Block.then` — run a block term (such as a loop) and continue from its end state:
+  `refine Block.then (c₁ := c) (P := P) (Block.loop …) fun u kept post => ?_`
+- `Block.loop` — prove a loop starting at `t`:
 
 ```lean
-theorem Block.loop (invariant : MachineState → Prop) (measure : MachineState → Nat) (holds : invariant t)
-    (body : ∀ current, current.Except t c → invariant current →
-      Block image t c (fun next => invariant next ∧ measure next < measure current ∨ exit next) current) :
-    Block image t c exit
+Block.loop (invariant : MachineState → Prop) (measure : MachineState → Nat) (holds : invariant t)
+  (body : ∀ cur, cur.Except t c → invariant cur →
+    Block image t c (fun next => invariant next ∧ measure next < measure cur ∨ exit next) cur) :
+  Block image t c exit
 ```
 
-A pass starts at `current`; registers the change does not list read back to `t` through `kept`.
-Where it jumps back, prove the invariant with a smaller measure, `Block.done (Or.inl ⟨⟨…⟩, …⟩)`;
-where it leaves, `exact Block.done` proves `exit` when `rivet_known` can.
+Example:
 
 ```lean
 -- mov [rdi], sil · inc rdi · dec rdx · jne 0x1000
@@ -65,13 +45,10 @@ structure Filling (dst : Region) (s t : MachineState) : Prop where
 
 theorem fill (dst : Region) (s : MachineState) (writes : image.Writes dst) (start : Filling dst s s) :
     Block image s { registers := [.rdi, .rdx], memory := [dst] } (fun t => t.status = .running 0x100b) := by
-  refine Block.loop (Filling dst s) (fun t => (t.registers .rdx).toNat) start fun c kept inv => ?_
+  refine Block.loop (Filling dst s) (fun t => (t.registers .rdx).toNat) start fun cur kept inv => ?_
   have fits := dst.fits
-  have byte : dst.Has (c.registers .rdi) 1 :=   -- the place of this pass's store
-    inv.left.part (Nat.le_refl _) (by rivet_arith [inv])
-  rivet_step
-  rivet_step
-  rivet_step
+  have byte : dst.Has (cur.registers .rdi) 1 := inv.left.part (Nat.le_refl _) (by rivet_arith [inv])
+  rivet_step; rivet_step; rivet_step
   rivet_step if more
   · exact Block.done (Or.inl ⟨⟨by rivet_known,
       ⟨by rivet_arith [inv, fits, more], by rivet_arith [inv, fits, more]⟩,
@@ -79,226 +56,157 @@ theorem fill (dst : Region) (s : MachineState) (writes : image.Writes dst) (star
   · exact Block.done
 ```
 
-## Reading back
+## Tactics
 
-Rivet knows a value by its location: a register (`t.registers .rsp`), its low bits as an
-instruction reads them (`(t.registers .rcx).setWidth 32`), the status, a flag, or a read
-(`readBytes m p n`). It walks back past every block that could not have touched it, each step a
-lookup that computes only with literals; arithmetic over variables is yours (`rivet_arith`):
+### `rivet_step`
 
-- a register, from the current state's register equation; at a nested block's end, an unlisted
-  register through its change;
-- a read, past each store and nested block its region is apart from (see Memory);
-- `r.Same m t.memory`, from `t` back to `m`: every store is placed in a region apart from `r`, and
-  every nested block's change lists only such regions. A hypothesis `r.Same m m'` ends the walk at
-  `m'`.
+Executes instructions at the current PC:
+- `rivet_step` / `rivet_step as t` / `rivet_step if h` / `rivet_step as t if h`
+- `rivet_step to <addr>` / `rivet_step to <addr> as t` — steps until PC is `<addr>` (stops before branches).
 
-The walk stops at the block's start (in a loop, `current`) and, for what it changed, at a nested
-block's end. There a **fact** says what the location holds: a hypothesis, or a field of a record
-hypothesis, `location = value`. So preconditions, invariants and postconditions say where the
-registers and frame slots stand, and everything else is stated over the theorem's arguments:
+Details:
+- `as t` names the next state `t` and equations `t_status`, `t_registers`, `t_memory`, `t_zeroFlag`, `t_carryFlag`, `t_signFlag`, `t_overflowFlag`, `t_xmmRegisters` (anonymous without `as`). Unused prior states are auto-cleared.
+- Every store introduces `mₙ` and `mₙ_def : mₙ = m.storeBytes p n (littleEndianAt v p)`.
+- Conditional jumps (`jcc`) require `if h` (and only `jcc` allows `if h`). Produces goals `taken` (with `h`) and `fallthrough` (with `¬h`) as word comparisons. Unreachable branches get `h : False` (`exact h.elim`). `iterate`, `repeat`, and `rivet_step to` never cross a branch.
+- `ret` sets `status = .running (readBytes m rsp 8)`.
+- Memory accesses require an in-bounds `r.Has p n` and `image.Reads r` / `image.Writes r` hypothesis (errors otherwise). Other side conditions try `rfl`/`decide`/`assumption`; any remainder becomes a subgoal.
+
+### `rivet_call`
 
 ```lean
-structure Prepare (a : Arguments) (s : MachineState) : Prop where
+rivet_call lemma arg1 arg2 (precond := proof) as q
+```
+
+- Pass positional args up to (not including) the start state `s`. `Prop` preconditions are auto-proved via `rivet_known`; pass missing ones by name `(precond := proof)`.
+- Named proofs are checked at the **current** state: use `by rivet_arith [...]` (which traces back to `s`), not a raw hypothesis about `s`.
+- `as q` introduces end state `q`, `q_kept : q.Except prev c₁`, and `q_post : P q` (anonymous without `as`).
+- If `P` is a disjunction (`A ∨ B`), splits into one goal per branch in order.
+
+### `rivet_known`
+
+Closes goals with no arithmetic and no search. Splits `∧`, `∀`, and `Prop` `structure`s; tries both sides of `∨` (provide witnesses for `∃`). After tracing values back to start, closes a subgoal if it:
+- matches a hypothesis (or a `∀` hypothesis whose premises are in scope),
+- is reflexive (`x = x`, `x ≤ x`) or a closed literal,
+- or resolves via region rules (`Has`, `Apart`, `Reads`, `Writes`, `Same`).
+
+### `rivet_arith [h₁, h₂, ...]`
+
+Traces the goal and listed hypotheses back to start, then runs `lia +ac` using **only** the listed hypotheses.
+
+- Splits `Prop` `structure` goals (e.g. `r.Has p n`) and `Prop` `structure` hypotheses (e.g. `inv`) into fields automatically.
+- Never pass a `∀` lemma directly — instantiate it (`lemma x`).
+- Supported: `+`, `-`, `* literal`, `<`/`≤`/`=`, `toNat`, literals, `if`, `>>>`, `<<<`, `setWidth`, literal bitmasks (`x &&& 15#64`), `BitVec.ofNat w n` (when `n < 2^w`).
+- Fixed 20,000-heartbeat budget (unchanged by `maxHeartbeats`). List only needed facts (extra `%`, `/`, or big `∨` can block `lia`). For nonlinear products `x * y`, run `generalize x * y = p at *` first.
+- For unsupported ops (e.g. `toInt`, `msb`, `signExtend`), tag rewrite lemmas `@[rivet]` (prove via `toNat`, not `bv_decide`). Built-in signed laws:
+  ```lean
+  attribute [rivet] BitVec.toInt_eq_toNat_cond BitVec.msb_eq_decide BitVec.toNat_signExtend
+  ```
+- Avoid `bv_omega` inside `Block` proofs (rewrites the whole context, can hang, ignores `maxHeartbeats`). Fine in small standalone lemmas.
+
+## Automatic Value Tracing
+
+Rivet automatically traces `t.registers r`, `(t.registers r).setWidth k`, `t.status`, flags, `readBytes m p n`, and `r.Same m t.memory` back through steps, disjoint stores, and unmodified nested-block fields to the block's start state (or the last nested block that modified them). A hypothesis `r.Same m m'` stops a `Same` trace at `m'`.
+
+Any hypothesis (or public field of a `Prop` `structure` hypothesis) of the form `loc = expr` at the start state—or at the end of a nested block that modified `loc`—is substituted automatically:
+
+```lean
+structure Prepare (a : Args) (s : MachineState) : Prop where
   status : s.status = .running 0x4012cb
   output : readBytes s.memory (s.registers .rsp + 8#64) 8 = a.outputAddress
   rsp : s.registers .rsp = a.stackPointer - 16616#64
   capacity : (s.registers .rcx).setWidth 32 = a.outputCapacity
 ```
 
-With `entry : Prepare a s` in scope, a store through `rsp + 96` is at `a.stackPointer - 16520#64`,
-after `mov r10, [rsp+8]` the register `r10` is `a.outputAddress`, and `rivet_arith` needs no
-`[entry.rsp]`.
+With `entry : Prepare a s` in scope, a store to `rsp + 96` resolves to `a.stackPointer - 16520#64`, `mov r10, [rsp+8]` sets `r10 = a.outputAddress`, and `rivet_arith` does not need `[entry.rsp]`.
 
-- The first fact in scope for a location is used, a record's fields in order. Registers are read
-  before reads, so the slot at `rsp + 8` may come before `rsp`; a read through a pointer kept in a
-  slot comes after that slot.
-- A fact is used as written: `value = location` is not one. A goal may be either way round.
-- A register's fact answers its low bits: with `rcx = v`, `ecx` is `v.setWidth 32`. A fact about
-  `ecx` is used when `rcx` has none and says nothing of `rcx`. A fact about 8 bytes says nothing of
-  4 of them.
-- An equation whose value reads its own location (`rdi = rbx` after `rbx = rdi`), or about a
-  location the walk goes past (a register a step wrote), is not a fact, only a hypothesis.
-- `abbrev`s, `let`s and record fields are read through; `def`s are not. A record is a `structure`
-  in `Prop`, read by the fields you can name, not private ones.
+Rules:
+- Direction matters: `loc = expr` is substituted; `expr = loc` is ignored (goals work either way).
+- First matching equality in scope wins (`structure` fields in order). Register equalities apply before memory reads, so `readBytes s.memory (s.registers .rsp + 8#64) 8 = ...` may precede `rsp = ...`, whereas a read through a pointer stored in memory must come after that slot.
+- `s.registers .rcx = v` also resolves `(s.registers .rcx).setWidth 32`, not vice versa. An 8-byte read does not resolve a 4-byte read.
+- Cyclic equalities (`rdi = rbx` after `rbx = rdi`) and equalities on intermediate stepped states are ignored. Mid-block `have` equalities apply to subsequent steps and tactics.
+- Unfolds `abbrev`, `let`, and public `Prop` `structure` fields; never unfolds `def` or private fields.
+- Quantified memory invariants (`∀` / `def`): prove a carry lemma from `r.Same m m'` once and apply `h.carry (by rivet_known)`.
 
-Steps read back their pointers, closing tactics their goals, and `rivet_arith` its listed facts.
-Your hypotheses are never changed. Only the program and addresses with no variables in them, such
-as the importer's `F.entry`, are evaluated.
+## Memory & Regions
 
-`rivet_known` closes a goal without arithmetic or search. It takes the goal apart (`∧`, `∀`,
-records; either side of `∨`), and a part closes when, read back, it is a hypothesis or part of one
-(a `∀` one when its premises are hypotheses), or its two sides are the same (`x ≤ x` too). Places,
-permissions and `r.Apart r'` close by the lookups under Memory. For `∃`, give the witness.
+`Memory := BitVec 64 → Fin 256`. `m.storeBytes p n bytes` overwrites `[p.toNat, p.toNat + n)`. `readBytes m p n : BitVec (8 * n)` is little-endian. Both `readBytes` and `littleEndianAt` are opaque — use the lemmas below.
 
-A fact over many addresses (a `∀`) is carried by a lemma you prove once from `r.Same`, such as
-`Table16.carry (same : (table a).Same m m') : Table16 m T b → Table16 m' T b`, used as
-`table16.carry (by rivet_known)`.
+### Regions
 
-An error shows each part that did not close, as asked and as read back; where each read stopped
-and what to prove there; and why each equation left about it is not a fact.
+Name every region with `abbrev` (not `def`):
+- `Region.root start len readable writable fits` — root region (`start.toNat + len ≤ 2^64`).
+- `r.part offset len inside` — sub-region at `[r.base + offset, r.base + offset + len)`.
+- Predicates: `r.Has p n` (`n` bytes at `p` are in `r`), `r.Apart r'` (disjoint), `r.Same m₁ m₂` (byte-equal on `r`), `image.Reads r`, `image.Writes r`.
 
-## Stepping
+`Region.root` and `Region.part` are opaque: `rfl`/`dsimp`/`decide`/`omega` do not unfold `.base`, `.length`, `.readable`, or `.writable` — rewrite with the accessor lemmas below. (`rivet_arith` auto-applies `Region.root_base` and length laws, but not `Region.part_base`.)
 
-`rivet_step` executes the instruction at the current address through its contract: `rivet_step`,
-`rivet_step as t`, `rivet_step if h`, `rivet_step as t if h`. `rivet_step to 0x401380` (`as t`)
-steps until the block is at that address, stopping where a single step would.
+### What Rivet resolves automatically (literal offsets/sizes only)
 
-- **Facts.** The new state gets one equation per field (`status`, `registers`, `memory`, the four
-  flags, `xmmRegisters`), over the block's start, named memories and nested-block ends. The values
-  written and the branch condition are read back. The previous state and its equations are dropped
-  when nothing depends on them. A fact you add mid-block applies to later steps and closing tactics.
-- **Names.** `as t` names the state and its facts `t_status`, `t_registers`, `t_memory`, …;
-  unnamed, they are hidden. Name a state to state a fact about it.
-- **Memory.** Each store makes a memory `mₙ`, named either way, with
-  `mₙ_def : mₙ = m.storeBytes p n (littleEndianAt v p)`: `m` the memory before, `p` the pointer,
-  `n` the size as a literal, `v` the value.
-- **Branches.** A conditional jump is stepped with `if h`, and only it. It gives goals `taken` and
-  `fallthrough`, with `h` (negated in `fallthrough`) a statement about words, such as
-  `¬x - 1#64 = 0#64`. An arm that cannot run is still a goal; when the condition has a value, `h`
-  is `False` there: `exact h.elim`. `iterate`, `repeat` and `rivet_step to` never cross a branch.
-- **Return.** After `ret` the status is `.running (readBytes m rsp 8)`, the 8 bytes at `rsp` before
-  it.
-- **Side conditions.** An access needs a place in a region the image grants (see Memory). Operand
-  checks are stated over the block's start; `rivet_step` tries `rfl`, `decide` and `assumption`
-  and leaves the rest as goals.
+- **Sub-regions of one root**: containment and `Apart` are checked numerically regardless of `.part` nesting.
+- **Distinct roots**: state `r.Apart r'` and `image.Reads r` / `image.Writes r` on whole buffers/stack; sub-regions inherit them.
+- **Bounds (`r.Has p n`)**:
+  - `Region.root` automatically satisfies `r.Has start len`.
+  - A literal-sized `r.Has base len` automatically covers literal-offset accesses inside `[base, base + len)` (narrowing to the exact `r.part` when `len` matches `r`'s length). With `r.Has base r.length` (or `r`'s length), `rivet_known` also proves `(r.part off k).Has (base + off) k` for any `off` and literal `k`.
+  - Variable lengths (e.g. `capacity`) or computed pointers (`base + i`) need an explicit `have : r.Has p n := h.part ...` before stepping.
+  - **First matching `r.Has` in scope wins**: if a broad region precedes a narrower sub-region, reads may bind to the broad region and fail disjointness against writes to another part of it.
+- **Same-base pointers with literal offsets** (`rsp + 56#64` vs `rsp - 8#64`, or two literals): Rivet skips disjoint stores and extracts bytes from enclosing stores directly. Partial overlaps stop tracing.
+- **Block frame coverage**: every store and every region in a nested `c₁.memory` must lie within a single region listed in the outer `c.memory` (adjacent regions do not combine).
 
-## Arithmetic
-
-A step's facts are about words (`rdi + rax`, `rsp - 8#64`); bounds and invariants are numbers over
-`x.toNat`. `rivet_arith [f₁, f₂]` proves goals that mix the two with Lean's `lia`, from the listed
-facts alone, after reading the goal and facts back as `rivet_known` does. When `lia` fails, the
-error names the facts in scope about the goal's terms that were not listed.
-
-- A listed record (`inv`) is given field by field, and a record goal (`r.Has p n`) is proved field
-  by field. A `∀` fact is an error: give it its arguments (`lemma x`).
-- It reads `+`, `-`, multiplication by a literal, comparisons, `toNat`, literals, `if`, `>>>`,
-  `<<<`, `setWidth`, a mask with a literal (`x &&& 15#64`), and `BitVec.ofNat w n` when `n < 2^w`.
-  The contracts state `not` as `-x - 1` and `movsxd` as a sum with an `if`.
-- Its budget is a fixed 20000 heartbeats, apart from the declaration's and unchanged by
-  `maxHeartbeats`, and covers checking its proof. Facts the goal does not need (`%`, `/`, large
-  `∨`s) can keep `lia` from a proof: list only those it needs. A product of two registers can make
-  the check too costly: `generalize x * y = p at *` first.
-- A term it does not read, such as a signed value, needs a law tagged `@[rivet]` that states it in
-  terms it reads. Rivet applies the law wherever it writes a value; state your own facts in its
-  form too. Prove laws through `toNat`, not with `bv_decide`, whose proofs trust compiled code. Lean
-  has the signed laws:
-
-  ```lean
-  attribute [rivet] BitVec.toInt_eq_toNat_cond BitVec.msb_eq_decide BitVec.toNat_signExtend
-  ```
-
-- Do not use `bv_omega` in a block's proof: it rewrites every fact about words in scope, can run for
-  minutes, and ignores `maxHeartbeats`. In a small lemma of its own it is fine.
-
-## Machine and programs
-
-- `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`,
-  `overflowFlag`, `memory`, `status`. `ExecutionStatus`: `running address` or `fault`.
-  `MachineState.returnAddress`: the 8 bytes at `rsp`.
-- `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
-- The contract for `Op.x` is `Contract.x`, and for `Op.binary .y`, `Contract.y` (`Contract.mov`,
-  `Contract.cmp`): a `Block` whose change is what the instruction writes. Read one to see exactly
-  what an instruction does.
-- `Block` is defined by `step image state flags`, which runs one instruction, and
-  `execute image n state choices`, which runs `n` with one value of the undefined flags per step
-  (`FlagChoices`). Proofs never use them; a theorem's meaning rests on them.
-
-## Memory
-
-Memory is named regions, as the state is named registers. Rivet asks one thing of two ranges: is
-one inside the other, or are they apart?
-
-- An access needs `image.Reads r` or `image.Writes r` for a region it lies in.
-- A read passes a store apart from it, and a nested block when a region it lies in is apart from
-  every region the block's change lists.
-- A store, and each region a nested block's change lists, must lie in one region of the outer
-  change. Two listed regions side by side do not cover a range across both.
-- Where several places have an access, the first in scope that answers is used. Rivet never
-  searches further.
-
-**Where bytes are.**
-
-- **A place** is a hypothesis `r.Has q n`. A root is placed where it starts, so you state places
-  only for regions that are variables. A place that fills its region puts an access a literal
-  distance past its pointer in exactly those bytes: with `stack a` rooted at
-  `a.stackPointer - 112#64`, the 8 bytes at `a.stackPointer - 48#64` are `(stack a).part 64 8`. A
-  place whose size is not a literal places only itself: state the bytes you access,
-  `have byte : dst.Has p 1 := left.part (Nat.le_refl _) (by …)`.
-- **Two ranges of one root** are compared by their numbers, however the parts were cut:
-  `(stack a).part 16 8` lies in `(stack a).part 0 64` and is apart from `((stack a).part 0 112).part 64 8`.
-  Other regions are apart by a hypothesis `r.Apart r'`, and granted by `image.Reads r` or
-  `image.Writes r`, about regions they lie in: state these for the whole buffers and the stack.
-- **Two pointers** that are one expression plus or minus literals (`rsp + 56#64` and `rsp - 8#64`,
-  or two literals) are compared by that distance, whatever their regions: a read misses the store
-  or is those bytes of the value stored. A store that holds only some of a read's bytes stops the
-  walk.
-- **Where a read stops,** the error states what to prove: that the read is outside the store
-  (`Memory.readBytes_storeBytes_outside`), or where it is inside it (`placed.readBytes_stored`). A
-  place you need and do not have is `placed.part start finish`, from its two bounds.
-
-`Memory` is a byte per 64-bit address. `Memory.storeBytes memory base length bytes` writes the
-addresses whose value lies in `[base.toNat, base.toNat + length)`. `readBytes memory address size`
-is the only read; it and `littleEndianAt` are closed: use the laws.
-
-- `Region` (`base`, `length`, `readable`, `writable`) and `Image` (`program`, `regions`). Name each
-  region with an `abbrev`. `Region.root start length readable writable` makes one from a pointer
-  (`abbrev stack (a) : Region := Region.root (a.stackPointer - 112#64) 120 true true (by …)`), and
-  `r.part offset length` one inside `r` (`abbrev saved (a) : Region := (stack a).part 16 128`).
-  Their numbers are only their laws (`Region.root_base`, `Region.part_base`, `Region.root_length`,
-  `Region.part_length`, `Region.root_readable`, `Region.root_writable`): `rfl`, `decide`, `dsimp`,
-  `change` and `omega` do not see them until you rewrite with the laws. A place that fills a region
-  may state its size as the length the region was made with or as `r.length`.
-- `r.Has pointer size`, `r.Apart r'`, `r.Same m m'` (the memories agree on every byte of `r`),
-  `image.Reads r`, `image.Writes r`. A block that takes regions as arguments states them:
-  `(writes : image.Writes dst) (apart : dst.Apart slot)`.
-
-The laws. Bounds are numbers, so `rivet_arith` needs them as facts: a place's (`placed.start`,
-`placed.finish`), its region's `r.fits`, and a part's base by `Region.part_base`. A root's base
-and every length it reads by their laws.
+### Lemmas
 
 ```lean
 Region.fits r : r.base + r.length ≤ 2^64
--- placed : r.Has pointer size
-placed.start : r.base ≤ pointer.toNat
-placed.finish : pointer.toNat + size ≤ r.base + r.length
--- any bytes inside a place, by their bounds
-placed.part (start : pointer.toNat ≤ inner.toNat) (finish : inner.toNat + less ≤ pointer.toNat + size) :
-  r.Has inner less
--- a place that fills a region places each part (the lookups do this at literal offsets)
-placed.part_at (fills : r.length ≤ size) offset length (inside : offset + length ≤ r.length) (positive : 0 < length) :
-  (r.part offset length inside).Has (pointer + BitVec.ofNat 64 offset) length
-Region.root_has start length readable writable fits : (Region.root start length readable writable fits).Has start length
-Region.root_base start length readable writable fits : (Region.root start …).base = start.toNat
-Region.part_base r offset length inside : (r.part offset length inside).base = r.base + offset
--- where a read stops at a store into its own region
-Memory.readBytes_storeBytes_outside memory bytes (outside : address.toNat + size ≤ base.toNat ∨ base.toNat + length ≤ address.toNat)
-  (fits : address.toNat + size ≤ 2^64) :
-  readBytes (memory.storeBytes base length bytes) address size = readBytes memory address size
--- placed : r.Has stored length
-placed.readBytes_stored offset (start : pointer.toNat = stored.toNat + offset) (inside : offset + size ≤ length) memory value :
-  readBytes (memory.storeBytes stored length (littleEndianAt value stored)) pointer size = value.extractLsb' (8 * offset) (8 * size)
--- same : r.Same earlier later
-same.read (placed : r.Has pointer size) : readBytes earlier pointer size = readBytes later pointer size
--- a permission from the image's list; `readable` is `Region.root_readable ..`. `Image.writes_of_mem` likewise
-Image.reads_of_mem (member : r ∈ image.regions) (readable : r.readable = true) : image.Reads r
--- two parts that do not meet (the lookups do this at literal offsets)
-Region.part_apart r inside inside' (apart : offset + length ≤ offset' ∨ offset' + length' ≤ offset) :
-  (r.part offset length inside).Apart (r.part offset' length' inside')
-readBytes_one memory address : readBytes memory address 1 = BitVec.ofNat 8 (memory address).val
-readBytes_succ memory address size :
-  readBytes memory address (size + 1) = readBytes memory (address + 1#64) size ++ BitVec.ofNat 8 (memory address).val
+
+-- h : r.Has p n
+h.start  : r.base ≤ p.toNat
+h.finish : p.toNat + n ≤ r.base + r.length
+h.part (start : p.toNat ≤ q.toNat) (finish : q.toNat + k ≤ p.toNat + n) : r.Has q k
+h.part_at (fills : r.length ≤ n) offset len (inside : offset + len ≤ r.length) (pos : 0 < len) :
+  (r.part offset len inside).Has (p + BitVec.ofNat 64 offset) len
+
+Region.root_has start len r w fits : (Region.root start len r w fits).Has start len
+-- Accessors (Region.root and Region.part are opaque):
+-- Region.root_base (= start.toNat), Region.root_length (= len), Region.root_readable, Region.root_writable
+-- Region.part_base (= r.base + off), Region.part_length (= len)
+Region.part_apart r inside inside' (apart : off + len ≤ off' ∨ off' + len' ≤ off) :
+  (r.part off len inside).Apart (r.part off' len' inside')
+
+Image.reads_of_mem (mem : r ∈ image.regions) (rd : r.readable = true) : image.Reads r
+Image.writes_of_mem (mem : r ∈ image.regions) (wr : r.writable = true) : image.Writes r
+
+-- same : r.Same m₁ m₂
+same.read (h : r.Has p n) : readBytes m₁ p n = readBytes m₂ p n
+
+Memory.readBytes_storeBytes_outside m bytes
+  (outside : addr.toNat + sz ≤ base.toNat ∨ base.toNat + len ≤ addr.toNat)
+  (fits : addr.toNat + sz ≤ 2^64) :
+  readBytes (m.storeBytes base len bytes) addr sz = readBytes m addr sz
+
+-- h : r.Has stored len
+h.readBytes_stored offset (start : p.toNat = stored.toNat + offset) (inside : offset + sz ≤ len) m val :
+  readBytes (m.storeBytes stored len (littleEndianAt val stored)) p sz = val.extractLsb' (8 * offset) (8 * sz)
+
+readBytes_one  m p   : readBytes m p 1 = BitVec.ofNat 8 (m p).val
+readBytes_succ m p n : readBytes m p (n + 1) = readBytes m (p + 1#64) n ++ BitVec.ofNat 8 (m p).val
 ```
 
-To apply a store law at a named step ending with memory `m₁`: `rw [t_memory, m₁_def]`. A read of
-known bytes: `simp only [readBytes_succ, BitVec.of_length_zero]; decide`.
+Recipes:
+- Rewrite at a named store step: `rw [t_memory, m₁_def]`
+- Evaluate a read of constant bytes: `simp only [readBytes_succ, BitVec.of_length_zero]; decide`
 
-## Importer
+## Machine, Contracts & Importer
 
-`cargo run -p rivet-import -- ./prog --function f --namespace F --output F.lean` writes `F.entry`,
-`F.program`, `F.region_<a>` for the segment at `a`, `F.regions` (all of them), and
-`F.Loaded memory`, whose field `segment_<a> : F.region_<a>.Same F.segment_<a> memory` says memory
-is the segment's bytes. A constant read from a segment needs its place and its value as facts:
-`have place : F.region_<a>.Has 0x403000#64 8 := by rivet_known`, then
-`have value : readBytes s.memory 0x403000#64 8 = 42#64 := by rw [← loaded.segment_<a>.read place]; …`
-with the known-bytes recipe above.
+- `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `status` (`ExecutionStatus.running addr | .fault`). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
+- Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
+- Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
+- `step`, `execute`, `FlagChoices` define `Block` (proofs never call them).
+- Importer:
+  ```sh
+  cargo run -p rivet-import -- ./prog --function f --namespace F --output F.lean
+  ```
+  Generates `F.entry`, `F.program`, `F.region_<a>`, `F.regions`, and `F.Loaded m` (fields `segment_<a> : F.region_<a>.Same F.segment_<a> m`). Reading a constant from a loaded segment:
+  ```lean
+  have h_in : F.region_<a>.Has 0x403000#64 8 := by rivet_known
+  have h_val : readBytes s.memory 0x403000#64 8 = 42#64 := by
+    rw [← loaded.segment_<a>.read h_in]; simp only [readBytes_succ, BitVec.of_length_zero]; decide
+  ```
