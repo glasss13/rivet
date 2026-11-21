@@ -199,10 +199,18 @@ structure Instruction where
   length : Nat
   op : Op
   deriving DecidableEq
-abbrev Program := List Instruction
+-- A search tree: `branch split left right` holds the instructions below `split` in `left` and the
+-- rest in `right`, so a fetch scans one leaf however large the program. A small program is one leaf.
+inductive Program where
+  | leaf (instructions : List Instruction)
+  | branch (split : BitVec 64) (left right : Program)
+  deriving DecidableEq
 
-def Program.fetch (program : Program) (address : BitVec 64) : Option Instruction :=
-  program.find? fun instruction => instruction.address == address &&
-    0 < instruction.length && instruction.length ≤ 15
+def Program.fetch : Program → BitVec 64 → Option Instruction
+  | .leaf instructions, address =>
+    instructions.find? fun instruction => instruction.address == address &&
+      0 < instruction.length && instruction.length ≤ 15
+  | .branch split left right, address =>
+    if address < split then left.fetch address else right.fetch address
 
 end Rivet

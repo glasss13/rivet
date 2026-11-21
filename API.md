@@ -198,6 +198,7 @@ Recipes:
 
 - `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `status` (`ExecutionStatus.running addr | .fault`). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
 - Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
+- A program written by hand is one leaf: `.leaf [⟨0x1000, 1, .push .rbx⟩, ⟨0x1001, 1, .ret⟩]`. The importer's is a search tree of leaves, `.branch split left right`: addresses below `split` are in `left`.
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
 - `step`, `execute`, `FlagChoices` define `Block` (proofs never call them).
 - Importer:

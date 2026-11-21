@@ -34,7 +34,7 @@ import Rivet
 open Rivet
 
 -- push rbx · mov rbx, rdi · add rbx, rsi · mov rax, rbx · pop rbx · ret
-def sum : Program :=
+def sum : Program := .leaf
   [⟨0x1000, 1, .push .rbx⟩,
    ⟨0x1001, 3, .mov (.reg64 .rbx) (.reg64 .rdi)⟩,
    ⟨0x1004, 3, .binary .add (.reg64 .rbx) (.reg64 .rsi)⟩,
