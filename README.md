@@ -10,8 +10,8 @@ lake build
 
 ## What a theorem says
 
-`Block image s c Q` means: from the machine state `s`, and for every value the CPU might
-leave in its undefined flags, execution reaches a state in finitely many steps that
+`Block program s c Q` means: from the machine state `s`, and for every value the CPU might
+leave in its undefined flags, `program` reaches a state in finitely many steps that
 satisfies `Q` and is `s` except for the change `c`: every register and every byte of memory
 that `c` does not list is as it was. What the start state must satisfy is stated as ordinary
 hypotheses about `s`. A fault is permanent, so a `Q` that requires `status = .running …`
@@ -43,35 +43,38 @@ def sum : Program := .leaf
    ⟨0x100b, 1, .ret⟩]
 
 -- the body, a block of its own: from 0x1001 it changes rax and rbx
-theorem add_body (regions : List Region) (s : MachineState) (entry : s.status = .running 0x1001) :
-    Block ⟨sum, regions⟩ s { registers := [.rax, .rbx] }
+theorem add_body (s : MachineState) (entry : s.status = .running 0x1001) :
+    Block sum s { registers := [.rax, .rbx] }
       (fun t => t.status = .running 0x100a ∧ t.registers .rax = s.registers .rdi + s.registers .rsi) := by
   rivet_step                                           -- mov rbx, rdi
   rivet_step                                           -- add rbx, rsi
   rivet_step                                           -- mov rax, rbx
   exact Block.done
 
-theorem sum_correct (regions : List Region) (stack : Region) (s : MachineState)
+theorem sum_correct (stack : Region) (s : MachineState)
     (entry : s.status = .running 0x1000)
-    (reads : Image.Reads ⟨sum, regions⟩ stack) (writes : Image.Writes ⟨sum, regions⟩ stack)
+    -- the kernel lets the function read and write its stack
+    (reads : s.kernel.Reads stack) (writes : s.kernel.Writes stack)
     -- the caller's promise: 16 bytes of stack, the slot `push` uses and the return address
     (frame : stack.Has (s.registers .rsp - 8#64) 16) :
     -- all it changes: two registers and the stack
-    Block ⟨sum, regions⟩ s { registers := [.rax, .rsp], memory := [stack] }
+    Block sum s { registers := [.rax, .rsp], memory := [stack] }
       (fun f =>
         f.status = .running s.returnAddress ∧
         f.registers .rax = s.registers .rdi + s.registers .rsi ∧
         f.registers .rsp = s.registers .rsp + 8#64) := by
-  rivet_step                     -- push rbx
-  rivet_call add_body regions    -- the body
-  rivet_step                     -- pop rbx
-  rivet_step                     -- ret
+  rivet_step             -- push rbx
+  rivet_call add_body    -- the body
+  rivet_step             -- pop rbx
+  rivet_step             -- ret
   exact Block.done
 ```
 
 Each `rivet_step` executes one instruction. Memory is named regions, as the state is named
-registers: an instruction that touches memory must be placed in a region the image grants, here by
-`frame`, which places the 8 bytes `push` writes and the 8 bytes `ret` reads.
+registers. The state also holds what the kernel keeps for the process, `s.kernel`: which addresses
+it may read and write. An instruction that touches memory must be placed in a region the kernel
+lets it read or write, here by `frame`, which places the 8 bytes `push` writes and the 8 bytes
+`ret` reads. No instruction changes the kernel, so what it allows at the start it allows at every step.
 
 Rivet reads every value back to the block's start: a register through the steps that did not
 write it, memory through the stores into regions apart from it, and both through a nested block

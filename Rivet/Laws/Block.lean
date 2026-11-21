@@ -18,54 +18,54 @@ namespace Rivet
   funext index
   simp [drop, Nat.add_assoc]
 
-private theorem execute_zero (image : Image) (state : MachineState) (choices : FlagChoices) :
-    execute image 0 state choices = state := by
+private theorem execute_zero (program : Program) (state : MachineState) (choices : FlagChoices) :
+    execute program 0 state choices = state := by
   rw [execute]
 
-private theorem execute_succ (image : Image) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
-    execute image (steps + 1) state choices =
-      execute image steps (step image state (choices 0)) (choices.drop 1) := by
+private theorem execute_succ (program : Program) (steps : Nat) (state : MachineState) (choices : FlagChoices) :
+    execute program (steps + 1) state choices =
+      execute program steps (step program state (choices 0)) (choices.drop 1) := by
   rw [execute]
 
-private theorem execute_add (image : Image) (firstSteps secondSteps : Nat) (state : MachineState)
+private theorem execute_add (program : Program) (firstSteps secondSteps : Nat) (state : MachineState)
     {choices : FlagChoices} :
-    execute image (firstSteps + secondSteps) state choices =
-      execute image secondSteps (execute image firstSteps state choices) (choices.drop firstSteps) := by
+    execute program (firstSteps + secondSteps) state choices =
+      execute program secondSteps (execute program firstSteps state choices) (choices.drop firstSteps) := by
   induction firstSteps generalizing state choices with
   | zero => simp [execute_zero]
   | succ firstSteps inductionHypothesis =>
     simpa [Nat.succ_add, execute_succ, Nat.add_comm] using
-      inductionHypothesis (step image state (choices 0)) (choices := choices.drop 1)
+      inductionHypothesis (step program state (choices 0)) (choices := choices.drop 1)
 
 -- From `current`, for every value of the undefined flags, execution reaches in finitely many steps a
 -- state that is `start` except for `changes` and satisfies `post`. A contract is stated from its start
 -- (`current` is `start`); while stepping through it, `current` is the state reached so far.
-structure Block (image : Image) (start : MachineState) (changes : Changes) (post : MachineState → Prop)
+structure Block (program : Program) (start : MachineState) (changes : Changes) (post : MachineState → Prop)
     (current : MachineState := start) : Prop where
   private mk ::
   private allChoices : ∀ choices : FlagChoices, ∃ final,
-    (∃ steps, execute image steps current choices = final) ∧ final.Except start changes ∧ post final
+    (∃ steps, execute program steps current choices = final) ∧ final.Except start changes ∧ post final
 
 private theorem Block.of_step {c : Changes} {post : MachineState → Prop}
     (kept : ∀ final, post final → final.Except initial c)
-    (transition : ∀ undefinedFlags, post (step image initial undefinedFlags)) :
-    Block image initial c post :=
-  ⟨fun choices => ⟨step image initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
+    (transition : ∀ undefinedFlags, post (step program initial undefinedFlags)) :
+    Block program initial c post :=
+  ⟨fun choices => ⟨step program initial (choices 0), ⟨1, by rw [execute_succ, execute_zero]⟩,
     kept _ (transition (choices 0)), transition (choices 0)⟩⟩
 
 -- `done` and `then` prove a block from a state `t` it has reached, so they also apply at its start.
 -- `done` proves `Q` and the change by reading `t` back to `s`, unless given proofs.
 
-theorem Block.done {image : Image} {s t : MachineState} {c : Changes} {Q : MachineState → Prop}
-    (holds : Q t := by rivet_known) (kept : t.Except s c := by rivet_known) : Block image s c Q t :=
-  ⟨fun choices => ⟨t, ⟨0, execute_zero image t choices⟩, kept, holds⟩⟩
+theorem Block.done {program : Program} {s t : MachineState} {c : Changes} {Q : MachineState → Prop}
+    (holds : Q t := by rivet_known) (kept : t.Except s c := by rivet_known) : Block program s c Q t :=
+  ⟨fun choices => ⟨t, ⟨0, execute_zero program t choices⟩, kept, holds⟩⟩
 
 -- A nested block from `t`, then the rest of this block from every state it can end in, knowing what
 -- the nested block left alone. The nested block may change anything on the way: only this block's
 -- end is compared with its start.
-theorem Block.then {image : Image} {s t : MachineState} {c₁ c : Changes} {P Q : MachineState → Prop}
-    (inner : Block image t c₁ P) (rest : ∀ next, next.Except t c₁ → P next → Block image s c Q next) :
-    Block image s c Q t := by
+theorem Block.then {program : Program} {s t : MachineState} {c₁ c : Changes} {P Q : MachineState → Prop}
+    (inner : Block program t c₁ P) (rest : ∀ next, next.Except t c₁ → P next → Block program s c Q next) :
+    Block program s c Q t := by
   constructor
   intro choices
   obtain ⟨middle, ⟨earlier, rfl⟩, kept, holds⟩ := inner.allChoices choices
@@ -74,12 +74,12 @@ theorem Block.then {image : Image} {s t : MachineState} {c₁ c : Changes} {P Q 
 
 -- A loop whose head is `t`, as a block of its own. Each pass is the rest of that block from the
 -- state the last pass ended in.
-theorem Block.loop {image : Image} {t : MachineState} {c : Changes} {exit : MachineState → Prop}
+theorem Block.loop {program : Program} {t : MachineState} {c : Changes} {exit : MachineState → Prop}
     (invariant : MachineState → Prop) (measure : MachineState → Nat) (holds : invariant t)
     (body : ∀ current, current.Except t c → invariant current →
-      Block image t c (fun next => invariant next ∧ measure next < measure current ∨ exit next) current) :
-    Block image t c exit := by
-  suffices loop : ∀ current, current.Except t c → invariant current → Block image t c exit current from
+      Block program t c (fun next => invariant next ∧ measure next < measure current ∨ exit next) current) :
+    Block program t c exit := by
+  suffices loop : ∀ current, current.Except t c → invariant current → Block program t c exit current from
     loop t Internal.MachineState.Except.refl holds
   intro current same inv
   constructor

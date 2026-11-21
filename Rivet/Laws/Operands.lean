@@ -8,34 +8,34 @@ import all Rivet.Interpreter.Memory
 namespace Rivet.Internal
 open MachineState Address
 
-@[rivet] theorem MachineState.canRead_reg8 (state : MachineState) (image : Image) (register : Reg8) :
-    state.canRead image (.reg8 register) = true := by simp [canRead]
-@[rivet] theorem MachineState.canRead_reg16 (state : MachineState) (image : Image) (register : Reg16) :
-    state.canRead image (.reg16 register) = true := by simp [canRead]
-@[rivet] theorem MachineState.canRead_reg32 (state : MachineState) (image : Image) (register : Reg32) :
-    state.canRead image (.reg32 register) = true := by simp [canRead]
-@[rivet] theorem MachineState.canRead_reg64 (state : MachineState) (image : Image) (register : Reg) :
-    state.canRead image (.reg64 register) = true := by simp [canRead]
-@[rivet] theorem MachineState.canRead_immediate (state : MachineState) (image : Image) (value : Int) :
-    state.canRead image (.immediate value) = true := by simp [canRead]
-@[rivet] theorem MachineState.canRead_memory (state : MachineState) (image : Image) (width : Width)
+@[rivet] theorem MachineState.canRead_reg8 (state : MachineState) (register : Reg8) :
+    state.canRead (.reg8 register) = true := by simp [canRead]
+@[rivet] theorem MachineState.canRead_reg16 (state : MachineState) (register : Reg16) :
+    state.canRead (.reg16 register) = true := by simp [canRead]
+@[rivet] theorem MachineState.canRead_reg32 (state : MachineState) (register : Reg32) :
+    state.canRead (.reg32 register) = true := by simp [canRead]
+@[rivet] theorem MachineState.canRead_reg64 (state : MachineState) (register : Reg) :
+    state.canRead (.reg64 register) = true := by simp [canRead]
+@[rivet] theorem MachineState.canRead_immediate (state : MachineState) (value : Int) :
+    state.canRead (.immediate value) = true := by simp [canRead]
+@[rivet] theorem MachineState.canRead_memory (state : MachineState) (width : Width)
     (address : Address) :
-    state.canRead image (.memory width address) = permits image.readable (address.evaluate state.registers)
+    state.canRead (.memory width address) = permits state.kernel.readable (address.evaluate state.registers)
       width.bytes := by simp [canRead]
 
-@[rivet] theorem MachineState.canWrite_reg8 (state : MachineState) (image : Image) (register : Reg8) :
-    state.canWrite image (.reg8 register) = true := by simp [canWrite]
-@[rivet] theorem MachineState.canWrite_reg16 (state : MachineState) (image : Image) (register : Reg16) :
-    state.canWrite image (.reg16 register) = true := by simp [canWrite]
-@[rivet] theorem MachineState.canWrite_reg32 (state : MachineState) (image : Image) (register : Reg32) :
-    state.canWrite image (.reg32 register) = true := by simp [canWrite]
-@[rivet] theorem MachineState.canWrite_reg64 (state : MachineState) (image : Image) (register : Reg) :
-    state.canWrite image (.reg64 register) = true := by simp [canWrite]
-@[rivet] theorem MachineState.canWrite_immediate (state : MachineState) (image : Image) (value : Int) :
-    state.canWrite image (.immediate value) = false := by simp [canWrite]
-@[rivet] theorem MachineState.canWrite_memory (state : MachineState) (image : Image) (width : Width)
+@[rivet] theorem MachineState.canWrite_reg8 (state : MachineState) (register : Reg8) :
+    state.canWrite (.reg8 register) = true := by simp [canWrite]
+@[rivet] theorem MachineState.canWrite_reg16 (state : MachineState) (register : Reg16) :
+    state.canWrite (.reg16 register) = true := by simp [canWrite]
+@[rivet] theorem MachineState.canWrite_reg32 (state : MachineState) (register : Reg32) :
+    state.canWrite (.reg32 register) = true := by simp [canWrite]
+@[rivet] theorem MachineState.canWrite_reg64 (state : MachineState) (register : Reg) :
+    state.canWrite (.reg64 register) = true := by simp [canWrite]
+@[rivet] theorem MachineState.canWrite_immediate (state : MachineState) (value : Int) :
+    state.canWrite (.immediate value) = false := by simp [canWrite]
+@[rivet] theorem MachineState.canWrite_memory (state : MachineState) (width : Width)
     (address : Address) :
-    state.canWrite image (.memory width address) = permits image.writable (address.evaluate state.registers)
+    state.canWrite (.memory width address) = permits state.kernel.writable (address.evaluate state.registers)
       width.bytes := by simp [canWrite]
 
 @[rivet] theorem MachineState.readOperand_reg8 (state : MachineState) (register : Reg8) :

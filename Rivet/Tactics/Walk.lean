@@ -108,14 +108,14 @@ meta def moves (history : History) (memory : Expr) : Bool :=
     | none => memory.isAppOfArity ``Memory.storeBytes 4
 
 -- What a location is of: the state of a register or a vector register, its low bits as an instruction
--- reads them, its status or a flag; or the memory of a read.
+-- reads them, its status, a flag or its kernel; or the memory of a read.
 meta def location? (e : Expr) : Option Expr :=
   let register (e : Expr) := (registerFile? e).isSome && (e.getArg! 1).isConst
   if register e then some (e.getArg! 0)
   else if e.isAppOfArity ``BitVec.setWidth 3 && register (e.getArg! 2) then some ((e.getArg! 2).getArg! 0)
   else if e.isAppOfArity ``readBytes 3 then some (e.getArg! 0)
   else if [``MachineState.status, ``MachineState.zeroFlag, ``MachineState.carryFlag, ``MachineState.signFlag,
-      ``MachineState.overflowFlag].any (e.isAppOfArity · 1) then some e.appArg!
+      ``MachineState.overflowFlag, ``MachineState.kernel].any (e.isAppOfArity · 1) then some e.appArg!
   else none
 
 private meta def Walk.select (w : Walk) (e : Expr) : MetaM (Option Simp.Result) := do
@@ -247,7 +247,7 @@ meta partial def Walk.walk (w : Walk) (e : Expr) (limit : Nat := w.count) : Meta
     if (registerFile? sub).isSome then
       if let some result ← w.select sub then return .visit result
       return ← unchangedRegister w.history sub
-    return .continue))
+    return ← unchangedKernel w.history sub))
   let procs := procs.push (({} : Simp.Simprocs).addCore #[.star] `rivetValue true (.inl fun sub => do
     let some _ := location? sub | return .continue
     if sub.hasLooseBVars then return .continue
@@ -348,7 +348,7 @@ meta def Walk.make (goal : MVarId) (except : Array FVarId := #[])
   let mut skipped := #[]
   let mut fields := #[]
   for decl in history.users do
-    for (source, part) in ← ReadBack.parts decl.toExpr decl.type #[``Region.Has, ``Region.Apart, ``Image.Reads, ``Image.Writes] do
+    for (source, part) in ← ReadBack.parts decl.toExpr decl.type #[``Region.Has, ``Region.Apart, ``Kernel.Reads, ``Kernel.Writes] do
       fields := fields.push (source, part)
       if except.contains decl.fvarId then continue
       let some (_, lhs, rhs) := part.eq? | continue

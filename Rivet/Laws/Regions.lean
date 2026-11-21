@@ -55,9 +55,10 @@ instance : Coe Region (Nat × Nat) := ⟨Region.range⟩
 def Region.Same (r : Region) (earlier later : Memory) : Prop :=
   ∀ address, r.Contains address → earlier address = later address
 
-def Image.Reads (image : Image) (r : Region) : Prop := ∀ address, r.Contains address → image.readable address = true
+-- The kernel lets the process read, or write, every byte of the region.
+def Kernel.Reads (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contains address → kernel.readable address = true
 
-def Image.Writes (image : Image) (r : Region) : Prop := ∀ address, r.Contains address → image.writable address = true
+def Kernel.Writes (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contains address → kernel.writable address = true
 
 theorem Region.Has.part {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size)
     {inner : BitVec 64} {less : Nat} (start : pointer.toNat ≤ inner.toNat)
@@ -74,17 +75,17 @@ theorem Region.Has.part_at {r : Region} {pointer : BitVec 64} {size : Nat} (plac
   have := placed.finish
   constructor <;> simp only [Region.part_base, Region.part_length] <;> bv_omega
 
--- A permission, from the image's own list.
-theorem Image.reads_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) (readable : r.readable = true) :
-    image.Reads r := by
+-- A permission of a kernel made from regions, from that list.
+theorem Kernel.reads_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (readable : r.readable = true) :
+    (Kernel.ofRegions regions).Reads r := by
   intro address inside
-  simp only [Image.readable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  simp only [Kernel.ofRegions, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
   exact ⟨r, member, readable, inside⟩
 
-theorem Image.writes_of_mem {image : Image} {r : Region} (member : r ∈ image.regions) (writable : r.writable = true) :
-    image.Writes r := by
+theorem Kernel.writes_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (writable : r.writable = true) :
+    (Kernel.ofRegions regions).Writes r := by
   intro address inside
-  simp only [Image.writable, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  simp only [Kernel.ofRegions, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
   exact ⟨r, member, writable, inside⟩
 
 -- Two parts of one region are apart when their offsets say so.
@@ -170,15 +171,15 @@ theorem Region.Has.inside {a b : Region} {pointer : BitVec 64} {size : Nat} (pla
   simp only [Region.Inside] at inside
   exact ⟨by omega, by omega⟩
 
-theorem Image.Reads.inside {image : Image} {a b : Region} (reads : image.Reads b) (inside : Region.Inside a b) :
-    image.Reads a := by
+theorem Kernel.Reads.inside {kernel : Kernel} {a b : Region} (reads : kernel.Reads b) (inside : Region.Inside a b) :
+    kernel.Reads a := by
   intro address within
   apply reads
   simp only [Region.Contains, Region.Inside] at *
   omega
 
-theorem Image.Writes.inside {image : Image} {a b : Region} (writes : image.Writes b) (inside : Region.Inside a b) :
-    image.Writes a := by
+theorem Kernel.Writes.inside {kernel : Kernel} {a b : Region} (writes : kernel.Writes b) (inside : Region.Inside a b) :
+    kernel.Writes a := by
   intro address within
   apply writes
   simp only [Region.Contains, Region.Inside] at *
@@ -190,16 +191,16 @@ theorem Region.Has.exact {r : Region} {pointer inner : BitVec 64} {size distance
     (inside : distance + less ≤ r.length) (positive : 0 < less) : (r.part distance less inside).Has inner less :=
   place ▸ placed.part_at fills distance less inside positive
 
-theorem Image.Reads.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
-    (reads : image.Reads r) (placed : r.Has pointer size) : permits image.readable pointer size = true := by
+theorem Kernel.Reads.permits {kernel : Kernel} {r : Region} {pointer : BitVec 64} {size : Nat}
+    (reads : kernel.Reads r) (placed : r.Has pointer size) : permits kernel.readable pointer size = true := by
   rw [permits_iff]
   have := r.fits
   have := placed.start
   have := placed.finish
   exact ⟨by omega, fun address low high => reads address ⟨by omega, by omega⟩⟩
 
-theorem Image.Writes.permits {image : Image} {r : Region} {pointer : BitVec 64} {size : Nat}
-    (writes : image.Writes r) (placed : r.Has pointer size) : permits image.writable pointer size = true := by
+theorem Kernel.Writes.permits {kernel : Kernel} {r : Region} {pointer : BitVec 64} {size : Nat}
+    (writes : kernel.Writes r) (placed : r.Has pointer size) : permits kernel.writable pointer size = true := by
   rw [permits_iff]
   have := r.fits
   have := placed.start

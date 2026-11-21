@@ -6,7 +6,7 @@ public meta import Lean
 -- cut from a root through parts at literal offsets is that many bytes into it. Two ranges are asked one
 -- thing: is one inside the other, or are they apart? A pointer is placed by a hypothesis `r.Has q n`, or a
 -- root where it starts; two pointers that are one expression plus or minus literals are a literal number
--- of bytes apart. That two regions are apart, and that the image grants one, are otherwise hypotheses.
+-- of bytes apart. That two regions are apart, and that the kernel grants one, are otherwise hypotheses.
 public section
 namespace Rivet.Internal
 open Lean Meta
@@ -60,8 +60,8 @@ meta def regions (type : Expr) : Array Expr :=
   match_expr type with
   | Region.Has r _ _ => #[r]
   | Region.Apart r other => #[r, other]
-  | Image.Reads _ r => #[r]
-  | Image.Writes _ r => #[r]
+  | Kernel.Reads _ r => #[r]
+  | Kernel.Writes _ r => #[r]
   | _ => #[]
 
 -- A region as a part of another, `r.part offset length`, through `abbrev`s: the region it is part of,
@@ -142,14 +142,14 @@ meta def apart? (known : Array (Expr × Expr)) (r other : Expr) : MetaM (Option 
       return some (← mkAppM ``Region.Apart.inside #[← mkAppM ``Region.Apart.symm #[proof], left, right])
   return none
 
--- `image.Reads r` or `image.Writes r`: a hypothesis about a region `r` lies in.
-meta def grant? (known : Array (Expr × Expr)) (writes : Bool) (image r : Expr) : MetaM (Option Expr) := do
-  let name := if writes then ``Image.Writes else ``Image.Reads
+-- `kernel.Reads r` or `kernel.Writes r`: a hypothesis about a region `r` lies in.
+meta def grant? (known : Array (Expr × Expr)) (writes : Bool) (kernel r : Expr) : MetaM (Option Expr) := do
+  let name := if writes then ``Kernel.Writes else ``Kernel.Reads
   for (proof, type) in known do
     unless type.isAppOfArity name 2 do continue
-    unless ← same (type.getArg! 0) image do continue
+    unless ← same (type.getArg! 0) kernel do continue
     if let some inside ← inside? r (type.getArg! 1) then
-      return some (← mkAppM (if writes then ``Image.Writes.inside else ``Image.Reads.inside) #[proof, inside])
+      return some (← mkAppM (if writes then ``Kernel.Writes.inside else ``Kernel.Reads.inside) #[proof, inside])
   return none
 
 -- A root is placed where it starts: the place for the root of each region.

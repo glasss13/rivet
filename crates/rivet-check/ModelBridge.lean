@@ -101,7 +101,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
   let regions :=
     region request.memoryBase (request.writableBase - request.memoryBase) false (by omega) ++
     region request.writableBase (request.memoryBase + request.memory.size - request.writableBase) true (by omega)
-  let image : Image := { program := .leaf request.program.toList, regions }
+  let program : Program := .leaf request.program.toList
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
@@ -111,6 +111,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     carryFlag := request.carryFlag
     overflowFlag := request.overflowFlag
     memory
+    kernel := .ofRegions regions
     status := .running first.address }
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]
@@ -118,7 +119,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     if current.status == .fault || current.status == .running (BitVec.ofNat 64 request.stopAddress) then break
     let some undefinedFlags := request.nativeFlags[index]?
       | throw "missing native flag observation"
-    current := step image current undefinedFlags
+    current := step program current undefinedFlags
     observations := observations.push (snapshot request.memoryBase request.memory.size current)
   unless observations.size == request.nativeFlags.size + 1 do
     throw "unused native flag observations"

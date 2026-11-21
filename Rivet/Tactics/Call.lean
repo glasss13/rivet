@@ -26,7 +26,7 @@ syntax (name := rivetCall) "rivet_call " term:max (ppSpace colGt (Lean.Parser.Te
   unless result.isAppOfArity ``Block 5 do throwError "rivet_call: not a block:{indentExpr result}"
   unless (← isDefEq (result.getArg! 4) goalArgs[4]!) && (← isDefEq (result.getArg! 0) goalArgs[0]!) do
     throwError "rivet_call: the block{indentExpr result}\ndoes not start at the current state `{goalArgs[4]!}` \
-      of this image"
+      of this program"
   for argument in named do
     let name := argument[1].getId
     let some index := names.idxOf? name | throwError "rivet_call: the block has no argument `{name}`"
