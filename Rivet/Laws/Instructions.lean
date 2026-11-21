@@ -51,33 +51,41 @@ private theorem one (code : InstructionAt image.program address length instructi
   simp only [step, location, code]
 
 private theorem except_congr {t u s : MachineState} {c : Changes} (same : u.Except s c)
-    (registers : t.registers = u.registers := by rfl) (memory : t.memory = u.memory := by rfl) :
+    (registers : t.registers = u.registers := by rfl) (xmm : t.xmmRegisters = u.xmmRegisters := by rfl)
+    (memory : t.memory = u.memory := by rfl) :
     t.Except s c :=
   ⟨fun register out => registers ▸ same.sameRegisters register out,
+    fun register out => xmm ▸ same.sameXmm register out,
     fun address size away fits => memory ▸ same.sameMemory address size away fits⟩
 
 private theorem write_except (state : MachineState) (register : Reg) (value : BitVec 64) :
     (state.write register value).Except state { registers := [register] } :=
-  ⟨fun other out => by simp_all [MachineState.write], fun _ _ _ _ => rfl⟩
+  ⟨fun other out => by simp_all [MachineState.write], fun _ _ => rfl, fun _ _ _ _ => rfl⟩
 
 private theorem write_write_except (state : MachineState) (first second : Reg) (one two : BitVec 64) :
     ((state.write first one).write second two).Except state { registers := [first, second] } :=
-  ⟨fun other out => by simp_all [MachineState.write], fun _ _ _ _ => rfl⟩
+  ⟨fun other out => by simp_all [MachineState.write], fun _ _ => rfl, fun _ _ _ _ => rfl⟩
 
 private theorem store_except (state : MachineState) (base : BitVec 64) (length : Nat) (bytes : Memory) :
     ({ state with memory := state.memory.storeBytes base length bytes } : MachineState).Except state
       { memory := [(base.toNat, base.toNat + length)] } :=
-  ⟨fun _ _ => rfl, fun address size away fits => Internal.readBytes_congr (fits := fits) fun other low high => by
+  ⟨fun _ _ => rfl, fun _ _ => rfl, fun address size away fits => Internal.readBytes_congr (fits := fits) fun other low high => by
     have := away _ List.mem_cons_self
     simp only [Memory.storeBytes]
     split <;> first | omega | rfl⟩
+
+private theorem writeXmm_except (state : MachineState) (destination : Xmm) (value : BitVec 128) :
+    ({ state with xmmRegisters := fun register =>
+        if register = destination then value else state.xmmRegisters register } : MachineState).Except state
+      { xmm := [destination] } :=
+  ⟨fun _ _ => rfl, fun other out => by simp_all, fun _ _ _ _ => rfl⟩
 
 private theorem push_except (state : MachineState) (value : BitVec 64) :
     ((state.writeMemory (state.registers .rsp - 8#64) .qword value).write .rsp
       (state.registers .rsp - 8#64)).Except state
       { registers := [.rsp], memory := [((state.registers .rsp - 8#64).toNat,
         (state.registers .rsp - 8#64).toNat + 8)] } :=
-  ⟨fun other out => by simp_all [MachineState.write, MachineState.writeMemory],
+  ⟨fun other out => by simp_all [MachineState.write, MachineState.writeMemory], fun _ _ => rfl,
     fun address size away fits => Internal.readBytes_congr (fits := fits) fun other low high => by
     have := away _ List.mem_cons_self
     simp only [MachineState.write, MachineState.writeMemory, Memory.storeBytes, Width.bytes]
@@ -120,10 +128,10 @@ theorem Contract.movd (image : Image) (address : BitVec 64) (destination : Xmm) 
     (location : initial.status = .running address)
     (code : InstructionAt image.program address length (.movd destination source)) :
     let value := ((initial.registers source.parent).setWidth 32).setWidth 128
-    Block image initial {} (· = { initial with
+    Block image initial { xmm := [destination] } (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr (writeXmm_except _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp [stepOp, next]
@@ -137,10 +145,10 @@ theorem Contract.pshufd (image : Image) (address : BitVec 64) (destination sourc
     let lane (index : Nat) : BitVec 32 :=
       (initial.xmmRegisters source).extractLsb' (32 * (order / 4^index % 4)) 32
     let value : BitVec 128 := lane 3 ++ lane 2 ++ lane 1 ++ lane 0
-    Block image initial {} (· = { initial with
+    Block image initial { xmm := [destination] } (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr (writeXmm_except _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp only [stepOp, encoded, ite_true]
@@ -155,10 +163,10 @@ theorem Contract.loadXmm (image : Image) (address : BitVec 64) (operation : XmmM
     (readable : permits image.readable (source.evaluate initial.registers) 16 = true) :
     let pointer := source.evaluate initial.registers
     let value := readBytes initial.memory pointer 16
-    Block image initial {} (· = { initial with
+    Block image initial { xmm := [destination] } (· = { initial with
       xmmRegisters := fun register => if register = destination then value else initial.xmmRegisters register
       status := .running (address + BitVec.ofNat 64 length) }) := by
-  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
+  apply Block.of_step (by rintro _ rfl; exact except_congr (writeXmm_except _ _ _))
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp [stepOp, readable, next]

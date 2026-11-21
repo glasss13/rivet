@@ -16,8 +16,8 @@ open Rivet
 ## Blocks & Loops
 
 - `Block image s c Q` (5th arg `t := s` is the current state while stepping): from `s`, for all undefined flag values, execution terminates in a state `t` with `Q t` and `t.Except s c`.
-- `Changes`: `{ registers := [...], memory := [...] }` (both default `[]`). Multi-line fields must start in the same column, or Lean reports `expected '}'`.
-- `t.Except s c`: every register not in `c.registers` and every memory read disjoint from `c.memory` equals `s`. Does not cover flags, `xmmRegisters`, or `status` (state those in `Q`). Saved-and-restored registers do not need to be in `c.registers`.
+- `Changes`: `{ registers := [...], xmm := [...], memory := [...] }` (`registers : List Reg`, `xmm : List Xmm`; all default `[]`). Multi-line fields must start in the same column, or Lean reports `expected '}'`.
+- `t.Except s c`: every register not in `c.registers`, every `xmmRegisters` entry not in `c.xmm`, and every memory read disjoint from `c.memory` equals `s`. Does not cover flags or `status` (state those in `Q`). Saved-and-restored registers do not need to be listed.
 
 Closing and composing blocks:
 
@@ -105,7 +105,7 @@ Traces the goal and listed hypotheses back to start, then runs `lia +ac` using *
 
 ## Automatic Value Tracing
 
-Rivet automatically traces `t.registers r`, `(t.registers r).setWidth k`, `t.status`, flags, `readBytes m p n`, and `r.Same m t.memory` back through steps, disjoint stores, and unmodified nested-block fields to the block's start state (or the last nested block that modified them). A hypothesis `r.Same m m'` stops a `Same` trace at `m'`.
+Rivet automatically traces `t.registers r`, `(t.registers r).setWidth k`, `t.xmmRegisters r`, `t.status`, flags, `readBytes m p n`, and `r.Same m t.memory` back through steps, disjoint stores, and unmodified nested-block fields to the block's start state (or the last nested block that modified them). A hypothesis `r.Same m m'` stops a `Same` trace at `m'`.
 
 Any hypothesis (or public field of a `Prop` `structure` hypothesis) of the form `loc = expr` at the start state—or at the end of a nested block that modified `loc`—is substituted automatically:
 

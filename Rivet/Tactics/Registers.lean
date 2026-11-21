@@ -24,8 +24,16 @@ meta partial def listItems (list : Expr) : MetaM (Array Expr) := do
   if list.isAppOfArity ``List.cons 3 then return #[list.getArg! 1] ++ (← listItems (list.getArg! 2))
   throwError "a change lists its registers and regions one by one; this is not such a list:{indentExpr list}"
 
-meta def changedRegisters (c : Expr) : MetaM (Array Name) := do
-  (← listItems (mkApp (mkConst ``Changes.registers) c)).mapM fun register => do
+-- A read of a register or a vector register: where a change lists such registers, and the law that a
+-- block keeps the ones its change does not list.
+meta def registerFile? (read : Expr) : Option (Name × Name) :=
+  if read.isAppOfArity ``MachineState.registers 2 then
+    some (``Changes.registers, ``MachineState.Except.sameRegisters)
+  else if read.isAppOfArity ``MachineState.xmmRegisters 2 then some (``Changes.xmm, ``MachineState.Except.sameXmm)
+  else none
+
+meta def changedRegisters (c : Expr) (listed : Name := ``Changes.registers) : MetaM (Array Name) := do
+  (← listItems (mkApp (mkConst listed) c)).mapM fun register => do
     let some name := (← whnfD register).constName?
       | throwError "a change names its registers; this is not a register name:{indentExpr register}"
     return name
@@ -114,22 +122,24 @@ meta def openAbbrev (later : Std.HashSet FVarId) : Simp.DSimproc := fun e => do
   let some unfolded ← unfoldDefinition? e | return .continue
   return .visit unfolded.headBeta
 
--- The nested block that ended in `state` and leaves the register alone: its start, change and `Except`.
-meta def History.leaves (history : History) (state : Expr) (name : Name) : MetaM (Option (Expr × Expr × Expr)) :=
-  (history.keptBy state).findM? fun (_, c, _) => do
-    let some changed ← try some <$> changedRegisters c catch _ => pure none | return false
+-- The nested block that ended in the state of a register read and leaves the register alone: its
+-- start, change and `Except`.
+meta def History.leaves (history : History) (read : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
+  let some (listed, _) := registerFile? read | return none
+  let some name := read.appArg!.constName? | return none
+  (history.keptBy read.appFn!.appArg!).findM? fun (_, c, _) => do
+    let some changed ← try some <$> changedRegisters c listed catch _ => pure none | return false
     return !changed.contains name
 
 -- A register a nested block's change does not list, read back across it.
 meta def unchangedRegister (history : History) : Simp.Simproc := fun e => do
-  let_expr MachineState.registers state register := e | return .continue
-  let some name := register.constName? | return .continue
-  if let some (earlier, c, kept) ← history.leaves state name then
-    let out ← mkDecideProof
-      (mkNot (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.registers) c, register]))
-    return .visit { expr := mkApp2 (mkConst ``MachineState.registers) earlier register,
-                    proof? := mkApp6 (mkConst ``MachineState.Except.sameRegisters) state earlier c kept register out }
-  return .continue
+  let some (listed, law) := registerFile? e | return .continue
+  let some (earlier, c, kept) ← history.leaves e | return .continue
+  let state := e.appFn!.appArg!
+  let register := e.appArg!
+  let out ← mkDecideProof (mkNot (← mkAppM ``Membership.mem #[mkApp (mkConst listed) c, register]))
+  return .visit { expr := mkApp2 e.appFn!.appFn! earlier register,
+                  proof? := mkApp6 (mkConst law) state earlier c kept register out }
 
 end ReadBack
 
