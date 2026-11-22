@@ -60,6 +60,9 @@ def Kernel.Reads (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contain
 
 def Kernel.Writes (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contains address → kernel.writable address = true
 
+-- The kernel has mapped every byte of the region.
+def Kernel.Maps (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contains address → kernel.mapped address = true
+
 theorem Region.Has.part {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size)
     {inner : BitVec 64} {less : Nat} (start : pointer.toNat ≤ inner.toNat)
     (finish : inner.toNat + less ≤ pointer.toNat + size) : r.Has inner less :=
@@ -75,7 +78,13 @@ theorem Region.Has.part_at {r : Region} {pointer : BitVec 64} {size : Nat} (plac
   have := placed.finish
   constructor <;> simp only [Region.part_base, Region.part_length] <;> bv_omega
 
--- A permission of a kernel made from regions, from that list.
+-- What a kernel made from regions has mapped, and a permission of it, from that list.
+theorem Kernel.maps_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) :
+    (Kernel.ofRegions regions).Maps r := by
+  intro address inside
+  simp only [Kernel.ofRegions, List.any_eq_true, decide_eq_true_eq]
+  exact ⟨r, member, inside⟩
+
 theorem Kernel.reads_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (readable : r.readable = true) :
     (Kernel.ofRegions regions).Reads r := by
   intro address inside

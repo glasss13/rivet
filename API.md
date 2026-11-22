@@ -137,7 +137,7 @@ Rules:
 Name every region with `abbrev` (not `def`):
 - `Region.root start len readable writable fits` — root region (`start.toNat + len ≤ 2^64`).
 - `r.part offset len inside` — sub-region at `[r.base + offset, r.base + offset + len)`.
-- Predicates: `r.Has p n` (`n` bytes at `p` are in `r`), `r.Apart r'` (disjoint), `r.Same m₁ m₂` (byte-equal on `r`), `k.Reads r`, `k.Writes r` (the kernel `k`, usually `s.kernel`, lets the process read or write all of `r`).
+- Predicates: `r.Has p n` (`n` bytes at `p` are in `r`), `r.Apart r'` (disjoint), `r.Same m₁ m₂` (byte-equal on `r`), `k.Reads r`, `k.Writes r` (the kernel `k`, usually `s.kernel`, lets the process read or write all of `r`), `k.Maps r` (`k` has mapped all of `r`).
 
 `Region.root` and `Region.part` are opaque: `rfl`/`dsimp`/`decide`/`omega` do not unfold `.base`, `.length`, `.readable`, or `.writable` — rewrite with the accessor lemmas below. (`rivet_arith` auto-applies `Region.root_base` and length laws, but not `Region.part_base`.)
 
@@ -172,6 +172,7 @@ Region.root_has start len r w fits : (Region.root start len r w fits).Has start 
 Region.part_apart r inside inside' (apart : off + len ≤ off' ∨ off' + len' ≤ off) :
   (r.part off len inside).Apart (r.part off' len' inside')
 
+Kernel.maps_of_mem (mem : r ∈ regions) : (Kernel.ofRegions regions).Maps r
 Kernel.reads_of_mem (mem : r ∈ regions) (rd : r.readable = true) : (Kernel.ofRegions regions).Reads r
 Kernel.writes_of_mem (mem : r ∈ regions) (wr : r.writable = true) : (Kernel.ofRegions regions).Writes r
 
@@ -214,3 +215,72 @@ Recipes:
   have h_val : readBytes s.memory 0x403000#64 8 = 42#64 := by
     rw [← loaded.segment_<a>.read h_in]; simp only [readBytes_succ, BitVec.of_length_zero]; decide
   ```
+
+## Loader
+
+What Linux guarantees when it starts a static, fixed-address x86-64 executable, from the file's own bytes.
+
+- `Exe`: a file, `{ size, pages }`: 4096 bytes to a page, each page one `Nat` whose digit `i`, base 256, is byte `i`. `file.u8 offset`, `.u16`, `.u32`, `.u64` read little-endian `Nat`s.
+- `file.layout : Option Layout` checks the ELF and program headers. `Layout` is `{ entry : BitVec 64, segments : List Segment }`. Check it once against a literal: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
+- `Segment`: `{ start, length, writable, executable, skip, size, fileOffset, fileSize }`.
+  - `segment.region`: the pages Linux maps, `length` bytes from `start`. Always readable.
+  - `segment.bytes`: the segment's own bytes, `segment.region.part skip size`. Linux guarantees no contents for the rest of its pages.
+  - `segment.memory file : Memory`: on `segment.bytes`, the file's `fileSize` bytes from `fileOffset`, then zeroes.
+- `Starts file layout stack s`: what holds of the start state `s`, whose stack is in the region `stack`. A whole-program theorem assumes it for all `stack` and `s`. It leaves other mappings, other registers and flags unconstrained. Fields:
+
+```lean
+status : s.status = .running layout.entry
+-- For each `segment ∈ layout.segments` (pass the segment, then `by decide`):
+maps : s.kernel.Maps segment.region
+reads : s.kernel.Reads segment.region
+writable : ∀ address, segment.region.Contains address → s.kernel.writable address = segment.writable
+same : segment.bytes.Same (segment.memory file) s.memory
+apart : stack.Apart segment.region
+-- The stack:
+stackMaps : s.kernel.Maps stack
+stackReads : s.kernel.Reads stack
+stackWrites : s.kernel.Writes stack
+stackPages : stack.base % 4096 = 0 ∧ stack.length % 4096 = 0
+rsp : stack.Contains (s.registers .rsp)
+aligned : (s.registers .rsp).toNat % 16 = 0
+
+starts.writes segment member (writable : segment.writable = true) : s.kernel.Writes segment.region
+Starts.possible (checked : file.layout = some layout) : ∃ stack s, Starts file layout stack s
+```
+
+`file.layout` is `none` unless Linux loads the file the same way on every kernel:
+- ELF64, little-endian, `ET_EXEC`, x86-64, with no `PT_INTERP` or `PT_DYNAMIC` header.
+- A `PT_GNU_STACK` header, not executable: link with `-z noexecstack`.
+- Each `PT_LOAD` segment has bytes, is readable, is not both writable and executable, and lies in the file at an offset that is its address modulo 4096. Only a writable one may be larger in memory than in the file.
+- The segments' pages ascend in header order, start past the first page, and are shared by no two segments.
+- The entry is a byte of the file in an executable segment.
+
+Example:
+
+```lean
+abbrev code : Segment := { start := 0x401000#64, length := 0x1000, writable := false, executable := true,
+                           skip := 0, size := 0xc, fileOffset := 0x1000, fileSize := 0xc }
+def layout : Layout := { entry := 0x401000#64, segments := [head, code] }
+theorem layout_ok : file.layout = some layout := by decide +kernel
+
+-- mov edi, 42 · mov eax, 231 · syscall
+theorem exits (stack : Region) (s : MachineState) (starts : Starts file layout stack s) :
+    Block program s { registers := [.rdi, .rax] } (fun t => t.status = .exited 42) := by
+  rivet_step; rivet_step; rivet_step
+  exact Block.done
+```
+
+`rivet_step` reads `starts.status` itself. For a segment's memory, name its regions with literals, as the tactics need, and take the facts from `starts`:
+
+```lean
+abbrev dataRegion : Region := Region.root 0x403000#64 0x3000 true true  -- data.region
+abbrev dataBytes : Region := dataRegion.part 0x10 0x2ee8                -- data.bytes
+
+have reads : s.kernel.Reads dataRegion := starts.reads data (by decide)
+have writes : s.kernel.Writes dataRegion := starts.writes data (by decide) rfl
+have same : dataBytes.Same (data.memory file) s.memory := starts.same data (by decide)
+-- A loaded constant, or a zero past the file's bytes:
+have placed : dataBytes.Has 0x403bc8#64 8 := by rivet_known
+have value : readBytes s.memory 0x403bc8#64 8 = 0x1122334455667788#64 := by
+  rw [← same.read placed]; simp only [readBytes_succ, BitVec.of_length_zero]; decide
+```
