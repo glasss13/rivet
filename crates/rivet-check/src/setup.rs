@@ -118,8 +118,15 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
             guard + 8
         };
     }
+    let program = rivet_import::decode(&memory.code, memory.code.as_ptr() as u64)?;
+    ensure!(
+        !program
+            .iter()
+            .any(|instruction| matches!(instruction.op, rivet_import::program::Operation::Syscall)),
+        "rivet-check does not execute syscall instructions"
+    );
     let input = ExecutionInput {
-        program: rivet_import::decode(&memory.code, memory.code.as_ptr() as u64)?,
+        program,
         stop_address: continuation,
         registers: values,
         xmm_registers: case.xmm_registers,
@@ -137,4 +144,34 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
         steps: case.steps,
     };
     Ok((input, memory))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_syscall_in_replay() {
+        let case = Case {
+            code: vec![0x0f, 0x05], // syscall
+            offsets: vec![0, 2],
+            registers: [0; 16],
+            xmm_registers: [[0; 4]; 16],
+            sign_flag: false,
+            zero_flag: false,
+            carry_flag: false,
+            overflow_flag: false,
+            data: vec![0; 16],
+            fault_memory: false,
+            read_only_data: false,
+            steps: 1,
+        };
+        let error = prepare(&case)
+            .err()
+            .expect("syscall replay must be rejected before native execution");
+        assert!(
+            error.to_string().contains("syscall"),
+            "unexpected error: {error:#}"
+        );
+    }
 }
