@@ -64,6 +64,7 @@ pub struct ExecutionInput {
 #[serde(rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Status {
     Running { address: u64 },
+    Exited { code: u8 },
     Fault,
     Outside { address: u64 },
     Signal { number: i32, address: u64 },

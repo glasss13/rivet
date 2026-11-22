@@ -298,5 +298,6 @@ fn operation(value: &Operation) -> String {
         } => format!(".pshufd {} {} {order}", name(destination), name(source)),
         Push { source } => format!(".push {}", name(source)),
         Pop { destination } => format!(".pop {}", name(destination)),
+        Syscall => ".syscall".into(),
     }
 }

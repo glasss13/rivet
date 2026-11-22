@@ -344,6 +344,7 @@ fn operation(instruction: &Decoded, bytes: &[u8]) -> Result<Operation> {
         Call if instruction.code() == Code::Call_rel32_64 => Operation::Call {
             target: instruction.near_branch_target(),
         },
+        Syscall => Operation::Syscall,
         _ => bail!("unsupported instruction {:?}", instruction.code()),
     })
 }

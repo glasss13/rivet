@@ -30,7 +30,8 @@ private meta def goalParts (goal : MVarId) : MetaM (Expr × Expr) := do
   unless state.isFVar do throwError "rivet_step: the current state must be a variable"
   return (type.getAppArgs[0]!, state)
 
-private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := do
+private meta def contractFor (scope : ReadBack.Walk) (state : Expr) (pc : Nat) (operation : Expr) :
+    MetaM (Name × Array Expr) := do
   let args := operation.getAppArgs
   let some ctor := operation.getAppFn.constName?
     | throwError "rivet_step: unrecognized operation {operation}"
@@ -53,6 +54,17 @@ private meta def contractFor (operation : Expr) : MetaM (Name × Array Expr) := 
       | some ``BinaryOp.sbb => pure ``Rivet.Contract.sbb | some ``BinaryOp.cmp => pure ``Rivet.Contract.cmp
       | some ``BinaryOp.test => pure ``Rivet.Contract.test | some ``BinaryOp.and => pure ``Rivet.Contract.and
       | some ``BinaryOp.or => pure ``Rivet.Contract.or | _ => pure ``Rivet.Contract.xor
+    -- A system call's contract is chosen by its number, `rax` read back.
+    | ``Op.syscall =>
+      let at_ := m!"rivet_step: the instruction at 0x{Fetch.hex pc} is `syscall`"
+      let number ← scope.walk (mkApp2 (mkConst ``MachineState.registers) state (mkConst ``Reg.rax))
+      match ← getBitVecValue? number.expr with
+      | some ⟨_, value⟩ =>
+        if value.toNat == 231 then pure ``Rivet.Contract.exitGroup else
+          throwError "{at_}, and `rax` is {value.toNat}: a system call Rivet does not model. \
+            It models only `exit_group`, 231."
+      | none => throwError "{at_}, and `rax`, the system call's number, is not known: it is{indentExpr number.expr}\n\
+          Rivet models only `exit_group`: `rax` must be 231 here."
     | _ => throwError "rivet_step: unsupported operation {operation}"
   return (name, if ctor == ``Op.binary then args.extract 1 3 else args)
 
@@ -82,13 +94,17 @@ private meta def instantiate (name : Name) (explicit : Array Expr) : MetaM (Expr
     type := body.instantiate1 argument
   return (proof, sides)
 
--- Why the block's address is not known: no status, or one that is not a literal, as after `ret`.
+-- Why the block's address is not known: no status, one that is not a literal, as after `ret`, or the
+-- program has exited.
 meta def noAddress (tactic : String) (state : Expr) : MetaM MessageData := do
   for decl in ← getLCtx do
     if decl.isImplementationDetail then continue
     for (_, part) in ← ReadBack.parts decl.toExpr decl.type do
       let some (_, lhs, rhs) := part.eq? | continue
       unless lhs.isAppOfArity ``MachineState.status 1 && lhs.appArg! == state do continue
+      if rhs.isAppOfArity ``ExecutionStatus.exited 1 then
+        return m!"{tactic}: the program has exited:{indentExpr part}\nNothing runs after that. End the block: \
+          `exact Block.done`."
       let some address := rhs.app1? ``ExecutionStatus.running | continue
       return m!"{tactic}: `{state}` is at{indentExpr address}\nwhich is not a literal address. After `ret` it is \
         the return address read from the stack: say where that is, \
@@ -350,7 +366,7 @@ open Step in
   -- Goals left open by earlier steps (unproved side conditions) stay open, after ours.
   let pending := (← getGoals).filter (· != mainGoal)
   let contract : Expr ← do
-    let (name, operands) ← contractFor operation
+    let (name, operands) ← contractFor scope old pc operation
     let (proof, sides) ← instantiate name (#[program, address] ++ operands ++ #[old])
     for side in sides do
       -- Location and instruction evidence are known; no context search is needed.

@@ -6,6 +6,7 @@ namespace Rivet
 
 inductive ExecutionStatus where
   | running (address : BitVec 64)
+  | exited (code : BitVec 8)
   | fault
   deriving DecidableEq
 structure MachineState where
@@ -295,6 +296,11 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
     if permits state.kernel.readable address 8 then
       { state.write .rsp (state.registers .rsp + 8#64) with
         status := .running (readBytes state.memory address 8) }
+    else { state with status := .fault }
+  | .syscall =>
+    -- Linux `exit_group`, number 231, is the one system call modeled: the process ends with the low
+    -- byte of `rdi` as its exit code.
+    if state.registers .rax == 231#64 then { state with status := .exited ((state.registers .rdi).setWidth 8) }
     else { state with status := .fault }
 
 @[no_expose] def step (program : Program) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
