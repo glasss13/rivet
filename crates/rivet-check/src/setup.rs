@@ -118,8 +118,15 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
             guard + 8
         };
     }
+    let program = rivet_import::decode(&memory.code, memory.code.as_ptr() as u64)?;
+    ensure!(
+        !program
+            .iter()
+            .any(|instruction| matches!(instruction.op, rivet_import::program::Operation::Syscall)),
+        "rivet-check does not execute syscall instructions"
+    );
     let input = ExecutionInput {
-        program: rivet_import::decode(&memory.code, memory.code.as_ptr() as u64)?,
+        program,
         stop_address: continuation,
         registers: values,
         xmm_registers: case.xmm_registers,

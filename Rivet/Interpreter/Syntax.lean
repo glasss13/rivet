@@ -193,6 +193,7 @@ inductive Op where
   | pop (destination : Reg)
   | call (target : BitVec 64)
   | ret
+  | syscall
   deriving DecidableEq
 structure Instruction where
   address : BitVec 64

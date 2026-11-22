@@ -5,7 +5,8 @@ import all Rivet.Interpreter.Machine
 import all Rivet.Interpreter.Memory
 import all Rivet.Laws.Block
 -- Instruction contracts: one `Block` per modeled operation, proved against `step`. The contract for
--- `Op.x` is `Contract.x`; for `Op.binary .y`, it is `Contract.y`.
+-- `Op.x` is `Contract.x`; for `Op.binary .y`, it is `Contract.y`; for `Op.syscall`, it is the system
+-- call's, `Contract.exitGroup`.
 @[expose] public section
 namespace Rivet
 
@@ -788,6 +789,19 @@ theorem Contract.ret (program : Program) (address : BitVec 64) (initial : Machin
   intro undefinedFlags
   rw [one code location undefinedFlags]
   simp_all [MachineState.write, stepOp]
+
+theorem Contract.exitGroup (program : Program) (address : BitVec 64) (initial : MachineState)
+    {length : Nat}
+    (location : initial.status = .running address)
+    (code : InstructionAt program address length .syscall)
+    (number : initial.registers .rax = 231#64) :
+    Block program initial {} (· = { initial with
+      status := .exited ((initial.registers .rdi).setWidth 8) }) := by
+  apply Block.of_step (by rintro _ rfl; exact except_congr Internal.MachineState.Except.refl)
+  intro undefinedFlags
+  rw [one code location undefinedFlags]
+  simp [stepOp, number]
+
 theorem Contract.mov (program : Program) (address : BitVec 64) (destination source : Operand) (initial : MachineState)
     {length : Nat}
     (location : initial.status = .running address)

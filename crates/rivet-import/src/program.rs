@@ -145,6 +145,7 @@ pub enum Operation {
     Pop {
         destination: Register64,
     },
+    Syscall,
 }
 #[derive(Debug, Serialize)]
 pub struct Instruction {
