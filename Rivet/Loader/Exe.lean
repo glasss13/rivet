@@ -103,9 +103,10 @@ structure Layout where
   segments : List Segment
   deriving DecidableEq
 
--- The layout of a static, fixed-address x86-64 Linux executable, or `none` for a file that is not one or
--- that Linux could load in more than one way:
--- - It is ELF64, little-endian, version 1, `ET_EXEC`, `EM_X86_64`, and holds its program headers.
+-- The layout of a static, fixed-address x86-64 Linux executable, or `none` if it fails the modeled
+-- ELF checks:
+-- - It is ELF64, little-endian, version 1, `ET_EXEC`, `EM_X86_64`, and its program headers fit in
+--   one 4096-byte page (Linux's `binfmt_elf.c` limit) and within the file.
 -- - No header is `PT_DYNAMIC` or `PT_INTERP`.
 -- - A `PT_GNU_STACK` header is there and none is executable. Without one, Linux before 5.8 makes the
 --   stack and every readable page executable.
@@ -119,7 +120,7 @@ def Exe.layout (file : Exe) : Option Layout :=
   let loads := headers.filter fun header => header.type = 1
   if 64 ≤ file.size ∧ file.u32 0 = 0x464c457f ∧ file.u8 4 = 2 ∧ file.u8 5 = 1 ∧ file.u8 6 = 1 ∧
       file.u16 16 = 2 ∧ file.u16 18 = 62 ∧ file.u32 20 = 1 ∧ file.u16 54 = 56 ∧
-      file.u64 32 + 56 * count ≤ file.size ∧
+      56 * count ≤ 4096 ∧ file.u64 32 + 56 * count ≤ file.size ∧
       headers.all (fun header => header.type ≠ 2 ∧ header.type ≠ 3 ∧
         (header.type = 0x6474e551 → ¬header.executable)) ∧
       headers.any (fun header => header.type = 0x6474e551) then

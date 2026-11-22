@@ -5,11 +5,11 @@ public import Rivet.Interpreter.Machine
 @[expose] public section
 namespace Rivet
 
--- What Linux guarantees of the state `s` it starts `file` in, for the `layout` the file was checked to
--- have and the pages `stack` Linux chose for its stack. The entry runs next. Each segment's pages are
--- mapped and readable, writable exactly if the segment is, and its own bytes are loaded. The stack is
--- mapped, readable, writable and apart from every segment, and `rsp` is in it, a multiple of 16. Linux
--- may map more (the vDSO), and the other registers and the flags may hold anything.
+-- The start state `s` of a checked executable `file` with `layout`, given a launch whose `stack` pages
+-- are placed apart from every segment. The entry runs next. Each segment's pages are mapped and readable,
+-- writable exactly if the segment is, and its own bytes are loaded. The stack is mapped, readable,
+-- writable, and `rsp` is in it, a multiple of 16. Extra mappings (e.g. vDSO), other registers, and flags
+-- are left unconstrained.
 structure Starts (file : Exe) (layout : Layout) (stack : Region) (s : MachineState) : Prop where
   status : s.status = .running layout.entry
   maps : ∀ segment ∈ layout.segments, s.kernel.Maps segment.region

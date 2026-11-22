@@ -226,7 +226,7 @@ What Linux guarantees when it starts a static, fixed-address x86-64 executable, 
   - `segment.region`: the pages Linux maps, `length` bytes from `start`. Always readable.
   - `segment.bytes`: the segment's own bytes, `segment.region.part skip size`. Linux guarantees no contents for the rest of its pages.
   - `segment.memory file : Memory`: on `segment.bytes`, the file's `fileSize` bytes from `fileOffset`, then zeroes.
-- `Starts file layout stack s`: what holds of the start state `s`, whose stack is in the region `stack`. A whole-program theorem assumes it for all `stack` and `s`. It leaves other mappings, other registers and flags unconstrained. Fields:
+- `Starts file layout stack s`: initial state `s` for a launch whose `stack` is placed apart from every segment. Whole-program theorems quantify over `stack` and `s`. Leaves other mappings (e.g. vDSO), other registers, and flags unconstrained. Fields:
 
 ```lean
 status : s.status = .running layout.entry
@@ -248,12 +248,11 @@ starts.writes segment member (writable : segment.writable = true) : s.kernel.Wri
 Starts.possible (checked : file.layout = some layout) : ∃ stack s, Starts file layout stack s
 ```
 
-`file.layout` is `none` unless Linux loads the file the same way on every kernel:
-- ELF64, little-endian, `ET_EXEC`, x86-64, with no `PT_INTERP` or `PT_DYNAMIC` header.
-- A `PT_GNU_STACK` header, not executable: link with `-z noexecstack`.
-- Each `PT_LOAD` segment has bytes, is readable, is not both writable and executable, and lies in the file at an offset that is its address modulo 4096. Only a writable one may be larger in memory than in the file.
-- The segments' pages ascend in header order, start past the first page, and are shared by no two segments.
-- The entry is a byte of the file in an executable segment.
+`file.layout` requires:
+- ELF64, little-endian, `ET_EXEC`, x86-64, program headers fitting in one 4096-byte page, and no `PT_INTERP` or `PT_DYNAMIC`.
+- A non-executable `PT_GNU_STACK` header (link with `-z noexecstack`).
+- Each `PT_LOAD` segment has bytes, is readable, is not `W+X`, lies in the file with `p_offset % 4096 = p_vaddr % 4096`, and only a writable segment may have `p_memsz > p_filesz`.
+- Segments' pages ascend in header order past page 0 (no shared pages), and `e_entry` is a file-backed byte in an executable segment.
 
 Example:
 
