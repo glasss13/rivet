@@ -245,7 +245,6 @@ rsp : stack.Contains (s.registers .rsp)
 aligned : (s.registers .rsp).toNat % 16 = 0
 
 starts.writes segment member (writable : segment.writable = true) : s.kernel.Writes segment.region
-Starts.possible (checked : file.layout = some layout) : ∃ stack s, Starts file layout stack s
 ```
 
 `file.layout` requires:

@@ -78,13 +78,7 @@ theorem Region.Has.part_at {r : Region} {pointer : BitVec 64} {size : Nat} (plac
   have := placed.finish
   constructor <;> simp only [Region.part_base, Region.part_length] <;> bv_omega
 
--- What a kernel made from regions has mapped, and a permission of it, from that list.
-theorem Kernel.maps_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) :
-    (Kernel.ofRegions regions).Maps r := by
-  intro address inside
-  simp only [Kernel.ofRegions, List.any_eq_true, decide_eq_true_eq]
-  exact ⟨r, member, inside⟩
-
+-- A permission of a kernel made from regions, from that list.
 theorem Kernel.reads_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (readable : r.readable = true) :
     (Kernel.ofRegions regions).Reads r := by
   intro address inside
