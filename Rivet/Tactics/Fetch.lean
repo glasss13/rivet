@@ -1,5 +1,4 @@
 module
-public import Rivet.Interpreter.Memory
 public import Rivet.Laws.Program
 -- Proves which instruction a concrete program holds at an address, for `rivet_step`.
 public meta import Lean
@@ -39,21 +38,11 @@ private meta def fetched (program : Expr) (pc : Nat) : MetaM (Option Expr) := do
     current := current.getArg! 2
   return none
 
-private meta def programOf (program : Expr) : MetaM Expr := do
-  let program ← instantiateMVars program
-  let image? := if program.isAppOfArity ``Image.program 1 then some program.appArg!
-    else match program with
-      | .proj ``Image 0 image => some image
-      | _ => none
-  let some image := image? | return program
-  let image ← whnfD image
-  return if image.isAppOfArity ``Image.mk 2 then image.getArg! 0 else program
-
-meta def prove (original address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
-  let some instruction ← fetched (← programOf original) pc | return none
+meta def prove (program address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
+  let some instruction ← fetched program pc | return none
   let result ← mkAppM ``Option.some #[instruction]
   -- State the result about the caller's program, so it matches their goal syntactically.
-  let fetch ← mkAppM ``Program.fetch #[original, address]
+  let fetch ← mkAppM ``Program.fetch #[program, address]
   return some (instruction, ← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetch result))
 
 end Fetch

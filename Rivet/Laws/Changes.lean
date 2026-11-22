@@ -4,11 +4,13 @@ public import Rivet.Interpreter.Machine
 @[expose] public section
 namespace Rivet
 
--- Registers, vector registers, and intervals `[low, high)` of address values.
+-- Registers, vector registers, intervals `[low, high)` of address values, and whether what the kernel
+-- keeps changes.
 structure Changes where
   registers : List Reg := []
   xmm : List Xmm := []
   memory : List (Nat × Nat) := []
+  kernel : Bool := false
 
 -- What writing an operand changes: its whole 64-bit register, or the bytes it stores.
 def Operand.changes (operand : Operand) (state : MachineState) : Changes :=
@@ -33,12 +35,13 @@ structure MachineState.Except (t s : MachineState) (c : Changes) : Prop where
   sameXmm : ∀ register, register ∉ c.xmm → t.xmmRegisters register = s.xmmRegisters register
   sameMemory : ∀ (address : BitVec 64) (size : Nat), c.Misses address.toNat (address.toNat + size) →
     address.toNat + size ≤ 2^64 → readBytes t.memory address size = readBytes s.memory address size
+  sameKernel : c.kernel = false → t.kernel = s.kernel
 
 -- Laws Rivet's tactics build proofs with. Proofs never name them.
 namespace Internal
 
 theorem MachineState.Except.refl {s : MachineState} {c : Changes} : s.Except s c :=
-  ⟨fun _ _ => rfl, fun _ _ => rfl, fun _ _ _ _ => rfl⟩
+  ⟨fun _ _ => rfl, fun _ _ => rfl, fun _ _ _ _ => rfl, fun _ => rfl⟩
 
 -- The vector registers outside `c`, kept from `s` to `t`: by a step that wrote none, and by a nested
 -- block whose change lists only vector registers `c` lists.

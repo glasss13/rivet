@@ -3,7 +3,7 @@ public import Rivet.Laws.Changes
 public import Rivet.Laws.SimpSet
 public meta import Lean
 -- What the read-back finds in scope: the steps' facts, the stores', the nested blocks' `Except`, and
--- the states and hypotheses they make; and the read-back of registers.
+-- the states and hypotheses they make; and the read-back of registers and the kernel.
 public section
 namespace Rivet.Internal
 open Lean Meta Elab Tactic
@@ -140,6 +140,16 @@ meta def unchangedRegister (history : History) : Simp.Simproc := fun e => do
   let out ← mkDecideProof (mkNot (← mkAppM ``Membership.mem #[mkApp (mkConst listed) c, register]))
   return .visit { expr := mkApp2 e.appFn!.appFn! earlier register,
                   proof? := mkApp6 (mkConst law) state earlier c kept register out }
+
+-- The kernel read back across a nested block whose change does not list it.
+meta def unchangedKernel (history : History) : Simp.Simproc := fun e => do
+  let some state := e.app1? ``MachineState.kernel | return .continue
+  for (earlier, c, kept) in history.keptBy state do
+    if (← whnfD (mkApp (mkConst ``Changes.kernel) c)).isConstOf ``Bool.false then
+      return .visit { expr := mkApp e.appFn! earlier,
+                      proof? := mkApp5 (mkConst ``MachineState.Except.sameKernel) state earlier c kept
+                        (← mkEqRefl (mkConst ``Bool.false)) }
+  return .continue
 
 end ReadBack
 

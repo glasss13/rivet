@@ -105,7 +105,7 @@ private meta def currentPc (state : Expr) : TacticM (Option (Expr × Nat × Expr
   return some (address, pc, ← result.getProof' status)
 
 private meta def fields : List Name :=
-  [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `overflowFlag, `memory, `status]
+  [`registers, `xmmRegisters, `signFlag, `zeroFlag, `carryFlag, `overflowFlag, `memory, `kernel, `status]
 
 private meta partial def dedupe (e : Expr) (excluded : List (Expr × Expr) := []) : MetaM Simp.Result := do
   let_expr ite _ test _ yes no := e | return { expr := e }
@@ -239,13 +239,14 @@ meta def closes (tactic : TSyntax `tactic) (goal : MVarId) : TacticM Bool := do
   saved.restore
   return false
 
--- A memory access is placed: `r.Has pointer size` for the first region it is placed in that the image
--- grants. It is never left open.
-private meta def place (scope : ReadBack.Walk) (pc : Nat) (tag : Name) (goal : MVarId) (writes : Bool) (image pointer size : Expr) :
+-- A memory access is placed: `r.Has pointer size` for the first region it is placed in that the kernel,
+-- read back, grants. It is never left open.
+private meta def place (scope : ReadBack.Walk) (pc : Nat) (tag : Name) (goal : MVarId) (writes : Bool) (kernel pointer size : Expr) :
     TacticM Unit := goal.withContext do
   let at_ := m!"the instruction at 0x{Fetch.hex pc}"
   let result ← scope.walk pointer
   let address := result.expr
+  let held ← scope.walk kernel
   let known ← scope.places
   let places ← scope.placements address size
   let some (first, _) := places[0]?
@@ -254,16 +255,22 @@ private meta def place (scope : ReadBack.Walk) (pc : Nat) (tag : Name) (goal : M
         {indentExpr (mkApp3 (mkConst ``Region.Has) (mkConst `r) address size)}\nfor the region `r` it lies in; \
         `r.Has p r.length` places every part of `r`. {← Places.named known}{← scope.notes pointer address}"
   for (region, placed) in places do
-    let some grant ← Places.grant? known writes image region | continue
+    let some grant ← Places.grant? known writes held.expr region | continue
     let mut proof := placed
     if let some equal := result.proof? then
       let f ← withLocalDeclD `p (← inferType pointer) fun p =>
         mkLambdaFVars #[p] (mkApp3 (mkConst ``Region.Has) region p size)
       proof ← mkEqMPR (← mkCongrArg f equal) placed
-    goal.assign (← mkAppM (if writes then ``Image.Writes.permits else ``Image.Reads.permits) #[grant, proof])
+    let mut granted ← mkAppM (if writes then ``Kernel.Writes.permits else ``Kernel.Reads.permits) #[grant, proof]
+    if let some equal := held.proof? then
+      let f ← withLocalDeclD `k (mkConst ``Kernel) fun k => do
+        let permission := mkApp (mkConst (if writes then ``Kernel.writable else ``Kernel.readable)) k
+        mkLambdaFVars #[k] (← mkEq (mkApp3 (mkConst ``permits) permission pointer size) (mkConst ``Bool.true))
+      granted ← mkEqMPR (← mkCongrArg f equal) granted
+    goal.assign granted
     return
-  throwError "rivet_step: the image is not known to grant the access `{tag}` of {at_}: there is no hypothesis\
-    {indentExpr (mkApp2 (mkConst (if writes then ``Image.Writes else ``Image.Reads)) image first)}"
+  throwError "rivet_step: the kernel is not known to grant the access `{tag}` of {at_}: there is no hypothesis\
+    {indentExpr (mkApp2 (mkConst (if writes then ``Kernel.Writes else ``Kernel.Reads)) held.expr first)}"
 
 private meta def discharge (scope : ReadBack.Walk) (pc : Nat) (goal : MVarId) : TacticM (Option MVarId) := do
   let tag ← goal.getTag
@@ -273,11 +280,11 @@ private meta def discharge (scope : ReadBack.Walk) (pc : Nat) (goal : MVarId) : 
   let access? ← reduced.withContext do
     let some (_, lhs, _) := (← instantiateMVars (← reduced.getType)).eq? | return none
     let_expr permits permission pointer size := lhs | return none
-    if let some image := permission.app1? ``Image.readable then return some (false, image, pointer, size)
-    if let some image := permission.app1? ``Image.writable then return some (true, image, pointer, size)
+    if let some kernel := permission.app1? ``Kernel.readable then return some (false, kernel, pointer, size)
+    if let some kernel := permission.app1? ``Kernel.writable then return some (true, kernel, pointer, size)
     return none
-  if let some (writes, image, pointer, size) := access? then
-    place scope pc tag reduced writes image pointer size
+  if let some (writes, kernel, pointer, size) := access? then
+    place scope pc tag reduced writes kernel pointer size
     return none
   if ← closes (← `(tactic| first | rfl | decide +kernel | with_reducible assumption)) reduced then return none
   let some named ← scope.readBack reduced | return none
@@ -313,8 +320,7 @@ syntax (name := rivetStep) "rivet_step" (" as " ident)? (" if " ident)? : tactic
 
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
-  let (image, old) ← goalParts (← getMainGoal)
-  let program := mkApp (mkConst ``Image.program) image
+  let (program, old) ← goalParts (← getMainGoal)
   let some (written, pc, location) ← currentPc old | throwError (← noAddress "rivet_step" old)
   reporting m!"rivet_step, at the instruction at 0x{Fetch.hex pc}" do
   -- An address given by a definition is passed as its value, so the next address is a literal too.
@@ -345,7 +351,7 @@ open Step in
   let pending := (← getGoals).filter (· != mainGoal)
   let contract : Expr ← do
     let (name, operands) ← contractFor operation
-    let (proof, sides) ← instantiate name (#[image, address] ++ operands ++ #[old])
+    let (proof, sides) ← instantiate name (#[program, address] ++ operands ++ #[old])
     for side in sides do
       -- Location and instruction evidence are known; no context search is needed.
       match ← side.getTag with
@@ -372,7 +378,7 @@ open Step in
       let kept := mkApp3 (mkConst ``MachineState.Except) successor (contractType.getArg! 1) (contractType.getArg! 2)
       withLocalDeclD `rivet_kept kept fun kept => do
       withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
-        let target := mkApp5 (mkConst ``Block) image goalArgs[1]! goalArgs[2]! goalArgs[3]! successor
+        let target := mkApp5 (mkConst ``Block) program goalArgs[1]! goalArgs[2]! goalArgs[3]! successor
         let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
         let continuation ← mkLambdaFVars #[successor, kept, equation] goal
         mainGoal.assign (← mkAppM ``Block.then #[contract, continuation])

@@ -15,9 +15,9 @@ open Rivet
 
 ## Blocks & Loops
 
-- `Block image s c Q` (5th arg `t := s` is the current state while stepping): from `s`, for all undefined flag values, execution terminates in a state `t` with `Q t` and `t.Except s c`.
-- `Changes`: `{ registers := [...], xmm := [...], memory := [...] }` (`registers : List Reg`, `xmm : List Xmm`; all default `[]`). Multi-line fields must start in the same column, or Lean reports `expected '}'`.
-- `t.Except s c`: every register not in `c.registers`, every `xmmRegisters` entry not in `c.xmm`, and every memory read disjoint from `c.memory` equals `s`. Does not cover flags or `status` (state those in `Q`). Saved-and-restored registers do not need to be listed.
+- `Block program s c Q` (5th arg `t := s` is the current state while stepping): from `s`, for all undefined flag values, `program` terminates in a state `t` with `Q t` and `t.Except s c`.
+- `Changes`: `{ registers := [...], xmm := [...], memory := [...], kernel := true }` (`registers : List Reg`, `xmm : List Xmm`, all default `[]`; `kernel : Bool`, default `false`). Multi-line fields must start in the same column, or Lean reports `expected '}'`.
+- `t.Except s c`: every register not in `c.registers`, every `xmmRegisters` entry not in `c.xmm`, and every memory read disjoint from `c.memory` equals `s`; and `t.kernel = s.kernel` unless `c.kernel`. Does not cover flags or `status` (state those in `Q`). Saved-and-restored registers do not need to be listed.
 
 Closing and composing blocks:
 
@@ -30,8 +30,8 @@ Closing and composing blocks:
 ```lean
 Block.loop (invariant : MachineState → Prop) (measure : MachineState → Nat) (holds : invariant t)
   (body : ∀ cur, cur.Except t c → invariant cur →
-    Block image t c (fun next => invariant next ∧ measure next < measure cur ∨ exit next) cur) :
-  Block image t c exit
+    Block program t c (fun next => invariant next ∧ measure next < measure cur ∨ exit next) cur) :
+  Block program t c exit
 ```
 
 Example:
@@ -43,8 +43,8 @@ structure Filling (dst : Region) (s t : MachineState) : Prop where
   left : dst.Has (t.registers .rdi) (t.registers .rdx).toNat
   positive : 0 < (t.registers .rdx).toNat
 
-theorem fill (dst : Region) (s : MachineState) (writes : image.Writes dst) (start : Filling dst s s) :
-    Block image s { registers := [.rdi, .rdx], memory := [dst] } (fun t => t.status = .running 0x100b) := by
+theorem fill (dst : Region) (s : MachineState) (writes : s.kernel.Writes dst) (start : Filling dst s s) :
+    Block program s { registers := [.rdi, .rdx], memory := [dst] } (fun t => t.status = .running 0x100b) := by
   refine Block.loop (Filling dst s) (fun t => (t.registers .rdx).toNat) start fun cur kept inv => ?_
   have fits := dst.fits
   have byte : dst.Has (cur.registers .rdi) 1 := inv.left.part (Nat.le_refl _) (by rivet_arith [inv])
@@ -65,11 +65,11 @@ Executes instructions at the current PC:
 - `rivet_step to <addr>` / `rivet_step to <addr> as t` — steps until PC is `<addr>` (stops before branches).
 
 Details:
-- `as t` names the next state `t` and equations `t_status`, `t_registers`, `t_memory`, `t_zeroFlag`, `t_carryFlag`, `t_signFlag`, `t_overflowFlag`, `t_xmmRegisters` (anonymous without `as`). Unused prior states are auto-cleared.
+- `as t` names the next state `t` and equations `t_status`, `t_registers`, `t_memory`, `t_kernel`, `t_zeroFlag`, `t_carryFlag`, `t_signFlag`, `t_overflowFlag`, `t_xmmRegisters` (anonymous without `as`). Unused prior states are auto-cleared.
 - Every store introduces `mₙ` and `mₙ_def : mₙ = m.storeBytes p n (littleEndianAt v p)`.
 - Conditional jumps (`jcc`) require `if h` (and only `jcc` allows `if h`). Produces goals `taken` (with `h`) and `fallthrough` (with `¬h`) as word comparisons. Unreachable branches get `h : False` (`exact h.elim`). `iterate`, `repeat`, and `rivet_step to` never cross a branch.
 - `ret` sets `status = .running (readBytes m rsp 8)`.
-- Memory accesses require an in-bounds `r.Has p n` and `image.Reads r` / `image.Writes r` hypothesis (errors otherwise). Other side conditions try `rfl`/`decide`/`assumption`; any remainder becomes a subgoal.
+- Memory accesses require an in-bounds `r.Has p n` and a `s.kernel.Reads r` / `s.kernel.Writes r` hypothesis (errors otherwise). State it at the block's start `s`: no instruction changes the kernel, so it holds at every step. Other side conditions try `rfl`/`decide`/`assumption`; any remainder becomes a subgoal.
 
 ### `rivet_call`
 
@@ -105,7 +105,7 @@ Traces the goal and listed hypotheses back to start, then runs `lia +ac` using *
 
 ## Automatic Value Tracing
 
-Rivet automatically traces `t.registers r`, `(t.registers r).setWidth k`, `t.xmmRegisters r`, `t.status`, flags, `readBytes m p n`, and `r.Same m t.memory` back through steps, disjoint stores, and unmodified nested-block fields to the block's start state (or the last nested block that modified them). A hypothesis `r.Same m m'` stops a `Same` trace at `m'`.
+Rivet automatically traces `t.registers r`, `(t.registers r).setWidth k`, `t.xmmRegisters r`, `t.status`, flags, `t.kernel`, `readBytes m p n`, and `r.Same m t.memory` back through steps, disjoint stores, and unmodified nested-block fields to the block's start state (or the last nested block that modified them). A hypothesis `r.Same m m'` stops a `Same` trace at `m'`.
 
 Any hypothesis (or public field of a `Prop` `structure` hypothesis) of the form `loc = expr` at the start state—or at the end of a nested block that modified `loc`—is substituted automatically:
 
@@ -136,14 +136,14 @@ Rules:
 Name every region with `abbrev` (not `def`):
 - `Region.root start len readable writable fits` — root region (`start.toNat + len ≤ 2^64`).
 - `r.part offset len inside` — sub-region at `[r.base + offset, r.base + offset + len)`.
-- Predicates: `r.Has p n` (`n` bytes at `p` are in `r`), `r.Apart r'` (disjoint), `r.Same m₁ m₂` (byte-equal on `r`), `image.Reads r`, `image.Writes r`.
+- Predicates: `r.Has p n` (`n` bytes at `p` are in `r`), `r.Apart r'` (disjoint), `r.Same m₁ m₂` (byte-equal on `r`), `k.Reads r`, `k.Writes r` (the kernel `k`, usually `s.kernel`, lets the process read or write all of `r`).
 
 `Region.root` and `Region.part` are opaque: `rfl`/`dsimp`/`decide`/`omega` do not unfold `.base`, `.length`, `.readable`, or `.writable` — rewrite with the accessor lemmas below. (`rivet_arith` auto-applies `Region.root_base` and length laws, but not `Region.part_base`.)
 
 ### What Rivet resolves automatically (literal offsets/sizes only)
 
 - **Sub-regions of one root**: containment and `Apart` are checked numerically regardless of `.part` nesting.
-- **Distinct roots**: state `r.Apart r'` and `image.Reads r` / `image.Writes r` on whole buffers/stack; sub-regions inherit them.
+- **Distinct roots**: state `r.Apart r'` and `s.kernel.Reads r` / `s.kernel.Writes r` on whole buffers/stack; sub-regions inherit them.
 - **Bounds (`r.Has p n`)**:
   - `Region.root` automatically satisfies `r.Has start len`.
   - A literal-sized `r.Has base len` automatically covers literal-offset accesses inside `[base, base + len)` (narrowing to the exact `r.part` when `len` matches `r`'s length). With `r.Has base r.length` (or `r`'s length), `rivet_known` also proves `(r.part off k).Has (base + off) k` for any `off` and literal `k`.
@@ -171,8 +171,8 @@ Region.root_has start len r w fits : (Region.root start len r w fits).Has start 
 Region.part_apart r inside inside' (apart : off + len ≤ off' ∨ off' + len' ≤ off) :
   (r.part off len inside).Apart (r.part off' len' inside')
 
-Image.reads_of_mem (mem : r ∈ image.regions) (rd : r.readable = true) : image.Reads r
-Image.writes_of_mem (mem : r ∈ image.regions) (wr : r.writable = true) : image.Writes r
+Kernel.reads_of_mem (mem : r ∈ regions) (rd : r.readable = true) : (Kernel.ofRegions regions).Reads r
+Kernel.writes_of_mem (mem : r ∈ regions) (wr : r.writable = true) : (Kernel.ofRegions regions).Writes r
 
 -- same : r.Same m₁ m₂
 same.read (h : r.Has p n) : readBytes m₁ p n = readBytes m₂ p n
@@ -196,7 +196,8 @@ Recipes:
 
 ## Machine, Contracts & Importer
 
-- `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `status` (`ExecutionStatus.running addr | .fault`). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
+- `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `kernel`, `status` (`ExecutionStatus.running addr | .fault`). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
+- `Kernel`: what the kernel keeps for the process, `mapped`, `readable`, `writable : BitVec 64 → Bool`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.ofRegions regions` has mapped exactly those regions, each with its permissions.
 - Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
 - A program written by hand is one leaf: `.leaf [⟨0x1000, 1, .push .rbx⟩, ⟨0x1001, 1, .ret⟩]`. The importer's is a search tree of leaves, `.branch split left right`: addresses below `split` are in `left`.
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.

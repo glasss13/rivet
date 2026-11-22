@@ -105,8 +105,8 @@ meta partial def leaves (scope : Walk) (goal : MVarId) : TacticM (Array (MVarId 
     goal.withContext do
   let type ← whnfR (← instantiateMVars (← goal.getType))
   if type.isForall then return ← leaves scope (← goal.intro1P).2
-  -- `t.Except s c`: each register and vector register outside `c` is as it was, and each store is into a
-  -- region `c` lists.
+  -- `t.Except s c`: each register and vector register outside `c` is as it was, each store is into a
+  -- region `c` lists, and the kernel is as it was unless `c` lists it.
   if let some (t, s, c) := type.app3? ``MachineState.Except then
     if t == s then
       goal.assign (← mkAppOptM ``MachineState.Except.refl #[s, c])
@@ -124,7 +124,17 @@ meta partial def leaves (scope : Walk) (goal : MVarId) : TacticM (Array (MVarId 
         sameMemory scope c (mkApp (mkConst ``MachineState.memory) t) (mkApp (mkConst ``MachineState.memory) s)
       catch error =>
         throwError "the change{indentExpr c}\ndoes not cover what the block wrote: {error.toMessageData}"
-    goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registers, xmm, memory])
+    let listed := mkApp (mkConst ``Changes.kernel) c
+    let out ← mkEq listed (mkConst ``Bool.false)
+    let same ← mkEq (mkApp (mkConst ``MachineState.kernel) t) (mkApp (mkConst ``MachineState.kernel) s)
+    let (kernel, found) ← if (← whnfD listed).isConstOf ``Bool.true then
+        pure (← withLocalDeclD `out out fun h => do
+          mkLambdaFVars #[h] (← mkAbsurd same h (← mkDecideProof (mkNot out))), found)
+      else do
+        let kept ← mkFreshExprSyntheticOpaqueMVar same
+        pure (mkLambda `out .default out kept, found.push (kept.mvarId!, some m!"the kernel is not in the \
+          change{indentExpr c}\nso it must end as it started. If it does change, list it: `kernel := true`."))
+    goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registers, xmm, memory, kernel])
     return found
   -- A place is one part: a lookup first, and its two bounds only when that finds nothing.
   if !type.isAppOf ``Region.Has && (← splits type) then
@@ -149,6 +159,11 @@ meta def stops (scope : Walk) (type : Expr) : MetaM MessageData := do
       if let some (_, c, _) := inside[0]? then
         why := why ++ m!"\nThe read of `{register}` stopped at the nested block that ended in {← describe state}: \
           `{register}` is in its change{indentExpr c}\nand its postcondition does not say what it holds."
+      continue
+    if let some state := read.app1? ``MachineState.kernel then
+      unless (history.keptBy state).isEmpty do
+        why := why ++ m!"\nThe kernel was read back to the nested block that ended in {← describe state}: its change \
+          lists the kernel, and its postcondition does not say what the kernel is."
       continue
     match_expr read with
     | readBytes memory address size =>
@@ -230,12 +245,12 @@ meta def finish (w : Walk) (goal : MVarId) (facts : Array (Expr × Expr)) : Tact
     goal.withContext do
   if ← withReducible goal.assumptionCore then return true
   let type ← instantiateMVars (← goal.getType)
-  -- A place, a permission of the image, and two regions apart: lookups.
+  -- A place, a permission of the kernel, and two regions apart: lookups.
   let found ← match_expr type with
     | Region.Has r pointer size => Places.has? (← w.places) r pointer size
     | Region.Apart r other => Places.apart? (← w.places) r other
-    | Image.Reads image r => Places.grant? (← w.places) false image r
-    | Image.Writes image r => Places.grant? (← w.places) true image r
+    | Kernel.Reads kernel r => Places.grant? (← w.places) false kernel r
+    | Kernel.Writes kernel r => Places.grant? (← w.places) true kernel r
     | _ => pure none
   if let some proof := found then
     goal.assign proof
