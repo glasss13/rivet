@@ -69,7 +69,7 @@ Details:
 - Every store introduces `mₙ` and `mₙ_def : mₙ = m.storeBytes p n (littleEndianAt v p)`.
 - Conditional jumps (`jcc`) require `if h` (and only `jcc` allows `if h`). Produces goals `taken` (with `h`) and `fallthrough` (with `¬h`) as word comparisons. Unreachable branches get `h : False` (`exact h.elim`). `iterate`, `repeat`, and `rivet_step to` never cross a branch.
 - `ret` sets `status = .running (readBytes m rsp 8)`.
-- `syscall` is stepped as the system call `rax` names, so `rax` must be a literal by then (an earlier `mov eax, 231`, or a hypothesis `s.registers .rax = 231#64`). Only `exit_group` (231) is modeled: it sets `status = .exited ((t.registers .rdi).setWidth 8)`, a literal such as `42#8` after `mov edi, 42`. Nothing runs after it: end the block with `exact Block.done`.
+- `syscall` dispatches on `rax`, which must trace back to a literal (e.g. `mov eax, 231` or `s.registers .rax = 231#64`). `exit_group` (231) sets `status = .exited ((t.registers .rdi).setWidth 8)` and ends execution (`exact Block.done`).
 - Memory accesses require an in-bounds `r.Has p n` and a `s.kernel.Reads r` / `s.kernel.Writes r` hypothesis (errors otherwise). State it at the block's start `s`: no instruction changes the kernel, so it holds at every step. Other side conditions try `rfl`/`decide`/`assumption`; any remainder becomes a subgoal.
 
 ### `rivet_call`
@@ -202,7 +202,7 @@ Recipes:
 - Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
 - A program written by hand is one leaf: `.leaf [⟨0x1000, 1, .push .rbx⟩, ⟨0x1001, 1, .ret⟩]`. The importer's is a search tree of leaves, `.branch split left right`: addresses below `split` are in `left`.
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
-- `Op.syscall` has one spec per system call. `Contract.exitGroup` is Linux `exit_group`: with `rax = 231#64`, it changes nothing but `status`, which becomes `.exited` with the low byte of `rdi`. With any other `rax` the model faults.
+- `Op.syscall` has one spec per system call (e.g. `Contract.exitGroup` for Linux `exit_group`, `rax = 231#64`: changes only `status` to `.exited ((s.registers .rdi).setWidth 8)`).
 - `step`, `execute`, `FlagChoices` define `Block` (proofs never call them).
 - Importer:
   ```sh
