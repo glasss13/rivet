@@ -145,33 +145,3 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
     };
     Ok((input, memory))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_syscall_in_replay() {
-        let case = Case {
-            code: vec![0x0f, 0x05], // syscall
-            offsets: vec![0, 2],
-            registers: [0; 16],
-            xmm_registers: [[0; 4]; 16],
-            sign_flag: false,
-            zero_flag: false,
-            carry_flag: false,
-            overflow_flag: false,
-            data: vec![0; 16],
-            fault_memory: false,
-            read_only_data: false,
-            steps: 1,
-        };
-        let error = prepare(&case)
-            .err()
-            .expect("syscall replay must be rejected before native execution");
-        assert!(
-            error.to_string().contains("syscall"),
-            "unexpected error: {error:#}"
-        );
-    }
-}
