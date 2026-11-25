@@ -60,8 +60,11 @@ def Kernel.Reads (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contain
 
 def Kernel.Writes (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contains address → kernel.writable address = true
 
--- The kernel has mapped every byte of the region.
-def Kernel.Maps (kernel : Kernel) (r : Region) : Prop := ∀ address, r.Contains address → kernel.mapped address = true
+theorem Kernel.Writes.reads {kernel : Kernel} {r : Region} (writes : kernel.Writes r) : kernel.Reads r := by
+  intro address inside
+  have h := writes address inside
+  simp only [Kernel.writable, Kernel.readable] at h ⊢
+  cases hacc : kernel.access address <;> simp [Access.writable, Access.readable, hacc] at h ⊢
 
 theorem Region.Has.part {r : Region} {pointer : BitVec 64} {size : Nat} (placed : r.Has pointer size)
     {inner : BitVec 64} {less : Nat} (start : pointer.toNat ≤ inner.toNat)
@@ -82,14 +85,19 @@ theorem Region.Has.part_at {r : Region} {pointer : BitVec 64} {size : Nat} (plac
 theorem Kernel.reads_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (readable : r.readable = true) :
     (Kernel.ofRegions regions).Reads r := by
   intro address inside
-  simp only [Kernel.ofRegions, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-  exact ⟨r, member, readable, inside⟩
+  have h : (regions.any fun region => region.readable && decide (region.Contains address)) = true := by
+    simp only [List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+    exact ⟨r, member, readable, inside⟩
+  simp only [Kernel.readable, Kernel.ofRegions, h, ↓reduceIte]
+  split <;> rfl
 
 theorem Kernel.writes_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (writable : r.writable = true) :
     (Kernel.ofRegions regions).Writes r := by
   intro address inside
-  simp only [Kernel.ofRegions, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-  exact ⟨r, member, writable, inside⟩
+  have h : (regions.any fun region => region.writable && decide (region.Contains address)) = true := by
+    simp only [List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+    exact ⟨r, member, writable, inside⟩
+  simp only [Kernel.writable, Kernel.ofRegions, h, ↓reduceIte, Access.writable]
 
 -- Two parts of one region are apart when their offsets say so.
 theorem Region.part_apart (r : Region) {offset length offset' length' : Nat} (inside : offset + length ≤ r.length)

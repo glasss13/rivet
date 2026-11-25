@@ -172,9 +172,9 @@ Region.root_has start len r w fits : (Region.root start len r w fits).Has start 
 Region.part_apart r inside inside' (apart : off + len ≤ off' ∨ off' + len' ≤ off) :
   (r.part off len inside).Apart (r.part off' len' inside')
 
-Kernel.maps_of_mem (mem : r ∈ regions) : (Kernel.ofRegions regions).Maps r
 Kernel.reads_of_mem (mem : r ∈ regions) (rd : r.readable = true) : (Kernel.ofRegions regions).Reads r
 Kernel.writes_of_mem (mem : r ∈ regions) (wr : r.writable = true) : (Kernel.ofRegions regions).Writes r
+Kernel.Writes.reads (w : k.Writes r) : k.Reads r
 
 -- same : r.Same m₁ m₂
 same.read (h : r.Has p n) : readBytes m₁ p n = readBytes m₂ p n
@@ -199,7 +199,8 @@ Recipes:
 ## Machine, Contracts & Importer
 
 - `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `kernel`, `status` (`ExecutionStatus.running addr | .exited code | .fault`; `code : BitVec 8` is the process's exit code). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
-- `Kernel`: what the kernel keeps for the process, `mapped`, `readable`, `writable : BitVec 64 → Bool`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.ofRegions regions` has mapped exactly those regions, each with its permissions.
+- `Access`: `.unmapped | .protNone | .readOnly | .readWrite`.
+- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`. `Kernel.ofRegions regions` maps those regions with their permissions.
 - Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
 - A program written by hand is one leaf: `.leaf [⟨0x1000, 1, .push .rbx⟩, ⟨0x1001, 1, .ret⟩]`. The importer's is a search tree of leaves, `.branch split left right`: addresses below `split` are in `left`.
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
@@ -231,19 +232,17 @@ What Linux guarantees when it starts a static, fixed-address x86-64 executable, 
 ```lean
 status : s.status = .running layout.entry
 -- For each `segment ∈ layout.segments` (pass the segment, then `by decide`):
-maps : s.kernel.Maps segment.region
-reads : s.kernel.Reads segment.region
-writable : ∀ address, segment.region.Contains address → s.kernel.writable address = segment.writable
+access : ∀ address, segment.region.Contains address →
+  s.kernel.access address = if segment.writable then .readWrite else .readOnly
 same : segment.bytes.Same (segment.memory file) s.memory
 apart : stack.Apart segment.region
 -- The stack:
-stackMaps : s.kernel.Maps stack
-stackReads : s.kernel.Reads stack
 stackWrites : s.kernel.Writes stack
 stackPages : stack.base % 4096 = 0 ∧ stack.length % 4096 = 0
 rsp : stack.Contains (s.registers .rsp)
 aligned : (s.registers .rsp).toNat % 16 = 0
 
+starts.reads segment member : s.kernel.Reads segment.region
 starts.writes segment member (writable : segment.writable = true) : s.kernel.Writes segment.region
 ```
 
