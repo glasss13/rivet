@@ -144,12 +144,18 @@ meta def apart? (known : Array (Expr × Expr)) (r other : Expr) : MetaM (Option 
 
 -- `kernel.Reads r` or `kernel.Writes r`: a hypothesis about a region `r` lies in.
 meta def grant? (known : Array (Expr × Expr)) (writes : Bool) (kernel r : Expr) : MetaM (Option Expr) := do
-  let name := if writes then ``Kernel.Writes else ``Kernel.Reads
   for (proof, type) in known do
-    unless type.isAppOfArity name 2 do continue
+    let isReads := !writes && type.isAppOfArity ``Kernel.Reads 2
+    let isWrites := type.isAppOfArity ``Kernel.Writes 2
+    unless isReads || isWrites do continue
     unless ← same (type.getArg! 0) kernel do continue
     if let some inside ← inside? r (type.getArg! 1) then
-      return some (← mkAppM (if writes then ``Kernel.Writes.inside else ``Kernel.Reads.inside) #[proof, inside])
+      if writes then
+        return some (← mkAppM ``Kernel.Writes.inside #[proof, inside])
+      else if isWrites then
+        return some (← mkAppM ``Kernel.Reads.inside #[← mkAppM ``Kernel.Writes.reads #[proof], inside])
+      else
+        return some (← mkAppM ``Kernel.Reads.inside #[proof, inside])
   return none
 
 -- A root is placed where it starts: the place for the root of each region.

@@ -174,6 +174,7 @@ Region.part_apart r inside inside' (apart : off + len ≤ off' ∨ off' + len' �
 
 Kernel.reads_of_mem (mem : r ∈ regions) (rd : r.readable = true) : (Kernel.ofRegions regions).Reads r
 Kernel.writes_of_mem (mem : r ∈ regions) (wr : r.writable = true) : (Kernel.ofRegions regions).Writes r
+Kernel.Writes.reads (w : k.Writes r) : k.Reads r
 
 -- same : r.Same m₁ m₂
 same.read (h : r.Has p n) : readBytes m₁ p n = readBytes m₂ p n
@@ -198,7 +199,8 @@ Recipes:
 ## Machine, Contracts & Importer
 
 - `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `kernel`, `status` (`ExecutionStatus.running addr | .exited code | .fault`; `code : BitVec 8` is the process's exit code). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
-- `Kernel`: what the kernel keeps for the process, `mapped`, `readable`, `writable : BitVec 64 → Bool`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.ofRegions regions` has mapped exactly those regions, each with its permissions.
+- `Access`: `.unmapped | .protNone | .readOnly | .readWrite`.
+- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`. `Kernel.ofRegions regions` maps those regions with their permissions.
 - Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
 - A program written by hand is one leaf: `.leaf [⟨0x1000, 1, .push .rbx⟩, ⟨0x1001, 1, .ret⟩]`. The importer's is a search tree of leaves, `.branch split left right`: addresses below `split` are in `left`.
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
@@ -213,4 +215,17 @@ Recipes:
   have h_in : F.region_<a>.Has 0x403000#64 8 := by rivet_known
   have h_val : readBytes s.memory 0x403000#64 8 = 42#64 := by
     rw [← loaded.segment_<a>.read h_in]; simp only [readBytes_succ, BitVec.of_length_zero]; decide
+  ```
+
+## Loader
+
+- `Exe` (`{ size, pages }`): ELF bytes in 4096-byte little-endian base-256 `Nat` pages (`file.u8`/`.u16`/`.u32`/`.u64`).
+- `file.layout : Option Layout` (`{ entry : BitVec 64, segments : List Segment }`): checks static non-PIE x86-64 ELF64 (`-z noexecstack`, W^X, ascending non-overlapping pages, `e_entry` in executable bytes). Check once: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
+- `Segment`: `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[p_vaddr, p_vaddr + p_memsz)`), `segment.memory file` (file bytes + zero BSS).
+- `Starts file layout stack s`: start-state hypothesis (`status`, `access`, `same`, `apart`, `stackWrites`, `stackPages`, `rsp`, `aligned`), plus `starts.reads` / `starts.writes`.
+- Tactics need literal regions — alias each segment's region/bytes with `abbrev` and pull `starts.reads`/`starts.writes`/`starts.same` onto them:
+  ```lean
+  abbrev dataRegion : Region := Region.root 0x403000#64 0x3000 true true
+  abbrev dataBytes : Region := dataRegion.part 0x10 0x2ee8
+  have same : dataBytes.Same (data.memory file) s.memory := starts.same data (by decide)
   ```
