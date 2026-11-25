@@ -7,7 +7,10 @@ namespace Rivet
 structure Starts (file : Exe) (layout : Layout) (stack : Region) (s : MachineState) : Prop where
   status : s.status = .running layout.entry
   access : ∀ segment ∈ layout.segments, ∀ address, segment.region.Contains address →
-    s.kernel.access address = if segment.writable then .readWrite else .readOnly
+    s.kernel.access address =
+      if segment.writable then .readWrite
+      else if segment.executable then .readExec
+      else .readOnly
   same : ∀ segment ∈ layout.segments, segment.bytes.Same (segment.memory file) s.memory
   apart : ∀ segment ∈ layout.segments, stack.Apart segment.region
   stackWrites : s.kernel.Writes stack
@@ -21,7 +24,7 @@ theorem Starts.reads {file : Exe} {layout : Layout} {stack : Region} {s : Machin
   intro address inside
   have h := starts.access segment member address inside
   simp only [Kernel.readable, h]
-  cases segment.writable <;> rfl
+  cases segment.writable <;> cases segment.executable <;> rfl
 
 theorem Starts.writes {file : Exe} {layout : Layout} {stack : Region} {s : MachineState}
     (starts : Starts file layout stack s) (segment : Segment) (member : segment ∈ layout.segments)

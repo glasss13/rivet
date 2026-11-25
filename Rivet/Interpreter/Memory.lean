@@ -54,6 +54,7 @@ inductive Access where
   | unmapped
   | protNone
   | readOnly
+  | readExec
   | readWrite
   deriving DecidableEq
 
@@ -62,11 +63,15 @@ def Access.mapped : Access → Bool
   | _ => true
 
 def Access.readable : Access → Bool
-  | .readOnly | .readWrite => true
+  | .readOnly | .readExec | .readWrite => true
   | _ => false
 
 def Access.writable : Access → Bool
   | .readWrite => true
+  | _ => false
+
+def Access.executable : Access → Bool
+  | .readExec => true
   | _ => false
 
 structure Kernel where
@@ -75,6 +80,7 @@ structure Kernel where
 def Kernel.mapped (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).mapped
 def Kernel.readable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).readable
 def Kernel.writable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).writable
+def Kernel.executable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).executable
 
 def Kernel.ofRegions (regions : List Region) : Kernel where
   access address :=
