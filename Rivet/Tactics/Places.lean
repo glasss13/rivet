@@ -143,7 +143,6 @@ meta def apart? (known : Array (Expr × Expr)) (r other : Expr) : MetaM (Option 
   return none
 
 -- `kernel.Reads r` or `kernel.Writes r`: a hypothesis about a region `r` lies in.
--- `Writes` also satisfies `Reads`.
 meta def grant? (known : Array (Expr × Expr)) (writes : Bool) (kernel r : Expr) : MetaM (Option Expr) := do
   for (proof, type) in known do
     let isReads := !writes && type.isAppOfArity ``Kernel.Reads 2

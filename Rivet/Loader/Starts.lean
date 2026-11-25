@@ -1,15 +1,9 @@
 module
 public import Rivet.Loader.Exe
 public import Rivet.Interpreter.Machine
--- The state Linux starts a checked executable in.
 @[expose] public section
 namespace Rivet
 
--- The start state `s` of a checked executable `file` with `layout`, given a launch whose `stack` pages
--- are placed apart from every segment. The entry runs next. Each segment's pages have `.readWrite` if
--- writable else `.readOnly`, and its own bytes are loaded. The stack is page-aligned and writable
--- (hence mapped and readable), with `rsp` in it and a multiple of 16. Extra mappings (e.g. vDSO),
--- other registers, and flags are left unconstrained.
 structure Starts (file : Exe) (layout : Layout) (stack : Region) (s : MachineState) : Prop where
   status : s.status = .running layout.entry
   access : ∀ segment ∈ layout.segments, ∀ address, segment.region.Contains address →

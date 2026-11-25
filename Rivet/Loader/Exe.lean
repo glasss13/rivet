@@ -1,17 +1,13 @@
 module
 public import Rivet.Laws.Regions
--- An executable file's bytes, and the check that Linux loads it in one way: `Exe.layout`.
 @[expose] public section
 namespace Rivet
 
--- A file of `size` bytes, 4096 to a page: byte `i` of a page is digit `i`, base 256, of its number.
--- A read shifts one page, not the file; and Lean parses pages in seconds, where one number for a large
--- file takes minutes.
+-- 4096-byte little-endian base-256 pages (one big Nat parses quadratically in Lean).
 structure Exe where
   size : Nat
   pages : List Nat
 
--- The byte at `offset`, and the little-endian numbers of 2, 4 and 8 bytes there.
 def Exe.u8 (file : Exe) (offset : Nat) : Nat :=
   (file.pages.getD (offset / 4096) 0 >>> (8 * (offset % 4096))) % 256
 
@@ -21,9 +17,8 @@ def Exe.u32 (file : Exe) (offset : Nat) : Nat := file.u16 offset + 2^16 * file.u
 
 def Exe.u64 (file : Exe) (offset : Nat) : Nat := file.u32 offset + 2^32 * file.u32 (offset + 4)
 
--- A loadable segment as Linux maps it: whole pages, `length` bytes from `start`, all readable. Its own
--- bytes are the `size` bytes `skip` into them: the first `fileSize` are the file's from `fileOffset`, and
--- the rest are zero. What the pages hold around its own bytes varies with the kernel's version.
+-- Whole mapped pages `[start, start + length)`; contents are only guaranteed on `[start + skip, start + skip + size)`
+-- because page padding varies across Linux versions.
 structure Segment where
   start : BitVec 64
   length : Nat
@@ -37,25 +32,20 @@ structure Segment where
   inside : skip + size ≤ length := by decide
   deriving DecidableEq
 
--- The pages Linux maps for the segment.
 abbrev Segment.region (segment : Segment) : Region :=
   Region.root segment.start segment.length true segment.writable segment.fits
 
--- The segment's own bytes.
 abbrev Segment.bytes (segment : Segment) : Region :=
   segment.region.part segment.skip segment.size (by rw [Region.root_length]; exact segment.inside)
 
--- What the loader leaves in the segment's own bytes.
 def Segment.memory (segment : Segment) (file : Exe) : Memory := fun address =>
   let index := (address - segment.start).toNat - segment.skip
   if index < segment.fileSize then Fin.ofNat 256 (file.u8 (segment.fileOffset + index)) else 0
 
--- Each segment's pages start at or after `floor`, and at or after the end of the segment before.
 def Segment.ascending (floor : Nat) : List Segment → Bool
   | [] => true
   | segment :: rest => floor ≤ segment.start.toNat && ascending (segment.start.toNat + segment.length) rest
 
--- A program header, as the file holds it.
 structure ProgramHeader where
   type : Nat
   flags : Nat
@@ -76,16 +66,7 @@ abbrev ProgramHeader.executable (header : ProgramHeader) : Bool := header.flags.
 abbrev ProgramHeader.writable (header : ProgramHeader) : Bool := header.flags.testBit 1
 abbrev ProgramHeader.readable (header : ProgramHeader) : Bool := header.flags.testBit 2
 
--- The segment a `PT_LOAD` header asks for, or `none` if Linux would not map it, or not the same way on
--- every kernel and machine:
--- - It is readable. A page that can be written can be read on x86, and one that can only be run can
---   be read on a machine without protection keys.
--- - It is not both writable and executable.
--- - It has bytes. Linux before 6.7 can map a page for a segment with none.
--- - Bytes past the file's need it writable. Linux maps the pages past the file's writable whatever the
---   header says, and before 6.7 leaves the file's bytes where it cannot write zeroes.
--- - The file holds its bytes, at an offset that is its address modulo a page, as mapping the file needs.
--- - Its pages end by 2^64.
+-- x86 without PKU makes W/X readable; Linux <6.7 can map empty PT_LOADs and skips zeroing RO BSS tails.
 def ProgramHeader.segment (header : ProgramHeader) (fileSize : Nat) : Option Segment :=
   let start := BitVec.ofNat 64 (header.address / 4096 * 4096)
   let skip := header.address % 4096
@@ -97,23 +78,13 @@ def ProgramHeader.segment (header : ProgramHeader) (fileSize : Nat) : Option Seg
            fileOffset := header.offset, fileSize := header.fileSize, fits := checked.2.2.2.2.2.2, inside := by omega }
   else none
 
--- Where a checked executable's segments are, and its first instruction.
 structure Layout where
   entry : BitVec 64
   segments : List Segment
   deriving DecidableEq
 
--- The layout of a static, fixed-address x86-64 Linux executable, or `none` if it fails the modeled
--- ELF checks:
--- - It is ELF64, little-endian, version 1, `ET_EXEC`, `EM_X86_64`, and its program headers fit in
---   one 4096-byte page (Linux's `binfmt_elf.c` limit) and within the file.
--- - No header is `PT_DYNAMIC` or `PT_INTERP`.
--- - A `PT_GNU_STACK` header is there and none is executable. Without one, Linux before 5.8 makes the
---   stack and every readable page executable.
--- - Every `PT_LOAD` header is a segment.
--- - The segments' pages ascend in header order, from the second page on, so no two share a page. Linux
---   before 6.7 does not zero-fill a segment below an earlier one.
--- - The entry is one of the file's bytes in an executable segment.
+-- Linux caps phdrs at 4096 bytes; Linux <5.8 defaults missing PT_GNU_STACK to exec;
+-- Linux <6.7 skips zeroing out-of-order segments.
 def Exe.layout (file : Exe) : Option Layout :=
   let count := file.u16 56
   let headers := (List.range count).map fun index => file.programHeader (file.u64 32 + 56 * index)

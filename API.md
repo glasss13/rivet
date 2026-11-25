@@ -137,7 +137,7 @@ Rules:
 Name every region with `abbrev` (not `def`):
 - `Region.root start len readable writable fits` — root region (`start.toNat + len ≤ 2^64`).
 - `r.part offset len inside` — sub-region at `[r.base + offset, r.base + offset + len)`.
-- Predicates: `r.Has p n` (`n` bytes at `p` are in `r`), `r.Apart r'` (disjoint), `r.Same m₁ m₂` (byte-equal on `r`), `k.Reads r`, `k.Writes r` (the kernel `k`, usually `s.kernel`, lets the process read or write all of `r`), `k.Maps r` (`k` has mapped all of `r`).
+- Predicates: `r.Has p n` (`n` bytes at `p` are in `r`), `r.Apart r'` (disjoint), `r.Same m₁ m₂` (byte-equal on `r`), `k.Reads r`, `k.Writes r` (the kernel `k`, usually `s.kernel`, lets the process read or write all of `r`).
 
 `Region.root` and `Region.part` are opaque: `rfl`/`dsimp`/`decide`/`omega` do not unfold `.base`, `.length`, `.readable`, or `.writable` — rewrite with the accessor lemmas below. (`rivet_arith` auto-applies `Region.root_base` and length laws, but not `Region.part_base`.)
 
@@ -219,65 +219,13 @@ Recipes:
 
 ## Loader
 
-What Linux guarantees when it starts a static, fixed-address x86-64 executable, from the file's own bytes.
-
-- `Exe`: a file, `{ size, pages }`: 4096 bytes to a page, each page one `Nat` whose digit `i`, base 256, is byte `i`. `file.u8 offset`, `.u16`, `.u32`, `.u64` read little-endian `Nat`s.
-- `file.layout : Option Layout` checks the ELF and program headers. `Layout` is `{ entry : BitVec 64, segments : List Segment }`. Check it once against a literal: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
-- `Segment`: `{ start, length, writable, executable, skip, size, fileOffset, fileSize }`.
-  - `segment.region`: the pages Linux maps, `length` bytes from `start`. Always readable.
-  - `segment.bytes`: the segment's own bytes, `segment.region.part skip size`. Linux guarantees no contents for the rest of its pages.
-  - `segment.memory file : Memory`: on `segment.bytes`, the file's `fileSize` bytes from `fileOffset`, then zeroes.
-- `Starts file layout stack s`: initial state `s` for a launch whose `stack` is placed apart from every segment. Whole-program theorems quantify over `stack` and `s`. Leaves other mappings (e.g. vDSO), other registers, and flags unconstrained. Fields:
-
-```lean
-status : s.status = .running layout.entry
--- For each `segment ∈ layout.segments` (pass the segment, then `by decide`):
-access : ∀ address, segment.region.Contains address →
-  s.kernel.access address = if segment.writable then .readWrite else .readOnly
-same : segment.bytes.Same (segment.memory file) s.memory
-apart : stack.Apart segment.region
--- The stack:
-stackWrites : s.kernel.Writes stack
-stackPages : stack.base % 4096 = 0 ∧ stack.length % 4096 = 0
-rsp : stack.Contains (s.registers .rsp)
-aligned : (s.registers .rsp).toNat % 16 = 0
-
-starts.reads segment member : s.kernel.Reads segment.region
-starts.writes segment member (writable : segment.writable = true) : s.kernel.Writes segment.region
-```
-
-`file.layout` requires:
-- ELF64, little-endian, `ET_EXEC`, x86-64, program headers fitting in one 4096-byte page, and no `PT_INTERP` or `PT_DYNAMIC`.
-- A non-executable `PT_GNU_STACK` header (link with `-z noexecstack`).
-- Each `PT_LOAD` segment has bytes, is readable, is not `W+X`, lies in the file with `p_offset % 4096 = p_vaddr % 4096`, and only a writable segment may have `p_memsz > p_filesz`.
-- Segments' pages ascend in header order past page 0 (no shared pages), and `e_entry` is a file-backed byte in an executable segment.
-
-Example:
-
-```lean
-abbrev code : Segment := { start := 0x401000#64, length := 0x1000, writable := false, executable := true,
-                           skip := 0, size := 0xc, fileOffset := 0x1000, fileSize := 0xc }
-def layout : Layout := { entry := 0x401000#64, segments := [head, code] }
-theorem layout_ok : file.layout = some layout := by decide +kernel
-
--- mov edi, 42 · mov eax, 231 · syscall
-theorem exits (stack : Region) (s : MachineState) (starts : Starts file layout stack s) :
-    Block program s { registers := [.rdi, .rax] } (fun t => t.status = .exited 42) := by
-  rivet_step; rivet_step; rivet_step
-  exact Block.done
-```
-
-`rivet_step` reads `starts.status` itself. For a segment's memory, name its regions with literals, as the tactics need, and take the facts from `starts`:
-
-```lean
-abbrev dataRegion : Region := Region.root 0x403000#64 0x3000 true true  -- data.region
-abbrev dataBytes : Region := dataRegion.part 0x10 0x2ee8                -- data.bytes
-
-have reads : s.kernel.Reads dataRegion := starts.reads data (by decide)
-have writes : s.kernel.Writes dataRegion := starts.writes data (by decide) rfl
-have same : dataBytes.Same (data.memory file) s.memory := starts.same data (by decide)
--- A loaded constant, or a zero past the file's bytes:
-have placed : dataBytes.Has 0x403bc8#64 8 := by rivet_known
-have value : readBytes s.memory 0x403bc8#64 8 = 0x1122334455667788#64 := by
-  rw [← same.read placed]; simp only [readBytes_succ, BitVec.of_length_zero]; decide
-```
+- `Exe` (`{ size, pages }`): ELF bytes in 4096-byte little-endian base-256 `Nat` pages (`file.u8`/`.u16`/`.u32`/`.u64`).
+- `file.layout : Option Layout` (`{ entry : BitVec 64, segments : List Segment }`): checks static non-PIE x86-64 ELF64 (`-z noexecstack`, W^X, ascending non-overlapping pages, `e_entry` in executable bytes). Check once: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
+- `Segment`: `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[p_vaddr, p_vaddr + p_memsz)`), `segment.memory file` (file bytes + zero BSS).
+- `Starts file layout stack s`: start-state hypothesis (`status`, `access`, `same`, `apart`, `stackWrites`, `stackPages`, `rsp`, `aligned`), plus `starts.reads` / `starts.writes`.
+- Tactics need literal regions — alias each segment's region/bytes with `abbrev` and pull `starts.reads`/`starts.writes`/`starts.same` onto them:
+  ```lean
+  abbrev dataRegion : Region := Region.root 0x403000#64 0x3000 true true
+  abbrev dataBytes : Region := dataRegion.part 0x10 0x2ee8
+  have same : dataBytes.Same (data.memory file) s.memory := starts.same data (by decide)
+  ```

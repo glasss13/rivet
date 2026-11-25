@@ -50,8 +50,6 @@ instance (region : Region) (address : BitVec 64) : Decidable (region.Contains ad
   { base := r.base + offset, length, readable := r.readable, writable := r.writable,
     fits := by have := r.fits; omega }
 
--- What x86-64 (without PKU) and Linux allow at a virtual address:
--- unmapped, mapped with `PROT_NONE`, read-only (`R/O`), or read-write (`R/W`).
 inductive Access where
   | unmapped
   | protNone
@@ -71,7 +69,6 @@ def Access.writable : Access → Bool
   | .readWrite => true
   | _ => false
 
--- What the kernel keeps for the process: the access allowed at each virtual address.
 structure Kernel where
   access : BitVec 64 → Access
 
@@ -79,7 +76,6 @@ def Kernel.mapped (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.acce
 def Kernel.readable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).readable
 def Kernel.writable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).writable
 
--- The kernel that has mapped exactly these regions, each with its permissions.
 def Kernel.ofRegions (regions : List Region) : Kernel where
   access address :=
     if regions.any fun region => region.writable && decide (region.Contains address) then .readWrite
