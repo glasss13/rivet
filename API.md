@@ -206,16 +206,7 @@ Recipes:
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
 - `Op.syscall` has one spec per system call (e.g. `Contract.exitGroup` for Linux `exit_group`, `rax = 231#64`: changes only `status` to `.exited ((s.registers .rdi).setWidth 8)`).
 - `step`, `execute`, `FlagChoices` define `Block` (proofs never call them).
-- Importer:
-  ```sh
-  cargo run -p rivet-import -- ./prog --function f --namespace F --output F.lean
-  ```
-  Generates `F.entry`, `F.program`, `F.region_<a>`, `F.regions`, and `F.Loaded m` (fields `segment_<a> : F.region_<a>.Same F.segment_<a> m`). Reading a constant from a loaded segment:
-  ```lean
-  have h_in : F.region_<a>.Has 0x403000#64 8 := by rivet_known
-  have h_val : readBytes s.memory 0x403000#64 8 = 42#64 := by
-    rw [← loaded.segment_<a>.read h_in]; simp only [readBytes_succ, BitVec.of_length_zero]; decide
-  ```
+- `rivet-import ./prog --namespace F --output F.lean` follows the ELF entry and any additional `--root <0xaddr|symbol>`. Generates `F.file`, `F.layout`, `F.layout_ok`, `F.program`, and per-segment `F.segment_<a>`, `F.region_<a>`, `F.bytes_<a>`.
 
 ## Loader
 
@@ -223,9 +214,4 @@ Recipes:
 - `file.layout : Option Layout` (`{ entry : BitVec 64, segments : List Segment }`): checks static non-PIE x86-64 ELF64 (`-z noexecstack`, W^X, ascending non-overlapping pages, `e_entry` in executable bytes). Check once: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
 - `Segment`: `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[p_vaddr, p_vaddr + p_memsz)`), `segment.memory file` (file bytes + zero BSS).
 - `Starts file layout stack s`: start-state hypothesis (`status`, `access`, `same`, `apart`, `stackWrites`, `stackPages`, `rsp`, `aligned`), plus `starts.reads` / `starts.writes`.
-- Tactics need literal regions — alias each segment's region/bytes with `abbrev` and pull `starts.reads`/`starts.writes`/`starts.same` onto them:
-  ```lean
-  abbrev dataRegion : Region := Region.root 0x403000#64 0x3000 true true
-  abbrev dataBytes : Region := dataRegion.part 0x10 0x2ee8
-  have same : dataBytes.Same (data.memory file) s.memory := starts.same data (by decide)
-  ```
+- Use the emitted literal aliases in tactics, e.g. `have same : F.bytes_403010.Same (F.segment_403010.memory F.file) s.memory := starts.same F.segment_403010 (by decide)`.

@@ -97,12 +97,16 @@ cannot prove is an error at the call naming it; give it by name, `rivet_call f a
 To work on a real binary, generate the program instead of writing it by hand:
 
 ```sh
-cargo run -p rivet-import -- ./prog --function sum --namespace Sum --output Sum.lean
+cargo run -p rivet-import -- ./prog --namespace Sum --output Sum.lean
 ```
 
-That gives `Sum.entry`, `Sum.program`, a region `Sum.region_<address>` for each of the binary's
-segments, `Sum.regions`, and `Sum.Loaded memory`, which says memory is the segment's bytes on each
-segment's region.
+Link a static, fixed-address x86-64 executable with `-z noexecstack`. The importer follows direct
+control flow from the ELF entry, including in stripped binaries. Use repeatable `--root 0x...` or
+`--root symbol` to include additional entry points. A reachable unsupported instruction stops the import.
+
+`Sum.file` holds the ELF bytes, `Sum.layout_ok` proves its layout, and `Sum.program` contains the
+decoded instructions. Each loadable segment has a `Sum.region_<a>` for its mapped pages and
+`Sum.bytes_<a>` for its initialized bytes and zero-filled BSS, where `a` is the segment's virtual address.
 
 ## API
 

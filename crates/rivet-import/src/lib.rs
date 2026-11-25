@@ -20,15 +20,26 @@ pub fn decode(bytes: &[u8], base: u64) -> Result<Vec<Instruction>> {
     let mut program = Vec::new();
     for instruction in Decoder::with_ip(64, bytes, base, DecoderOptions::NONE) {
         let offset = (instruction.ip() - base) as usize;
-        let op = operation(&instruction, &bytes[offset..offset + instruction.len()])
-            .with_context(|| format!("at {:#x}", instruction.ip()))?;
-        program.push(Instruction {
-            address: instruction.ip(),
-            length: instruction.len() as u64,
-            op,
-        });
+        program.push(translate(&instruction, &bytes[offset..])?);
     }
     Ok(program)
+}
+
+/// Decode only the instruction starting at `address`, within the supplied file bytes.
+pub fn decode_one(bytes: &[u8], address: u64) -> Result<Instruction> {
+    ensure!(!bytes.is_empty(), "at {address:#x}: empty code range");
+    let instruction = Decoder::with_ip(64, bytes, address, DecoderOptions::NONE).decode();
+    translate(&instruction, bytes)
+}
+
+fn translate(instruction: &Decoded, bytes: &[u8]) -> Result<Instruction> {
+    let op = operation(instruction, &bytes[..instruction.len()])
+        .with_context(|| format!("at {:#x}: {instruction}", instruction.ip()))?;
+    Ok(Instruction {
+        address: instruction.ip(),
+        length: instruction.len() as u64,
+        op,
+    })
 }
 
 fn register<T: FromStr>(register: Register) -> Result<T> {
