@@ -1,7 +1,7 @@
 # Rivet
 
 A Lean 4 library for proving things about x86-64 machine code. You import a compiled
-function, state what it should do, and step through its instructions until Lean accepts
+static binary, state what it should do, and step through its instructions until Lean accepts
 the proof.
 
 ```sh

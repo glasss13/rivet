@@ -15,7 +15,7 @@ open Rivet
 
 ## Blocks & Loops
 
-- `Block code s c Q` (5th arg `t := s` is the current state while stepping): given `s.Holds code`, for all undefined flag values, execution reaches a state `t` with `Q t` and `t.Except s c`.
+- `Block code s c Q` (5th arg `t := s` is the current state while stepping): given `s.Holds code`, for all undefined flag values, execution reaches a state `t` with `Q t` and `t.Except s c`. `block.run holds choices` unpacks that into `∃ final, (∃ steps, execute steps s choices = final) ∧ final.Except s c ∧ Q final`.
 - `Changes`: `{ registers := [...], xmm := [...], memory := [...], kernel := true }` (`registers : List Reg`, `xmm : List Xmm`, all default `[]`; `kernel : Bool`, default `false`). Multi-line fields must start in the same column, or Lean reports `expected '}'`.
 - `t.Except s c`: every register not in `c.registers`, every `xmmRegisters` entry not in `c.xmm`, and every memory read disjoint from `c.memory` equals `s`; and `t.kernel = s.kernel` unless `c.kernel`. Does not cover flags or `status` (state those in `Q`). Saved-and-restored registers do not need to be listed.
 
@@ -172,8 +172,6 @@ Region.root_has start len r w fits : (Region.root start len r w fits).Has start 
 Region.part_apart r inside inside' (apart : off + len ≤ off' ∨ off' + len' ≤ off) :
   (r.part off len inside).Apart (r.part off' len' inside')
 
-Kernel.reads_of_mem (mem : r ∈ regions) (rd : r.readable = true) : (Kernel.ofRegions regions).Reads r
-Kernel.writes_of_mem (mem : r ∈ regions) (wr : r.writable = true) : (Kernel.ofRegions regions).Writes r
 Kernel.Writes.reads (w : k.Writes r) : k.Reads r
 
 -- same : r.Same m₁ m₂
@@ -200,7 +198,7 @@ Recipes:
 
 - `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `kernel`, `status` (`ExecutionStatus.running addr | .exited code | .fault`; `code : BitVec 8` is the process's exit code). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
 - `Access`: `.unmapped | .protNone | .readOnly | .readExec | .readWrite`.
-- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`, `executable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`. `Kernel.ofRegions regions` maps those regions with their permissions.
+- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`, `executable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`.
 - Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`.
 - `Code := BitVec 64 → Option (Fin 256)`. Handwritten bytes: `Code.ofBytes 0x1000 [0x53, 0xc3]`.
 - `s.code` reads executable memory. `s.Holds code` requires each specified byte to match memory at a `.readExec` address.
@@ -211,7 +209,7 @@ Recipes:
   ```sh
   cargo run -p rivet-import -- ./prog --namespace F --output F.lean
   ```
-  Generates `F.file`, `F.layout`, `F.layout_ok`, `F.code := F.file.code F.layout`, and segment, region and byte-range aliases by page address.
+  Generates `F.file`, `F.layout`, `F.layout_ok`, `F.code := F.file.code F.layout`, and per-segment `F.segment_<a>`, `F.region_<a>`, and `F.bytes_<a>`.
 
 ## Loader
 
@@ -219,9 +217,9 @@ Recipes:
 - `file.layout : Option Layout` (`{ entry : BitVec 64, segments : List Segment }`): checks static non-PIE x86-64 ELF64 (`-z noexecstack`, W^X, ascending non-overlapping pages, `e_entry` in executable bytes). Check once: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
 - `Segment`: `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[p_vaddr, p_vaddr + p_memsz)`), `segment.memory file` (file bytes + zero BSS).
 - `Starts file layout stack s`: start-state hypothesis (`status`, `access`, `same`, `apart`, `stackWrites`, `stackPages`, `rsp`, `aligned`), plus `starts.reads`, `starts.writes`, and `starts.holds : s.Holds (file.code layout)`.
-- Tactics need literal regions — alias each segment's region/bytes with `abbrev` and pull `starts.reads`/`starts.writes`/`starts.same` onto them:
+- Pull `starts.reads`/`starts.writes`/`starts.same` onto the importer's `F.region_<a>` / `F.bytes_<a>` aliases:
   ```lean
-  abbrev dataRegion : Region := Region.root 0x403000#64 0x3000 true true
-  abbrev dataBytes : Region := dataRegion.part 0x10 0x2ee8
-  have same : dataBytes.Same (data.memory file) s.memory := starts.same data (by decide)
+  have writes : s.kernel.Writes F.region_403000 := starts.writes F.segment_403000 (by decide) rfl
+  have same : F.bytes_403000.Same (F.segment_403000.memory F.file) s.memory :=
+    starts.same F.segment_403000 (by decide)
   ```

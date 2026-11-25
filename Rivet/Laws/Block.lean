@@ -49,6 +49,15 @@ private theorem operandKept (s : MachineState) (dest : Operand) (value : BitVec 
   cases dest <;> simp [MachineState.writeOperand64, MachineState.write, MachineState.writeMemory, exec, same]
   exact (keptByte (by simpa [MachineState.canWrite] using allowed) exec).trans same
 
+private theorem canWrite_lea {s : MachineState} {d : Operand} (h : validLea d = true) : s.canWrite d = true := by
+  cases d <;> simp_all [validLea, MachineState.canWrite]
+
+private theorem canWrite_shift {s : MachineState} {d : Operand} {n : Nat} (h : validShift d n = true) : s.canWrite d = true := by
+  cases d <;> simp_all [validShift, MachineState.canWrite]
+
+private theorem canWrite_cmov {s : MachineState} {d src : Operand} (h : validConditionalMove d src = true) : s.canWrite d = true := by
+  cases d <;> simp_all [validConditionalMove, MachineState.canWrite]
+
 private theorem stepOp_holds (holds : s.Holds code) :
     (stepOp op pc s flags).Holds code := by
   intro address byte fetched
@@ -59,11 +68,8 @@ private theorem stepOp_holds (holds : s.Holds code) :
     | exact ⟨exec, (keptByte (by assumption) exec).trans value⟩
     | apply operandKept _ _ _ _ exec value
     | split
-  all_goals try simp only [Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at *
-  all_goals first
-    | grind
-    | expose_names
-      cases destination <;> simp_all [validLea, validShift, validImul, validConditionalMove, MachineState.canWrite]
+  all_goals try simp only [validImul, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at *
+  all_goals grind [canWrite_lea, canWrite_shift, canWrite_cmov]
 
 theorem MachineState.Holds.step {code : Code} (holds : s.Holds code) (flags : FlagValues) : (step s flags).Holds code := by
   unfold Rivet.step
@@ -112,6 +118,11 @@ structure Block (code : Code) (start : MachineState) (changes : Changes) (post :
   private mk ::
   private allChoices : current.Holds code → ∀ choices : FlagChoices, ∃ final,
     (∃ steps, execute steps current choices = final) ∧ final.Except start changes ∧ post final
+
+theorem Block.run {code : Code} {s : MachineState} {c : Changes} {Q : MachineState → Prop}
+    (block : Block code s c Q) (holds : s.Holds code) (choices : FlagChoices) :
+    ∃ final, (∃ steps, execute steps s choices = final) ∧ final.Except s c ∧ Q final :=
+  block.allChoices holds choices
 
 private theorem Block.of_step {c : Changes} {post : MachineState → Prop}
     (kept : ∀ final, post final → final.Except initial c)

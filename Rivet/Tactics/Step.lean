@@ -344,8 +344,9 @@ open Step in
     let address := toExpr (BitVec.ofNat 64 pc)
     let status := mkApp (mkConst ``MachineState.status) old
     pure (address, ← mkExpectedTypeHint location (← mkEq status (mkApp (mkConst ``ExecutionStatus.running) address)))
-  let some (operation, instructionProof) ← Fetch.prove code address pc
-    | throwError "rivet_step: no instruction at 0x{Fetch.hex pc}"
+  let (operation, instructionProof) ← match ← Fetch.prove code address pc with
+    | .ok found => pure found
+    | .error message => throwError message
   let named? : Option Name := if stx[1].getNumArgs > 0 then some stx[1][1].getId else none
   let condition? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
   -- A step that splits the proof in two says so.
