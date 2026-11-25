@@ -15,7 +15,7 @@ structure DecodePrefixes where
 
 mutual
   inductive DecodeState where
-    | opcode (p : DecodePrefixes := {})
+    | opcode (p : DecodePrefixes)
     | byte (next : Fin 256 → DecodeReply)
   inductive DecodeReply where
     | more (front : DecodeState)
@@ -147,7 +147,7 @@ def extended (p : DecodePrefixes) (b : Nat) : Reply := Id.run do
   if p.rep && b == 0xbc then return pair p width true .tzcnt
   if b == 0x10 || b == 0x11 || b == 0x6f || b == 0x7f then
     let dqu := b == 0x6f || b == 0x7f
-    if p.rep != dqu || (p.word && !dqu) then return .reject
+    if p.rep != dqu || p.word then return .reject
     let kind := if dqu then XmmMove.movdqu else .movups
     return modRM p fun r rm => match rm with
       | .mem addr => .done fun rip =>
@@ -155,7 +155,7 @@ def extended (p : DecodePrefixes) (b : Nat) : Reply := Id.run do
         else .storeXmm kind (addr rip) (xmm r)
       | _ => .reject
   if p.rep then return .reject
-  if b == 0x05 then return .done fun _ => .syscall
+  if b == 0x05 then return if p.word then .reject else .done fun _ => .syscall
   if b == 0xaf then return pair p width true fun d s => .imul d s none
   if b == 0xb6 || b == 0xb7 then
     if width != .dword then return .reject
@@ -172,11 +172,11 @@ def extended (p : DecodePrefixes) (b : Nat) : Reply := Id.run do
   let some cc := condition (b % 16) | return .reject
   match b / 16 with
   | 4 => return pair p width true (.cmovcc cc)
-  | 8 => return branch 4 (.jcc cc)
+  | 8 => return if width == .word then .reject else branch 4 (.jcc cc)
   | 9 => return modRM p fun _ rm => scalar p .byte rm fun d => .done fun rip => .setcc cc (d rip)
   | _ => return .reject
 
-def grouped (p : DecodePrefixes) (b : Nat) : DecodeReply :=
+def grouped (p : DecodePrefixes) (b : Nat) : Reply :=
   let w := if b % 2 == 0 then Width.byte else operandWidth p
   modRM p fun field rm => Id.run do
     -- REX.R extends registers, but never an opcode extension.
@@ -231,6 +231,7 @@ def opcode (p : DecodePrefixes) (b : Nat) : Reply := Id.run do
     let r := gpr (b % 8 + p.rex % 2 * 8)
     return .done fun _ => if b < 0x58 then .push r else .pop r
   if b / 16 == 7 then
+    if width == .word then return .reject
     let some cc := condition (b % 16) | return .reject
     return branch 1 (.jcc cc)
   if b / 16 == 11 then
@@ -261,15 +262,15 @@ def opcode (p : DecodePrefixes) (b : Nat) : Reply := Id.run do
   | 0xa8 | 0xa9 =>
     let some acc := register p w 0 | return .reject
     return ordinaryImm w fun i => .done fun _ => .binary .test acc (.immediate i)
-  | 0xc3 => return .done fun _ => .ret
-  | 0xe8 => return branch 4 .call
-  | 0xe9 => return branch 4 .jmp
-  | 0xeb => return branch 1 .jmp
+  | 0xc3 => return if width == .word then .reject else .done fun _ => .ret
+  | 0xe8 => return if width == .word then .reject else branch 4 .call
+  | 0xe9 => return if width == .word then .reject else branch 4 .jmp
+  | 0xeb => return if width == .word then .reject else branch 1 .jmp
   | 0x80 | 0x81 | 0x83 | 0x8f | 0xc0 | 0xc1 | 0xc6 | 0xc7
   | 0xd0 | 0xd1 | 0xf6 | 0xf7 | 0xfe | 0xff => return grouped p b
   | _ => return .reject
 
-def scan (p : DecodePrefixes) (b : Nat) : DecodeReply :=
+def scan (p : DecodePrefixes) (b : Nat) : Reply :=
   match b with
   | 0x66 => if p.word || p.rex != 0 then .reject else .more (.opcode { p with word := true })
   | 0xf3 => if p.rep || p.rex != 0 then .reject else .more (.opcode { p with rep := true })
