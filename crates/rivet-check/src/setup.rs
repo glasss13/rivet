@@ -1,8 +1,5 @@
 //! Prepare the common initial state before either runner executes.
-use crate::{
-    case::{Case, ExecutionInput, REGISTERS},
-    register::Register64::Rsp,
-};
+use crate::case::{Case, ExecutionInput, REGISTERS, RSP};
 use anyhow::{Context, Result, ensure};
 use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 use memmap2::{Mmap, MmapMut};
@@ -64,7 +61,7 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
         }
     }
     let mut values = case.registers;
-    values[Rsp as usize] = base + stack_offset as u64;
+    values[RSP] = base + stack_offset as u64;
     // Include accesses starting just before the guard page, so wider accesses
     // can fault after their first byte. Other cases exercise unaligned data.
     let data_pointer = if case.fault_memory {
@@ -99,8 +96,8 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
     if let [instruction] = instructions.as_slice()
         && matches!(instruction.mnemonic(), Mnemonic::Push | Mnemonic::Pop)
     {
-        let slot = data_pointer + case.registers[Rsp as usize] % 16;
-        values[Rsp as usize] = slot
+        let slot = data_pointer + case.registers[RSP] % 16;
+        values[RSP] = slot
             + if instruction.mnemonic() == Mnemonic::Push {
                 8
             } else {
@@ -108,25 +105,25 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
             };
     }
     if instructions[0].mnemonic() == Mnemonic::Ret && case.fault_memory {
-        values[Rsp as usize] = guard;
+        values[RSP] = guard;
     }
     if instructions[0].mnemonic() == Mnemonic::Call && case.fault_memory {
         // Exercise CALL's stack write at the guard or read-only data boundary.
-        values[Rsp as usize] = if case.read_only_data {
+        values[RSP] = if case.read_only_data {
             base + 8
         } else {
             guard + 8
         };
     }
-    let program = rivet_import::decode(&memory.code, memory.code.as_ptr() as u64)?;
     ensure!(
-        !program
+        !instructions
             .iter()
-            .any(|instruction| matches!(instruction.op, rivet_import::program::Operation::Syscall)),
+            .any(|instruction| instruction.mnemonic() == Mnemonic::Syscall),
         "rivet-check does not execute syscall instructions"
     );
     let input = ExecutionInput {
-        program,
+        code_base: memory.code.as_ptr() as u64,
+        code: bytes.clone(),
         stop_address: continuation,
         registers: values,
         xmm_registers: case.xmm_registers,

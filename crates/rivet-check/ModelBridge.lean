@@ -15,25 +15,11 @@ instance : FromJson (BitVec 64) where
 instance : ToJson (BitVec width) where
   toJson value := toJson value.toNat
 
-deriving instance FromJson for Reg
-deriving instance FromJson for Reg8
-deriving instance FromJson for Reg32
-deriving instance FromJson for Reg16
-deriving instance FromJson for Xmm
-deriving instance FromJson for XmmMove
-deriving instance FromJson for Width
-deriving instance FromJson for Scale
-deriving instance FromJson for Address
-deriving instance FromJson for BinaryOp
-deriving instance FromJson for ShiftOp
-deriving instance FromJson for Operand
-deriving instance FromJson for Condition
-deriving instance FromJson for Op
-deriving instance FromJson for Instruction
 deriving instance FromJson for FlagValues
 
 structure Request where
-  program : Array Instruction
+  codeBase : Nat
+  code : Array Nat
   stopAddress : Nat
   registers : Array Nat
   xmmRegisters : Array (Array Nat)
@@ -83,25 +69,26 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     throw "invalid XMM register values"
   unless request.memory.size ≤ 65536 && request.memory.all (· < 256) do
     throw "invalid memory"
-  let some first := request.program[0]? | throw "empty program"
-  let Decidable.isTrue ranges := (inferInstance : Decidable (request.memoryBase ≤ request.writableBase ∧
-      request.writableBase ≤ request.memoryBase + request.memory.size ∧
-      request.memoryBase + request.memory.size ≤ 2^64))
-    | throw "writable base outside memory range, or memory past 2^64"
-  let base := BitVec.ofNat 64 request.memoryBase
-  -- The byte at an absolute address, from the request's memory image; zero outside it.
+  let codeEnd := request.codeBase + request.code.size
+  let dataEnd := request.memoryBase + request.memory.size
+  unless !request.code.isEmpty && request.code.all (· < 256) && codeEnd ≤ 2^64 do
+    throw "invalid code"
+  unless request.memoryBase ≤ request.writableBase && request.writableBase ≤ dataEnd && dataEnd ≤ 2^64 do
+    throw "invalid data range"
+  unless request.memory.isEmpty || codeEnd ≤ request.memoryBase || dataEnd ≤ request.codeBase do
+    throw "code overlaps data"
+  let inCode (a : Nat) := request.codeBase ≤ a && a < codeEnd
   let memory : Memory := fun address =>
-    let value := request.memory[(address - base).toNat]?.getD 0
-    ⟨value % 256, Nat.mod_lt _ (by decide)⟩
-  let region (start length : Nat) (writable : Bool) (fits : start + length ≤ 2^64) : List Region :=
-    if _ : 0 < length then
-      [Region.root (BitVec.ofNat 64 start) length true writable (by
-        rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]; exact fits)]
-    else []
-  let regions :=
-    region request.memoryBase (request.writableBase - request.memoryBase) false (by omega) ++
-    region request.writableBase (request.memoryBase + request.memory.size - request.writableBase) true (by omega)
-  let program : Program := .leaf request.program.toList
+    let a := address.toNat
+    if inCode a then Fin.ofNat 256 request.code[a - request.codeBase]!
+    else if request.memoryBase ≤ a && a < dataEnd then Fin.ofNat 256 request.memory[a - request.memoryBase]!
+    else 0
+  let kernel : Kernel := ⟨fun address =>
+    let a := address.toNat
+    if inCode a then .readExec
+    else if request.memoryBase ≤ a && a < request.writableBase then .readOnly
+    else if request.writableBase ≤ a && a < dataEnd then .readWrite
+    else .unmapped⟩
   let initial : MachineState := {
     registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
     xmmRegisters := fun register => BitVec.ofNat 128
@@ -111,8 +98,8 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     carryFlag := request.carryFlag
     overflowFlag := request.overflowFlag
     memory
-    kernel := .ofRegions regions
-    status := .running first.address }
+    kernel
+    status := .running (BitVec.ofNat 64 request.codeBase) }
   let mut current := initial
   let mut observations := #[snapshot request.memoryBase request.memory.size initial]
   for index in [:request.steps] do
@@ -120,7 +107,7 @@ def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
     if address == BitVec.ofNat 64 request.stopAddress then break
     let some undefinedFlags := request.nativeFlags[index]?
       | throw "missing native flag observation"
-    current := step program current undefinedFlags
+    current := step current undefinedFlags
     observations := observations.push (snapshot request.memoryBase request.memory.size current)
   unless observations.size == request.nativeFlags.size + 1 do
     throw "unused native flag observations"

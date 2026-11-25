@@ -336,7 +336,7 @@ syntax (name := rivetStep) "rivet_step" (" as " ident)? (" if " ident)? : tactic
 
 open Step in
 @[tactic rivetStep] meta def Step.evalRivetStep : Tactic := fun stx => withMainContext do
-  let (program, old) ← goalParts (← getMainGoal)
+  let (code, old) ← goalParts (← getMainGoal)
   let some (written, pc, location) ← currentPc old | throwError (← noAddress "rivet_step" old)
   reporting m!"rivet_step, at the instruction at 0x{Fetch.hex pc}" do
   -- An address given by a definition is passed as its value, so the next address is a literal too.
@@ -344,9 +344,8 @@ open Step in
     let address := toExpr (BitVec.ofNat 64 pc)
     let status := mkApp (mkConst ``MachineState.status) old
     pure (address, ← mkExpectedTypeHint location (← mkEq status (mkApp (mkConst ``ExecutionStatus.running) address)))
-  let some (instruction, instructionProof) ← Fetch.prove program address pc
+  let some (operation, instructionProof) ← Fetch.prove code address pc
     | throwError "rivet_step: no instruction at 0x{Fetch.hex pc}"
-  let operation := instruction.getArg! 2
   let named? : Option Name := if stx[1].getNumArgs > 0 then some stx[1][1].getId else none
   let condition? : Option Name := if stx[2].getNumArgs > 0 then some stx[2][1].getId else none
   -- A step that splits the proof in two says so.
@@ -367,13 +366,13 @@ open Step in
   let pending := (← getGoals).filter (· != mainGoal)
   let contract : Expr ← do
     let (name, operands) ← contractFor scope old pc operation
-    let (proof, sides) ← instantiate name (#[program, address] ++ operands ++ #[old])
+    let (proof, sides) ← instantiate name (#[code, address] ++ operands ++ #[old])
     for side in sides do
       -- Location and instruction evidence are known; no context search is needed.
       match ← side.getTag with
       | `location => side.assign location
-      | `code =>
-        -- Matching the proof against `InstructionAt program pc ?length op` fills in the length.
+      | `fetched =>
+        -- Matching the proof against `InstructionAt code pc ?length op` fills in the length.
         unless ← isDefEq (← side.getType) (← inferType instructionProof) do
           throwError "rivet_step: unexpected instruction at {pc}"
         side.assign instructionProof
@@ -394,7 +393,7 @@ open Step in
       let kept := mkApp3 (mkConst ``MachineState.Except) successor (contractType.getArg! 1) (contractType.getArg! 2)
       withLocalDeclD `rivet_kept kept fun kept => do
       withLocalDeclD `rivet_step_equation (intermediate.beta #[successor]) fun equation => do
-        let target := mkApp5 (mkConst ``Block) program goalArgs[1]! goalArgs[2]! goalArgs[3]! successor
+        let target := mkApp5 (mkConst ``Block) code goalArgs[1]! goalArgs[2]! goalArgs[3]! successor
         let goal ← mkFreshExprSyntheticOpaqueMVar target (← mainGoal.getTag)
         let continuation ← mkLambdaFVars #[successor, kept, equation] goal
         mainGoal.assign (← mkAppM ``Block.then #[contract, continuation])

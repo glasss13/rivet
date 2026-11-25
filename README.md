@@ -10,16 +10,17 @@ lake build
 
 ## What a theorem says
 
-`Block program s c Q` means: from the machine state `s`, and for every value the CPU might
-leave in its undefined flags, `program` reaches a state in finitely many steps that
+`Block code s c Q` means that whenever `s.Holds code`, for every value the CPU might
+leave in its undefined flags, execution from `s` reaches a state in finitely many steps that
 satisfies `Q` and is `s` except for the change `c`: every register and every byte of memory
 that `c` does not list is as it was. What the start state must satisfy is stated as ordinary
 hypotheses about `s`. A fault is permanent, so a `Q` that requires `status = .running …`
 also proves that nothing faulted on the way.
 
+Lean decodes each instruction from executable bytes in live memory.
+
 What a proof does not cover:
 
-- The decoder. Instructions come from the importer and iced-x86, not from Lean.
 - The CPU. The model is tested against real hardware (`cargo run -p rivet-check -- --cases 1000`),
   not proved equal to it.
 - Flags other than ZF, CF, SF and OF, instructions outside the supported subset, and concurrency.
@@ -34,13 +35,8 @@ import Rivet
 open Rivet
 
 -- push rbx · mov rbx, rdi · add rbx, rsi · mov rax, rbx · pop rbx · ret
-def sum : Program := .leaf
-  [⟨0x1000, 1, .push .rbx⟩,
-   ⟨0x1001, 3, .mov (.reg64 .rbx) (.reg64 .rdi)⟩,
-   ⟨0x1004, 3, .binary .add (.reg64 .rbx) (.reg64 .rsi)⟩,
-   ⟨0x1007, 3, .mov (.reg64 .rax) (.reg64 .rbx)⟩,
-   ⟨0x100a, 1, .pop .rbx⟩,
-   ⟨0x100b, 1, .ret⟩]
+def sum : Code := Code.ofBytes 0x1000
+  [0x53, 0x48, 0x89, 0xfb, 0x48, 0x01, 0xf3, 0x48, 0x89, 0xd8, 0x5b, 0xc3]
 
 -- the body, a block of its own: from 0x1001 it changes rax and rbx
 theorem add_body (s : MachineState) (entry : s.status = .running 0x1001) :
@@ -94,15 +90,15 @@ proves its preconditions the same way (`add_body` asks only for its entry addres
 from the state it ends in, with its postcondition and what it left alone. A precondition it
 cannot prove is an error at the call naming it; give it by name, `rivet_call f a (room := …)`.
 
-To work on a real binary, generate the program instead of writing it by hand:
+To work on a real binary, import a static ELF executable:
 
 ```sh
-cargo run -p rivet-import -- ./prog --function sum --namespace Sum --output Sum.lean
+cargo run -p rivet-import -- ./prog --namespace Sum --output Sum.lean
 ```
 
-That gives `Sum.entry`, `Sum.program`, a region `Sum.region_<address>` for each of the binary's
-segments, `Sum.regions`, and `Sum.Loaded memory`, which says memory is the segment's bytes on each
-segment's region.
+The module contains the ELF pages, `Sum.file`, its checked `Sum.layout`, and `Sum.code`.
+Each loadable segment has aliases for its mapped pages and byte range. Given
+`starts : Starts Sum.file Sum.layout stack s`, `starts.holds` proves `s.Holds Sum.code`.
 
 ## API
 

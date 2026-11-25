@@ -33,4 +33,24 @@ theorem Starts.writes {file : Exe} {layout : Layout} {stack : Region} {s : Machi
   have h := starts.access segment member address inside
   simp [Kernel.writable, h, writable, Access.writable]
 
+theorem Starts.holds (starts : Starts file layout stack s) : s.Holds (file.code layout) := by
+  intro address byte fetched
+  unfold Exe.code at fetched
+  split at fetched
+  next segment found =>
+    have checks := List.find?_some found
+    simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] at checks
+    obtain ⟨⟨exec, ro⟩, bounds⟩ := checks
+    have member := List.mem_of_find?_eq_some found
+    have inside : segment.bytes.Contains address := by
+      simpa only [Segment.bytes, Segment.region, Region.Contains, Region.part_base, Region.part_length,
+        Region.root_base] using bounds
+    have within := segment.inside
+    have mapped : segment.region.Contains address := by
+      simp only [Segment.region, Region.Contains, Region.root_base, Region.root_length]
+      omega
+    exact ⟨by simpa [exec, ro] using starts.access segment member address mapped,
+      (starts.same segment member address inside).symm.trans (Option.some.inj fetched)⟩
+  next => contradiction
+
 end Rivet

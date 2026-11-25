@@ -1,6 +1,6 @@
 module
-public import Rivet.Laws.Program
--- Proves which instruction a concrete program holds at an address, for `rivet_step`.
+public import Rivet.Interpreter.Decode
+public meta import Rivet.Interpreter.Decode
 public meta import Lean
 public section
 namespace Rivet.Internal
@@ -19,31 +19,39 @@ meta def addressValue? (address : Expr) : MetaM (Option Nat) := do
     (evalNat value).run
   catch _ => return none
 
--- The instruction `program.fetch` finds at `pc`: down the tree to one leaf, then along it.
-private meta def fetched (program : Expr) (pc : Nat) : MetaM (Option Expr) := do
-  let mut current ← whnf program
-  while current.isAppOfArity ``Program.branch 3 do
-    let some split ← addressValue? (current.getArg! 0) | return none
-    current ← whnf (current.getArg! (if pc < split then 1 else 2))
-  unless current.isAppOfArity ``Program.leaf 1 do return none
-  current := current.getArg! 0
-  repeat
-    current ← whnf current
-    unless current.isAppOfArity ``List.cons 3 do return none
-    let instruction ← whnf (current.getArg! 1)
-    unless instruction.isAppOfArity ``Instruction.mk 3 do return none
-    let some address ← addressValue? (instruction.getArg! 0) | return none
-    let some length ← (evalNat (← whnf (instruction.getArg! 1))).run | return none
-    if address == pc && 0 < length && length ≤ 15 then return some instruction
-    current := current.getArg! 2
-  return none
+meta section
+deriving instance ToExpr for Reg
+deriving instance ToExpr for Reg8
+deriving instance ToExpr for Reg16
+deriving instance ToExpr for Reg32
+deriving instance ToExpr for Width
+deriving instance ToExpr for Scale
+deriving instance ToExpr for Address
+deriving instance ToExpr for Operand
+deriving instance ToExpr for Condition
+deriving instance ToExpr for BinaryOp
+deriving instance ToExpr for ShiftOp
+deriving instance ToExpr for Xmm
+deriving instance ToExpr for XmmMove
+deriving instance ToExpr for Op
 
-meta def prove (program address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
-  let some instruction ← fetched program pc | return none
-  let result ← mkAppM ``Option.some #[instruction]
-  -- State the result about the caller's program, so it matches their goal syntactically.
-  let fetch ← mkAppM ``Program.fetch #[program, address]
-  return some (instruction, ← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetch result))
+def prove (code address : Expr) (pc : Nat) : MetaM (Option (Expr × Expr)) := withTransparency .all do
+  let mut front : DecodeState := .opcode {}
+  for offset in [:15] do
+    let atByte := toExpr (BitVec.ofNat 64 (pc + offset))
+    let found ← whnf (mkApp code atByte)
+    unless found.isAppOfArity ``Option.some 2 do return none
+    let some n ← getNatValue? (← whnf (← mkAppM ``Fin.val #[found.getArg! 1])) | return none
+    match feed front (Fin.ofNat 256 n) with
+    | .reject => return none
+    | .more next => front := next
+    | .done finish =>
+      let op := finish (BitVec.ofNat 64 (pc + offset + 1))
+      let result := toExpr (some (offset + 1, op))
+      let fetch := mkApp2 (mkConst ``Code.fetch) code address
+      return some (toExpr op, ← mkExpectedTypeHint (← mkEqRefl result) (← mkEq fetch result))
+  return none
+end
 
 end Fetch
 

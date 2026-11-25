@@ -1,5 +1,6 @@
 module
 public import Rivet.Laws.Regions
+public import Rivet.Interpreter.Decode
 @[expose] public section
 namespace Rivet
 
@@ -105,5 +106,13 @@ def Exe.layout (file : Exe) : Option Layout :=
       else none
     | none => none
   else none
+
+def Exe.code (file : Exe) (layout : Layout) : Code := fun address =>
+  -- Compute the byte bounds directly: Region.root and Region.part are sealed for proof automation.
+  match layout.segments.find? fun s =>
+      let first := s.start.toNat + s.skip
+      s.executable && !s.writable && decide (first ≤ address.toNat ∧ address.toNat < first + s.size) with
+  | some segment => some (segment.memory file address)
+  | none => none
 
 end Rivet
