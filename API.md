@@ -199,8 +199,8 @@ Recipes:
 ## Machine, Contracts & Importer
 
 - `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `kernel`, `status` (`ExecutionStatus.running addr | .exited code | .fault`; `code : BitVec 8` is the process's exit code). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
-- `Access`: `.unmapped | .protNone | .readOnly | .readWrite`.
-- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`. `Kernel.ofRegions regions` maps those regions with their permissions.
+- `Access`: `.unmapped | .protNone | .readOnly | .readExec | .readWrite`.
+- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`, `executable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`. `Kernel.ofRegions regions` maps those regions with their permissions.
 - Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
 - A program written by hand is one leaf: `.leaf [⟨0x1000, 1, .push .rbx⟩, ⟨0x1001, 1, .ret⟩]`. The importer's is a search tree of leaves, `.branch split left right`: addresses below `split` are in `left`.
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
