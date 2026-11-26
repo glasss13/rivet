@@ -215,7 +215,7 @@ Recipes:
 
 - `Exe` (`{ size, pages }`): ELF bytes in 4096-byte little-endian base-256 `Nat` pages (`file.u8`/`.u16`/`.u32`/`.u64`).
 - `file.layout : Option Layout` (`{ entry : BitVec 64, segments : List Segment }`): checks static non-PIE x86-64 ELF64 (`-z noexecstack`, W^X, ascending non-overlapping pages, `e_entry` in executable bytes). Check once: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
-- `Segment`: `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[p_vaddr, p_vaddr + p_memsz)`), `segment.memory file` (file bytes + zero BSS).
+- `Segment` (`vaddr`, `memsz`, `offset`, `filesz`, `writable`, `executable`): `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[vaddr, vaddr + memsz)`), `segment.memory file` (file bytes + zero BSS).
 - `Starts file layout stack s`: start-state hypothesis (`status`, `access`, `same`, `apart`, `stackWrites`, `stackPages`, `rsp`, `aligned`), plus `starts.reads`, `starts.writes`, and `starts.holds : s.Holds (file.code layout)`.
 - Pull `starts.reads`/`starts.writes`/`starts.same` onto the importer's `F.region_<a>` / `F.bytes_<a>` aliases:
   ```lean

@@ -34,22 +34,26 @@ pub fn module(bytes: &[u8], layout: &Layout, namespace: &str) -> Result<String> 
     )?;
     let mut names = Vec::new();
     for s in &layout.segments {
-        let suffix = format!("{:x}", s.start);
+        let map_start = s.map_start();
+        let suffix = format!("{:x}", map_start);
         let name = format!("segment_{suffix}");
         writeln!(
             source,
-            "\nabbrev {name} : Rivet.Segment :=\n  {{ start := {:#x}, length := {}, writable := {}, executable := {},\n    skip := {}, size := {}, fileOffset := {}, fileSize := {} }}",
-            s.start, s.length, s.writable, s.executable, s.skip, s.size, s.offset, s.file_size
+            "\nabbrev {name} : Rivet.Segment :=\n  {{ vaddr := {:#x}, memsz := {}, offset := {}, filesz := {},\n    writable := {}, executable := {} }}",
+            s.vaddr, s.memsz, s.offset, s.filesz, s.writable, s.executable
         )?;
         writeln!(
             source,
             "abbrev region_{suffix} : Rivet.Region := Rivet.Region.root {:#x}#64 {} true {}",
-            s.start, s.length, s.writable
+            map_start,
+            s.map_size(),
+            s.writable
         )?;
         writeln!(
             source,
             "abbrev bytes_{suffix} : Rivet.Region := region_{suffix}.part {} {} (by rw [Rivet.Region.root_length]; decide)",
-            s.skip, s.size
+            s.page_offset(),
+            s.memsz
         )?;
         names.push(name);
     }

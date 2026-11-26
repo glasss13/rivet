@@ -1,14 +1,26 @@
 use anyhow::{Result, ensure};
 
 pub struct Segment {
-    pub start: u64,
-    pub length: u128,
-    pub skip: u64,
-    pub size: u64,
+    pub vaddr: u64,
+    pub memsz: u64,
     pub offset: u64,
-    pub file_size: u64,
+    pub filesz: u64,
     pub writable: bool,
     pub executable: bool,
+}
+
+impl Segment {
+    pub fn map_start(&self) -> u64 {
+        self.vaddr - (self.vaddr % 4096)
+    }
+
+    pub fn page_offset(&self) -> u64 {
+        self.vaddr % 4096
+    }
+
+    pub fn map_size(&self) -> u128 {
+        (u128::from(self.page_offset()) + u128::from(self.memsz)).next_multiple_of(4096)
+    }
 }
 
 pub struct Layout {
@@ -56,40 +68,38 @@ pub fn layout(bytes: &[u8]) -> Result<Layout> {
             }
             1 => {
                 let offset = u64_at(i + 8);
-                let address = u64_at(i + 16);
-                let file_size = u64_at(i + 32);
-                let size = u64_at(i + 40);
-                let skip = address % 4096;
-                let start = address - skip;
-                let length = (u128::from(skip) + u128::from(size)).next_multiple_of(4096);
+                let vaddr = u64_at(i + 16);
+                let filesz = u64_at(i + 32);
+                let memsz = u64_at(i + 40);
+                let page_offset = vaddr % 4096;
+                let map_start = vaddr - page_offset;
+                let map_size = (u128::from(page_offset) + u128::from(memsz)).next_multiple_of(4096);
                 ensure!(
                     flags & 4 != 0 && !(writable && executable),
-                    "invalid PT_LOAD permissions at {address:#x}"
+                    "invalid PT_LOAD permissions at {vaddr:#x}"
                 );
                 ensure!(
-                    size > 0 && (file_size == size || (file_size < size && writable)),
-                    "invalid PT_LOAD sizes at {address:#x}"
+                    memsz > 0 && (filesz == memsz || (filesz < memsz && writable)),
+                    "invalid PT_LOAD sizes at {vaddr:#x}"
                 );
                 ensure!(
-                    u128::from(offset) + u128::from(file_size) <= bytes.len() as u128
-                        && offset % 4096 == skip,
-                    "invalid PT_LOAD file range or alignment at {address:#x}"
+                    u128::from(offset) + u128::from(filesz) <= bytes.len() as u128
+                        && offset % 4096 == page_offset,
+                    "invalid PT_LOAD file range or alignment at {vaddr:#x}"
                 );
                 ensure!(
-                    floor <= u128::from(start),
+                    floor <= u128::from(map_start),
                     "PT_LOAD pages overlap, descend, or include the null page"
                 );
-                floor = u128::from(start) + length;
+                floor = u128::from(map_start) + map_size;
                 ensure!(floor <= 1u128 << 64, "PT_LOAD pages overflow address space");
                 entry_mapped |=
-                    executable && entry.checked_sub(address).is_some_and(|n| n < file_size);
+                    executable && entry.checked_sub(vaddr).is_some_and(|n| n < filesz);
                 segments.push(Segment {
-                    start,
-                    length,
-                    skip,
-                    size,
+                    vaddr,
+                    memsz,
                     offset,
-                    file_size,
+                    filesz,
                     writable,
                     executable,
                 });

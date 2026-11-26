@@ -18,50 +18,61 @@ def Exe.u32 (file : Exe) (offset : Nat) : Nat := file.u16 offset + 2^16 * file.u
 
 def Exe.u64 (file : Exe) (offset : Nat) : Nat := file.u32 offset + 2^32 * file.u32 (offset + 4)
 
--- Whole mapped pages `[start, start + length)`; contents are only guaranteed on `[start + skip, start + skip + size)`
--- because page padding varies across Linux versions.
+-- One ELF `PT_LOAD` segment (`vaddr`, `memsz`, `offset`, `filesz` match `Elf64_Phdr`).
+-- Permissions apply to whole 4 KiB pages (`region`); contents only to `[vaddr, vaddr + memsz)` (`bytes`).
 structure Segment where
-  start : BitVec 64
-  length : Nat
+  vaddr : BitVec 64
+  memsz : Nat
+  offset : Nat
+  filesz : Nat
   writable : Bool
   executable : Bool
-  skip : Nat
-  size : Nat
-  fileOffset : Nat
-  fileSize : Nat
-  fits : start.toNat + length ≤ 2^64 := by decide
-  inside : skip + size ≤ length := by decide
+  fits : vaddr.toNat / 4096 * 4096 + (vaddr.toNat % 4096 + memsz + 4095) / 4096 * 4096 ≤ 2^64 := by decide
   deriving DecidableEq
 
+abbrev Segment.mapStart (segment : Segment) : BitVec 64 :=
+  BitVec.ofNat 64 (segment.vaddr.toNat / 4096 * 4096)
+
+abbrev Segment.mapSize (segment : Segment) : Nat :=
+  (segment.vaddr.toNat % 4096 + segment.memsz + 4095) / 4096 * 4096
+
+theorem Segment.mapStart_toNat (segment : Segment) : segment.mapStart.toNat = segment.vaddr.toNat / 4096 * 4096 := by
+  have := segment.vaddr.isLt
+  simp only [Segment.mapStart, BitVec.toNat_ofNat]
+  exact Nat.mod_eq_of_lt (by omega)
+
 abbrev Segment.region (segment : Segment) : Region :=
-  Region.root segment.start segment.length true segment.writable segment.fits
+  Region.root segment.mapStart segment.mapSize true segment.writable (by
+    rw [Segment.mapStart_toNat]; exact segment.fits)
 
 abbrev Segment.bytes (segment : Segment) : Region :=
-  segment.region.part segment.skip segment.size (by rw [Region.root_length]; exact segment.inside)
+  segment.region.part (segment.vaddr.toNat % 4096) segment.memsz (by rw [Region.root_length, Segment.mapSize]; omega)
 
 def Segment.memory (segment : Segment) (file : Exe) : Memory := fun address =>
-  let index := (address - segment.start).toNat - segment.skip
-  if index < segment.fileSize then Fin.ofNat 256 (file.u8 (segment.fileOffset + index)) else 0
+  let index := (address - segment.vaddr).toNat
+  if index < segment.filesz then Fin.ofNat 256 (file.u8 (segment.offset + index)) else 0
 
 def Segment.ascending (floor : Nat) : List Segment → Bool
   | [] => true
-  | segment :: rest => floor ≤ segment.start.toNat && ascending (segment.start.toNat + segment.length) rest
+  | segment :: rest =>
+    let start := segment.vaddr.toNat / 4096 * 4096
+    floor ≤ start && ascending (start + segment.mapSize) rest
 
 structure ProgramHeader where
   type : Nat
   flags : Nat
   offset : Nat
-  address : Nat
-  fileSize : Nat
-  size : Nat
+  vaddr : Nat
+  filesz : Nat
+  memsz : Nat
 
 def Exe.programHeader (file : Exe) (offset : Nat) : ProgramHeader where
   type := file.u32 offset
   flags := file.u32 (offset + 4)
   offset := file.u64 (offset + 8)
-  address := file.u64 (offset + 16)
-  fileSize := file.u64 (offset + 32)
-  size := file.u64 (offset + 40)
+  vaddr := file.u64 (offset + 16)
+  filesz := file.u64 (offset + 32)
+  memsz := file.u64 (offset + 40)
 
 abbrev ProgramHeader.executable (header : ProgramHeader) : Bool := header.flags.testBit 0
 abbrev ProgramHeader.writable (header : ProgramHeader) : Bool := header.flags.testBit 1
@@ -69,14 +80,20 @@ abbrev ProgramHeader.readable (header : ProgramHeader) : Bool := header.flags.te
 
 -- x86 without PKU makes W/X readable; Linux <6.7 can map empty PT_LOADs and skips zeroing RO BSS tails.
 def ProgramHeader.segment (header : ProgramHeader) (fileSize : Nat) : Option Segment :=
-  let start := BitVec.ofNat 64 (header.address / 4096 * 4096)
-  let skip := header.address % 4096
-  let length := (skip + header.size + 4095) / 4096 * 4096
-  if checked : header.readable ∧ ¬(header.writable ∧ header.executable) ∧ 0 < header.size ∧
-      (header.fileSize = header.size ∨ header.fileSize < header.size ∧ header.writable) ∧
-      header.offset + header.fileSize ≤ fileSize ∧ header.offset % 4096 = skip ∧ start.toNat + length ≤ 2^64 then
-    some { start, length, writable := header.writable, executable := header.executable, skip, size := header.size
-           fileOffset := header.offset, fileSize := header.fileSize, fits := checked.2.2.2.2.2.2, inside := by omega }
+  let vaddr := BitVec.ofNat 64 header.vaddr
+  let pageOffset := header.vaddr % 4096
+  let mapStart := header.vaddr / 4096 * 4096
+  let mapSize := (pageOffset + header.memsz + 4095) / 4096 * 4096
+  if checked : header.readable ∧ ¬(header.writable ∧ header.executable) ∧ 0 < header.memsz ∧
+      (header.filesz = header.memsz ∨ header.filesz < header.memsz ∧ header.writable) ∧
+      header.offset + header.filesz ≤ fileSize ∧ header.offset % 4096 = pageOffset ∧
+      header.vaddr < 2^64 ∧ mapStart + mapSize ≤ 2^64 then
+    some { vaddr, memsz := header.memsz, offset := header.offset, filesz := header.filesz,
+           writable := header.writable, executable := header.executable,
+           fits := by
+             have hlt : header.vaddr < 2^64 := checked.2.2.2.2.2.2.1
+             have hfit : mapStart + mapSize ≤ 2^64 := checked.2.2.2.2.2.2.2
+             simpa only [vaddr, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hlt] using hfit }
   else none
 
 structure Layout where
@@ -100,8 +117,7 @@ def Exe.layout (file : Exe) : Option Layout :=
     | some segments =>
       let entry := file.u64 24
       if Segment.ascending 4096 segments ∧ segments.any (fun segment =>
-          let first := segment.start.toNat + segment.skip
-          segment.executable ∧ first ≤ entry ∧ entry < first + segment.fileSize) then
+          segment.executable ∧ segment.vaddr.toNat ≤ entry ∧ entry < segment.vaddr.toNat + segment.filesz) then
         some { entry := BitVec.ofNat 64 entry, segments }
       else none
     | none => none
@@ -110,8 +126,7 @@ def Exe.layout (file : Exe) : Option Layout :=
 def Exe.code (file : Exe) (layout : Layout) : Code := fun address =>
   -- Compute the byte bounds directly: Region.root and Region.part are sealed for proof automation.
   match layout.segments.find? fun s =>
-      let first := s.start.toNat + s.skip
-      s.executable && !s.writable && decide (first ≤ address.toNat ∧ address.toNat < first + s.size) with
+      s.executable && !s.writable && decide (s.vaddr.toNat ≤ address.toNat ∧ address.toNat < s.vaddr.toNat + s.memsz) with
   | some segment => some (segment.memory file address)
   | none => none
 

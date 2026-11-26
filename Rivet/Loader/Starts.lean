@@ -43,11 +43,12 @@ theorem Starts.holds (starts : Starts file layout stack s) : s.Holds (file.code 
     obtain ⟨⟨exec, ro⟩, bounds⟩ := checks
     have member := List.mem_of_find?_eq_some found
     have inside : segment.bytes.Contains address := by
-      simpa only [Segment.bytes, Segment.region, Region.Contains, Region.part_base, Region.part_length,
-        Region.root_base] using bounds
-    have within := segment.inside
+      simp only [Segment.bytes, Segment.region, Region.Contains, Region.part_base,
+        Region.part_length, Region.root_base, Segment.mapStart_toNat]
+      omega
     have mapped : segment.region.Contains address := by
-      simp only [Segment.region, Region.Contains, Region.root_base, Region.root_length]
+      simp only [Segment.region, Segment.mapSize, Region.Contains, Region.root_base,
+        Region.root_length, Segment.mapStart_toNat]
       omega
     exact ⟨by simpa [exec, ro] using starts.access segment member address mapped,
       (starts.same segment member address inside).symm.trans (Option.some.inj fetched)⟩
