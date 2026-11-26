@@ -1,6 +1,6 @@
 module
 public import Rivet.Loader.Exe
-public import Rivet.Interpreter.Machine
+public import Rivet.Laws.Code
 @[expose] public section
 namespace Rivet
 

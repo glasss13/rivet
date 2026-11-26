@@ -307,10 +307,6 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
 def MachineState.code (state : MachineState) : Code := fun address =>
   if state.kernel.executable address then some (state.memory address) else none
 
-def MachineState.Holds (state : MachineState) (code : Code) : Prop :=
-  ∀ address byte, code address = some byte →
-    state.kernel.access address = .readExec ∧ state.memory address = byte
-
 @[no_expose] def step (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match state.status with
   | .running address => match state.code.fetch address with
