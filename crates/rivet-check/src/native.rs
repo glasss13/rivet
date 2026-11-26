@@ -1,8 +1,8 @@
 //! Linux/x86-64 execution only. Expected instruction behavior lives in Rivet.
 use crate::{
-    case::{ExecutionInput, Snapshot, Status},
+    case::{Access, Case, Mapping, Snapshot, Status},
     register::{register_values, set_registers, set_xmm_registers, xmm_values},
-    setup::NativeMemory,
+    setup::Prepared,
 };
 use anyhow::{Result, bail, ensure};
 use nix::{
@@ -16,6 +16,7 @@ use nix::{
     unistd::{ForkResult, Pid, fork, getpid, getppid},
 };
 use std::{
+    ffi::CStr,
     fs::File,
     os::unix::fs::FileExt,
     thread,
@@ -23,15 +24,18 @@ use std::{
 };
 
 /// Owns the traced child, including cleanup on any early return.
-struct TracedChild {
-    pid: Pid,
+pub struct TracedChild {
+    pub pid: Pid,
     // Whether waitpid has collected the child's exit status.
     reaped: bool,
 }
 impl TracedChild {
-    fn start() -> Result<Self> {
+    /// A child stopped before its first instruction: at the entry of `program` as Linux loaded
+    /// it, or without one, as a copy of this process.
+    pub fn start(program: Option<&CStr>) -> Result<Self> {
         let parent = getpid();
-        // SAFETY: the child only makes async-signal-safe syscalls, then stops/exits.
+        let arguments = program.map(|path| [path.as_ptr(), std::ptr::null()]);
+        // SAFETY: the child only makes async-signal-safe syscalls, then stops/execs/exits.
         let pid = match unsafe { fork()? } {
             ForkResult::Parent { child } => child,
             ForkResult::Child => unsafe {
@@ -41,14 +45,27 @@ impl TracedChild {
                 {
                     libc::_exit(120);
                 }
-                let _ = kill(getpid(), Signal::SIGSTOP);
+                match &arguments {
+                    // A traced execve stops with SIGTRAP once the new program is loaded.
+                    Some(arguments) => {
+                        libc::execv(arguments[0], arguments.as_ptr());
+                    }
+                    None => {
+                        let _ = kill(getpid(), Signal::SIGSTOP);
+                    }
+                }
                 libc::_exit(121);
             },
         };
         let mut child = Self { pid, reaped: false };
+        let stop = if program.is_some() {
+            Signal::SIGTRAP
+        } else {
+            Signal::SIGSTOP
+        };
         ensure!(
-            child.wait()? == WaitStatus::Stopped(pid, Signal::SIGSTOP),
-            "child did not enter tracing stop; check ptrace permissions"
+            child.wait()? == WaitStatus::Stopped(pid, stop),
+            "child did not enter tracing stop; check the program and ptrace permissions"
         );
         ptrace::setoptions(pid, ptrace::Options::PTRACE_O_EXITKILL)?;
         Ok(child)
@@ -71,8 +88,87 @@ impl TracedChild {
                 }
             }
             ensure!(Instant::now() < deadline, "native instruction timed out");
-            thread::sleep(Duration::from_millis(1));
+            thread::yield_now();
         }
+    }
+
+    fn snapshot(&self, signal: Signal, writes: Vec<(u64, u8)>) -> Result<Snapshot> {
+        let registers = ptrace::getregs(self.pid)?;
+        let floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(self.pid)?;
+        Ok(Snapshot {
+            registers: register_values(&registers),
+            xmm_registers: xmm_values(&floating_point),
+            sign_flag: registers.eflags & (1 << 7) != 0,
+            zero_flag: registers.eflags & (1 << 6) != 0,
+            carry_flag: registers.eflags & 1 != 0,
+            overflow_flag: registers.eflags & (1 << 11) != 0,
+            status: match signal {
+                Signal::SIGTRAP => Status::Running {
+                    address: registers.rip,
+                },
+                Signal::SIGSEGV | Signal::SIGBUS => Status::Fault,
+                _ => Status::Signal {
+                    number: signal as i32,
+                    address: registers.rip,
+                },
+            },
+            writes,
+        })
+    }
+
+    /// The state now and after each instruction, until `stop` says so at an address, the child
+    /// is no longer running, or `steps` instructions have run.
+    pub fn trace(
+        &mut self,
+        mappings: &[Mapping],
+        steps: usize,
+        stop: impl Fn(u64) -> Result<bool>,
+    ) -> Result<Vec<Snapshot>> {
+        let memory = File::open(format!("/proc/{}/mem", self.pid))?;
+        let mut writable: Vec<_> = mappings
+            .iter()
+            .filter(|mapping| mapping.access == Access::ReadWrite)
+            .map(|mapping| (mapping.base, mapping.bytes.clone()))
+            .collect();
+        let mut snapshots = vec![self.snapshot(Signal::SIGTRAP, vec![])?];
+        for _ in 0..steps {
+            let last = snapshots.last().unwrap();
+            let Status::Running { address } = last.status else {
+                break;
+            };
+            if stop(address)? {
+                break;
+            }
+            ptrace::step(self.pid, None)?;
+            let next = match self.wait()? {
+                // `exit_group` ends the child inside the step, leaving no state to read.
+                WaitStatus::Exited(_, code) => Snapshot {
+                    status: Status::Exited { code: code as u8 },
+                    writes: vec![],
+                    ..last.clone()
+                },
+                WaitStatus::Stopped(_, signal) => {
+                    let mut writes = vec![];
+                    for (base, bytes) in &mut writable {
+                        let mut read = vec![0; bytes.len()];
+                        memory.read_exact_at(&mut read, *base)?;
+                        if *bytes == read {
+                            continue;
+                        }
+                        for (offset, (old, new)) in bytes.iter().zip(&read).enumerate() {
+                            if old != new {
+                                writes.push((*base + offset as u64, *new));
+                            }
+                        }
+                        *bytes = read;
+                    }
+                    self.snapshot(signal, writes)?
+                }
+                status => bail!("unexpected wait status {status:?}"),
+            };
+            snapshots.push(next);
+        }
+        Ok(snapshots)
     }
 }
 
@@ -85,111 +181,29 @@ impl Drop for TracedChild {
     }
 }
 
-fn snapshot(
-    registers: &libc::user_regs_struct,
-    floating_point: &libc::user_fpregs_struct,
-    status: Status,
-    process_memory: &File,
-    memory_base: u64,
-    memory_size: usize,
-) -> Result<Snapshot> {
-    let mut memory = vec![0; memory_size];
-    process_memory.read_exact_at(&mut memory, memory_base)?;
-    Ok(Snapshot {
-        registers: register_values(registers),
-        xmm_registers: xmm_values(floating_point),
-        sign_flag: registers.eflags & (1 << 7) != 0,
-        zero_flag: registers.eflags & (1 << 6) != 0,
-        carry_flag: registers.eflags & 1 != 0,
-        overflow_flag: registers.eflags & (1 << 11) != 0,
-        status,
-        memory,
-    })
-}
-
-pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snapshot>> {
-    let code_base = input.code_base;
-    let mut child = TracedChild::start()?;
-    let process_memory = File::open(format!("/proc/{}/mem", child.pid))?;
+pub fn execute(case: &Case, prepared: &Prepared) -> Result<Vec<Snapshot>> {
+    let code_base = prepared.mappings[0].base;
+    let mut child = TracedChild::start(None)?;
     let mut registers = ptrace::getregs(child.pid)?;
-    set_registers(&mut registers, input.registers);
+    set_registers(&mut registers, prepared.registers);
     registers.rip = code_base;
     // Preserve OS-required flags; initialize SF/ZF/CF/OF and clear tracing/direction/resume bits.
     registers.eflags = (registers.eflags
         & !(1 | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 10) | (1 << 11) | (1 << 16)))
-        | ((input.overflow_flag as u64) << 11)
-        | ((input.sign_flag as u64) << 7)
-        | ((input.zero_flag as u64) << 6)
-        | input.carry_flag as u64;
+        | ((case.overflow_flag as u64) << 11)
+        | ((case.sign_flag as u64) << 7)
+        | ((case.zero_flag as u64) << 6)
+        | case.carry_flag as u64;
     ptrace::setregs(child.pid, registers)?;
     let mut floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
-    set_xmm_registers(&mut floating_point, input.xmm_registers);
+    set_xmm_registers(&mut floating_point, case.xmm_registers);
     ptrace::setregset::<ptrace::regset::NT_PRFPREG>(child.pid, floating_point)?;
-    registers = ptrace::getregs(child.pid)?;
-    floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
-    let mut snapshots = vec![snapshot(
-        &registers,
-        &floating_point,
-        Status::Running { address: code_base },
-        &process_memory,
-        input.memory_base,
-        input.memory.len(),
-    )?];
-    for _ in 0..input.steps {
+    child.trace(&prepared.mappings, case.steps, |address| {
+        let offset = address.wrapping_sub(code_base);
         ensure!(
-            registers
-                .rip
-                .checked_sub(code_base)
-                .is_some_and(
-                    |offset| offset < memory.code.len() as u64 && memory.offsets.contains(&offset)
-                ),
+            case.offsets.contains(&offset),
             "native execution left test code"
         );
-        ptrace::step(child.pid, None)?;
-        let WaitStatus::Stopped(_, signal) = child.wait()? else {
-            bail!("native worker exited unexpectedly");
-        };
-        registers = ptrace::getregs(child.pid)?;
-        floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
-        let status = match signal {
-            Signal::SIGSEGV | Signal::SIGBUS => Status::Fault,
-            Signal::SIGTRAP => {
-                ensure!(
-                    ptrace::getsiginfo(child.pid)?.si_code == libc::TRAP_TRACE,
-                    "unexpected breakpoint instead of single-step stop"
-                );
-                if registers
-                    .rip
-                    .checked_sub(code_base)
-                    .is_some_and(|offset| memory.offsets.contains(&offset))
-                {
-                    Status::Running {
-                        address: registers.rip,
-                    }
-                } else {
-                    Status::Outside {
-                        address: registers.rip,
-                    }
-                }
-            }
-            _ => Status::Signal {
-                number: signal as i32,
-                address: registers.rip,
-            },
-        };
-        let finished =
-            !matches!(status, Status::Running { .. }) || registers.rip == input.stop_address;
-        snapshots.push(snapshot(
-            &registers,
-            &floating_point,
-            status,
-            &process_memory,
-            input.memory_base,
-            input.memory.len(),
-        )?);
-        if finished {
-            break;
-        }
-    }
-    Ok(snapshots)
+        Ok(offset == case.code.len() as u64)
+    })
 }

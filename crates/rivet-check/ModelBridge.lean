@@ -6,35 +6,40 @@ meta import JsonDeriving
 @[expose] public section
 open Rivet Json
 
--- Addresses and exit codes travel as JSON numbers.
-instance : FromJson (BitVec 64) where
+-- Addresses and exit codes travel as JSON numbers, memory contents as hex strings.
+instance : FromJson (BitVec width) where
   fromJson? json := do
     let value : Nat ← fromJson? json
-    unless value < 2^64 do throw "address exceeds 64 bits"
-    return BitVec.ofNat 64 value
+    unless value < 2^width do throw s!"value exceeds {width} bits"
+    return BitVec.ofNat width value
 instance : ToJson (BitVec width) where
   toJson value := toJson value.toNat
+instance : FromJson ByteArray where
+  fromJson? json := do
+    let digits := (← fromJson? json : String).toUTF8
+    let digit (index : Nat) : UInt8 :=
+      let character := digits[index]!
+      if character < 58 then character - 48 else character - 87
+    return (List.range (digits.size / 2)).foldl
+      (fun bytes index => bytes.push (16 * digit (2 * index) + digit (2 * index + 1))) .empty
 
-deriving instance FromJson for FlagValues
+deriving instance FromJson for Access
+deriving instance FromJson, ToJson for ExecutionStatus
+instance : ToJson Segment where
+  toJson segment := Json.mkObj [("vaddr", toJson segment.vaddr), ("memsz", toJson segment.memsz),
+    ("offset", toJson segment.offset), ("filesz", toJson segment.filesz),
+    ("writable", toJson segment.writable), ("executable", toJson segment.executable)]
+deriving instance ToJson for Layout
 
-structure Request where
-  codeBase : Nat
-  code : Array Nat
-  stopAddress : Nat
-  registers : Array Nat
-  xmmRegisters : Array (Array Nat)
-  signFlag : Bool
-  zeroFlag : Bool
-  carryFlag : Bool
-  overflowFlag : Bool
-  memoryBase : Nat
-  writableBase : Nat
-  memory : Array Nat
-  steps : Nat
-  nativeFlags : Array FlagValues
+structure Mapping where
+  base : Nat
+  access : Access
+  bytes : ByteArray
   deriving FromJson
-deriving instance ToJson for ExecutionStatus
-structure SnapshotOutput where
+
+-- A machine state as Linux and the model both report it. `writes` are the writable bytes the last
+-- step changed: with the mappings, that is all of memory.
+structure Snapshot where
   registers : Array Nat
   xmmRegisters : Array (Array Nat)
   signFlag : Bool
@@ -42,15 +47,30 @@ structure SnapshotOutput where
   carryFlag : Bool
   overflowFlag : Bool
   status : ExecutionStatus
-  memory : Array Nat
+  writes : Array (Nat × Nat)
+  deriving BEq, FromJson, ToJson
+
+-- The memory Linux mapped, the state it started in, and the state it reached after each instruction.
+structure Request where
+  mappings : Array Mapping
+  start : Snapshot
+  steps : Array Snapshot
+  deriving FromJson
+
+-- The first step whose state the model computes differently, and whether its instruction decoded.
+structure Mismatch where
+  step : Nat
+  model : Snapshot
+  decoded : Bool
   deriving ToJson
 
 def registerOrder : Array Reg := #[.rax, .rbx, .rcx, .rdx, .rsi, .rdi, .rbp, .rsp,
   .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
 def xmmOrder : Array Xmm := #[.xmm0, .xmm1, .xmm2, .xmm3, .xmm4, .xmm5, .xmm6, .xmm7,
   .xmm8, .xmm9, .xmm10, .xmm11, .xmm12, .xmm13, .xmm14, .xmm15]
-def snapshot (memoryBase memorySize : Nat) (state : MachineState) : SnapshotOutput := {
-  registers := registerOrder.map (fun register => (state.registers register).toNat)
+
+def snapshot (state : MachineState) (writes : Array (Nat × Nat)) : Snapshot where
+  registers := registerOrder.map fun register => (state.registers register).toNat
   xmmRegisters := xmmOrder.map fun register =>
     (Array.range 4).map fun index => (state.xmmRegisters register).toNat / 2^(32*index) % 2^32
   signFlag := state.signFlag
@@ -58,68 +78,68 @@ def snapshot (memoryBase memorySize : Nat) (state : MachineState) : SnapshotOutp
   carryFlag := state.carryFlag
   overflowFlag := state.overflowFlag
   status := state.status
-  memory := (Array.range memorySize).map (fun offset => (state.memory (BitVec.ofNat 64 (memoryBase + offset))).val) }
+  writes
 
-def evaluate (request : Request) : Except String (Array SnapshotOutput) := do
-  unless request.registers.size == 16 && request.steps ≤ 64 do
-    throw "invalid registers or step budget"
-  unless request.registers.all (· < 2^64) do throw "register value exceeds 64 bits"
-  unless request.xmmRegisters.size == 16 &&
-      request.xmmRegisters.all (fun words => words.size == 4 && words.all (· < 2^32)) do
-    throw "invalid XMM register values"
-  unless request.memory.size ≤ 65536 && request.memory.all (· < 256) do
-    throw "invalid memory"
-  let codeEnd := request.codeBase + request.code.size
-  let dataEnd := request.memoryBase + request.memory.size
-  unless !request.code.isEmpty && request.code.all (· < 256) && codeEnd ≤ 2^64 do
-    throw "invalid code"
-  unless request.memoryBase ≤ request.writableBase && request.writableBase ≤ dataEnd && dataEnd ≤ 2^64 do
-    throw "invalid data range"
-  unless request.memory.isEmpty || codeEnd ≤ request.memoryBase || dataEnd ≤ request.codeBase do
-    throw "code overlaps data"
-  let inCode (a : Nat) := request.codeBase ≤ a && a < codeEnd
-  let memory : Memory := fun address =>
-    let a := address.toNat
-    if inCode a then Fin.ofNat 256 request.code[a - request.codeBase]!
-    else if request.memoryBase ≤ a && a < dataEnd then Fin.ofNat 256 request.memory[a - request.memoryBase]!
-    else 0
-  let kernel : Kernel := ⟨fun address =>
-    let a := address.toNat
-    if inCode a then .readExec
-    else if request.memoryBase ≤ a && a < request.writableBase then .readOnly
-    else if request.writableBase ≤ a && a < dataEnd then .readWrite
-    else .unmapped⟩
-  let initial : MachineState := {
-    registers := fun register => BitVec.ofNat 64 (request.registers[registerOrder.toList.idxOf register]!)
-    xmmRegisters := fun register => BitVec.ofNat 128
-      ((request.xmmRegisters[xmmOrder.toList.idxOf register]!).foldr (fun word value => word + 2^32 * value) 0)
-    signFlag := request.signFlag
-    zeroFlag := request.zeroFlag
-    carryFlag := request.carryFlag
-    overflowFlag := request.overflowFlag
-    memory
-    kernel
-    status := .running (BitVec.ofNat 64 request.codeBase) }
-  let mut current := initial
-  let mut observations := #[snapshot request.memoryBase request.memory.size initial]
-  for index in [:request.steps] do
-    let .running address := current.status | break
-    if address == BitVec.ofNat 64 request.stopAddress then break
-    let some undefinedFlags := request.nativeFlags[index]?
-      | throw "missing native flag observation"
-    current := step current undefinedFlags
-    observations := observations.push (snapshot request.memoryBase request.memory.size current)
-  unless observations.size == request.nativeFlags.size + 1 do
-    throw "unused native flag observations"
-  return observations
+@[inline] def Mapping.holds (mapping : Mapping) (address : BitVec 64) : Bool :=
+  mapping.base ≤ address.toNat && address.toNat < mapping.base + mapping.bytes.size
 
-def respond (line : String) : Json :=
-  match (Json.parse line).mapError toString >>= fromJson? >>= evaluate with
-  | .ok observations => Json.mkObj [("snapshots", toJson observations)]
-  | .error message => Json.mkObj [("error", toJson message)]
-def main : IO Unit := do
-  let input ← IO.getStdin
-  let output ← IO.getStdout
-  let line ← input.getLine
-  output.putStrLn (respond line).compress
-  output.flush
+def machine (mappings : Array Mapping) (observed : Snapshot) : MachineState where
+  registers register := BitVec.ofNat 64 observed.registers[registerOrder.toList.idxOf register]!
+  xmmRegisters register := BitVec.ofNat 128
+    (observed.xmmRegisters[xmmOrder.toList.idxOf register]!.foldr (fun word value => word + 2^32 * value) 0)
+  signFlag := observed.signFlag
+  zeroFlag := observed.zeroFlag
+  carryFlag := observed.carryFlag
+  overflowFlag := observed.overflowFlag
+  memory address := mappings.foldl (init := 0) fun byte mapping =>
+    if mapping.holds address then Fin.ofNat 256 mapping.bytes[address.toNat - mapping.base]!.toNat else byte
+  kernel := ⟨fun address => mappings.foldl (init := .unmapped) fun access mapping =>
+    if mapping.holds address then mapping.access else access⟩
+  status := observed.status
+
+-- Every writable byte is read back after every step, so a stray write cannot hide; holding the
+-- result as bytes again keeps a long run from stacking one closure per store.
+def settle (mappings : Array Mapping) (memory : Memory) : Array Mapping × Array (Nat × Nat) := Id.run do
+  let mut settled := #[]
+  let mut writes := #[]
+  for mapping in mappings do
+    let mut bytes := mapping.bytes
+    if mapping.access == .readWrite then
+      for offset in [:bytes.size] do
+        -- `BitVec.ofNat 64` would compute `2^64` afresh for each byte.
+        let byte := (memory (UInt64.ofNat (mapping.base + offset)).toBitVec).val.toUInt8
+        if byte != bytes[offset]! then
+          writes := writes.push (mapping.base + offset, byte.toNat)
+          bytes := bytes.set! offset byte
+    settled := settled.push { mapping with bytes }
+  return (settled, writes)
+
+def evaluate (request : Request) : Option Mismatch := Id.run do
+  let mut mappings := request.mappings
+  let mut current := machine mappings request.start
+  for observed in request.steps, index in [1:request.steps.size + 1] do
+    let decoded := match current.status with
+      | .running address => (current.code.fetch address).isSome
+      | _ => true
+    -- Linux's values stand in for the flags the instruction leaves undefined.
+    let next := step current ⟨observed.signFlag, observed.zeroFlag, observed.overflowFlag⟩
+    let (settled, writes) := settle mappings next.memory
+    let model := snapshot next writes
+    unless model == observed do return some { step := index, model, decoded }
+    mappings := settled
+    current := machine mappings model
+  return none
+
+def layout (file : ByteArray) : Option Layout :=
+  Exe.layout {
+    size := file.size
+    pages := (List.range ((file.size + 4095) / 4096)).map fun page =>
+      (file.extract (4096 * page) (4096 * page + 4096)).data.foldr (fun byte value => byte.toNat + 256 * value) 0 }
+
+-- With a path, the layout Lean reads from that ELF file; otherwise, a request on standard input.
+def main : List String → IO Unit
+  | [path] => do IO.println (toJson (layout (← IO.FS.readBinFile path))).compress
+  | _ => do
+    match (Json.parse (← (← IO.getStdin).getLine)).mapError toString >>= fromJson? with
+    | .ok request => IO.println (toJson (evaluate request)).compress
+    | .error message => throw (IO.userError message)

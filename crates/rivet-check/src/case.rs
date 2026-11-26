@@ -1,6 +1,7 @@
 use anyhow::{Result, ensure};
 use iced_x86::{BlockEncoderOptions, code_asm::*};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+use std::fmt::Write;
 
 // Register order matches the native and Lean initial-state arrays.
 pub const REGISTERS: [AsmRegister64; 16] = [
@@ -44,35 +45,42 @@ pub struct Case {
     pub read_only_data: bool,
     pub steps: usize,
 }
-// The same program and initial state are used by both runners.
-#[derive(Serialize)]
+// Named as `Rivet.Access` names them.
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutionInput {
-    pub code_base: u64,
-    pub code: Vec<u8>,
-    pub stop_address: u64,
-    pub registers: [u64; 16],
-    pub xmm_registers: [[u32; 4]; 16],
-    pub sign_flag: bool,
-    pub zero_flag: bool,
-    pub carry_flag: bool,
-    pub overflow_flag: bool,
-    pub memory_base: u64,
-    pub writable_base: u64,
-    pub memory: Vec<u8>,
-    pub steps: usize,
+pub enum Access {
+    ReadOnly,
+    ReadExec,
+    ReadWrite,
+}
+// A range of memory as it is mapped before the first instruction.
+#[derive(Serialize)]
+pub struct Mapping {
+    pub base: u64,
+    pub access: Access,
+    #[serde(serialize_with = "hex")]
+    pub bytes: Vec<u8>,
+}
+fn hex<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+    let mut text = String::with_capacity(2 * bytes.len());
+    for byte in bytes {
+        write!(text, "{byte:02x}").unwrap();
+    }
+    serializer.serialize_str(&text)
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Status {
     Running { address: u64 },
     Exited { code: u8 },
     Fault,
-    Outside { address: u64 },
     Signal { number: i32, address: u64 },
 }
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+// A machine state as Linux and the model both report it. `writes` are the writable bytes the
+// last step changed: with the mappings, that is all of memory.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub registers: [u64; 16],
@@ -82,7 +90,7 @@ pub struct Snapshot {
     pub carry_flag: bool,
     pub overflow_flag: bool,
     pub status: Status,
-    pub memory: Vec<u8>,
+    pub writes: Vec<(u64, u8)>,
 }
 
 fn random_word(generator: &mut fastrand::Rng) -> u64 {

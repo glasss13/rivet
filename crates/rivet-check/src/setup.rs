@@ -1,5 +1,5 @@
 //! Prepare the common initial state before either runner executes.
-use crate::case::{Case, ExecutionInput, REGISTERS, RSP};
+use crate::case::{Access, Case, Mapping, REGISTERS, RSP};
 use anyhow::{Context, Result, ensure};
 use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 use memmap2::{Mmap, MmapMut};
@@ -9,38 +9,55 @@ use nix::{
 };
 use std::ptr::NonNull;
 
-// Own the native allocations for as long as execution needs their addresses.
-pub struct NativeMemory {
-    pub code: Mmap,
-    pub offsets: Vec<u64>,
-    data: MmapMut,
+// The initial memory and registers. The native allocations are owned for as long as execution
+// needs their addresses.
+pub struct Prepared {
+    pub mappings: Vec<Mapping>,
+    pub registers: [u64; 16],
+    _code: Mmap,
+    _data: MmapMut,
 }
 
-pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
+pub fn prepare(case: &Case) -> Result<Prepared> {
     ensure!(
         !case.code.is_empty() && !case.data.is_empty(),
         "empty replay code or data"
     );
     let bytes = &case.code;
-    let offsets = case.offsets.clone();
     let mut code = MmapMut::map_anon(bytes.len())?;
     code.copy_from_slice(bytes);
     let code = code.make_exec()?;
     let page = sysconf(SysconfVar::PAGE_SIZE)?.context("cannot determine page size")? as usize;
     ensure!(code.len() < page, "test code exceeds one page");
     let continuation = code.as_ptr() as u64 + code.len() as u64;
-    let mut memory = NativeMemory {
-        code,
-        offsets,
-        data: MmapMut::map_anon(page * 3)?,
-    };
-    for (index, byte) in memory.data[..page].iter_mut().enumerate() {
+    let mut data = MmapMut::map_anon(page * 3)?;
+    for (index, byte) in data[..page].iter_mut().enumerate() {
         *byte = case.data[index % case.data.len()];
     }
-    let base = memory.data.as_ptr() as u64;
+    let base = data.as_ptr() as u64;
     let stack_offset = page + page / 2;
-    memory.data[stack_offset..stack_offset + 8].copy_from_slice(&continuation.to_le_bytes());
-    let memory_bytes = memory.data[..page * 2].to_vec();
+    data[stack_offset..stack_offset + 8].copy_from_slice(&continuation.to_le_bytes());
+    let mappings = vec![
+        Mapping {
+            base: code.as_ptr() as u64,
+            access: Access::ReadExec,
+            bytes: bytes.clone(),
+        },
+        Mapping {
+            base,
+            access: if case.read_only_data {
+                Access::ReadOnly
+            } else {
+                Access::ReadWrite
+            },
+            bytes: data[..page].to_vec(),
+        },
+        Mapping {
+            base: base + page as u64,
+            access: Access::ReadWrite,
+            bytes: data[page..page * 2].to_vec(),
+        },
+    ];
     let guard = base + (page * 2) as u64;
     // SAFETY: page-aligned subrange of this owned mapping; no slices are accessed afterward.
     unsafe {
@@ -121,24 +138,10 @@ pub fn prepare(case: &Case) -> Result<(ExecutionInput, NativeMemory)> {
             .any(|instruction| instruction.mnemonic() == Mnemonic::Syscall),
         "rivet-check does not execute syscall instructions"
     );
-    let input = ExecutionInput {
-        code_base: memory.code.as_ptr() as u64,
-        code: bytes.clone(),
-        stop_address: continuation,
+    Ok(Prepared {
+        mappings,
         registers: values,
-        xmm_registers: case.xmm_registers,
-        sign_flag: case.sign_flag,
-        zero_flag: case.zero_flag,
-        carry_flag: case.carry_flag,
-        overflow_flag: case.overflow_flag,
-        memory_base: base,
-        writable_base: if case.read_only_data {
-            base + page as u64
-        } else {
-            base
-        },
-        memory: memory_bytes,
-        steps: case.steps,
-    };
-    Ok((input, memory))
+        _code: code,
+        _data: data,
+    })
 }

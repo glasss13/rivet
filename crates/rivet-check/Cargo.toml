@@ -12,4 +12,4 @@ fastrand = "2.5.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subprocess = "1.2.3"
-iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "code_asm", "decoder", "instr_info"] }
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "code_asm", "decoder", "instr_info", "intel"] }

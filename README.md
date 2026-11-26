@@ -23,6 +23,8 @@ What a proof does not cover:
 
 - The CPU. The model is tested against real hardware (`cargo run -p rivet-check -- --cases 1000`),
   not proved equal to it.
+- Linux. `Starts` is tested against a real launch of the program, and each step after it
+  (`cargo run -p rivet-check -- --exec ./prog`), not proved.
 - Flags other than ZF, CF, SF and OF, instructions outside the supported subset, and concurrency.
 
 ## An example
