@@ -46,11 +46,6 @@ structure Block (code : Code) (start : MachineState) (changes : Changes) (post :
   private allChoices : current.Holds code → ∀ choices : FlagChoices, ∃ final,
     (∃ steps, execute steps current choices = final) ∧ final.Except start changes ∧ post final
 
-theorem Block.run {code : Code} {s : MachineState} {c : Changes} {Q : MachineState → Prop}
-    (block : Block code s c Q) (holds : s.Holds code) (choices : FlagChoices) :
-    ∃ final, (∃ steps, execute steps s choices = final) ∧ final.Except s c ∧ Q final :=
-  block.allChoices holds choices
-
 private theorem Block.of_step {c : Changes} {post : MachineState → Prop}
     (kept : ∀ final, post final → final.Except initial c)
     (transition : initial.Holds code → ∀ undefinedFlags, post (step initial undefinedFlags)) :

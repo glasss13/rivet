@@ -10,7 +10,7 @@ lake build
 
 ## What a theorem says
 
-`Block code s c Q` means that whenever `s.Holds code`, for every value the CPU might
+`Block code s c Q` means that when the code's bytes are in executable memory, for every value the CPU might
 leave in its undefined flags, execution from `s` reaches a state in finitely many steps that
 satisfies `Q` and is `s` except for the change `c`: every register and every byte of memory
 that `c` does not list is as it was. What the start state must satisfy is stated as ordinary
@@ -97,8 +97,8 @@ cargo run -p rivet-import -- ./prog --namespace Sum --output Sum.lean
 ```
 
 The module contains the ELF pages, `Sum.file`, its checked `Sum.layout`, and `Sum.code`.
-Each loadable segment has aliases for its mapped pages and byte range. Given
-`starts : Starts Sum.file Sum.layout stack s`, `starts.holds` proves `s.Holds Sum.code`.
+Each loadable segment has aliases for its mapped pages and byte range. Prove `Executes Sum.file Q`
+with `Executes.ofBlock Sum.layout_ok` by proving a block from each state satisfying `Starts`.
 
 ## API
 

@@ -73,7 +73,7 @@ private theorem stepOp_holds (holds : s.Holds code) :
   all_goals try simp only [validImul, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at *
   all_goals grind [canWrite_lea, canWrite_shift, canWrite_cmov]
 
-theorem MachineState.Holds.step {code : Code} (holds : s.Holds code) (flags : FlagValues) : (step s flags).Holds code := by
+private theorem MachineState.Holds.step {code : Code} (holds : s.Holds code) (flags : FlagValues) : (step s flags).Holds code := by
   unfold Rivet.step
   split <;> try exact holds
   split <;> first | exact stepOp_holds holds | exact holds
