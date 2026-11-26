@@ -1,17 +1,14 @@
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
 compile_error!("rivet-check currently requires x86-64 Linux with glibc");
 
-mod case;
 mod native;
-mod register;
-mod setup;
+mod process;
 
 use anyhow::{Context, Result, ensure};
-use case::{Case, ExecutionInput, Snapshot};
 use clap::Parser;
+use native::{Mapping, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
     time::Duration,
@@ -21,80 +18,54 @@ use subprocess::{Exec, Redirection};
 #[derive(Parser)]
 #[command(about = "Compare Rivet's interpreter with native x86-64 execution")]
 struct Arguments {
-    #[arg(long, default_value_t = 100)]
-    cases: usize,
-    #[arg(long, default_value_t = 42)]
-    seed: u64,
-    #[arg(long)]
-    replay: Option<PathBuf>,
+    /// Static x86-64 ELF executable to check.
+    program: PathBuf,
+    #[arg(long, default_value_t = 10_000)]
+    max_steps: usize,
 }
 
+#[derive(Serialize)]
+struct Request<'a> {
+    mappings: &'a [Mapping],
+    start: &'a Snapshot,
+    steps: &'a [Snapshot],
+}
+
+// The first step whose state the model computes differently, and whether its instruction decoded.
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum Response {
-    Success { snapshots: Vec<Snapshot> },
-    Error { error: String },
+struct Mismatch {
+    step: usize,
+    model: Snapshot,
+    decoded: bool,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FlagValues {
-    sign_flag: bool,
-    zero_flag: bool,
-    overflow_flag: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelRequest<'a> {
-    #[serde(flatten)]
-    input: &'a ExecutionInput,
-    native_flags: Vec<FlagValues>,
-}
-
-fn evaluate(model: &Path, request: &ModelRequest<'_>) -> Result<Response> {
+fn evaluate(model: &Path, mappings: &[Mapping], native: &[Snapshot]) -> Result<Option<Mismatch>> {
+    let request = Request {
+        mappings,
+        start: &native[0],
+        steps: &native[1..],
+    };
     let job = Exec::cmd(model)
-        .stdin(serde_json::to_vec(request)?)
+        .stdin(serde_json::to_vec(&request)?)
         .stdout(Redirection::Pipe)
         .start()
         .context("starting Lean model")?;
 
     let process = job.processes[0].clone();
-    let capture = job.capture_timeout(Duration::from_secs(5));
+    // The model reads back every writable byte after every step.
+    let deadline = Duration::from_secs(5) + Duration::from_millis(10) * native.len() as u32;
+    let capture = job.capture_timeout(deadline);
     if capture.is_err() {
         let _ = process.kill();
     }
-    let capture = capture.context("evaluating Lean model (five-second deadline)")?;
+    let capture =
+        capture.with_context(|| format!("evaluating Lean model ({deadline:?} deadline)"))?;
     ensure!(
         capture.exit_status.success(),
         "model exited with {}",
         capture.exit_status
     );
     serde_json::from_slice(&capture.stdout).context("invalid model response")
-}
-
-fn check(model: &Path, case: &Case) -> Result<Option<String>> {
-    let (input, memory) = setup::prepare(case)?;
-    let native = native::execute(&input, &memory)?;
-    let request = ModelRequest {
-        input: &input,
-        // Snapshot zero is the initial state; instruction zero uses snapshot one.
-        native_flags: native
-            .iter()
-            .skip(1)
-            .map(|snapshot| FlagValues {
-                sign_flag: snapshot.sign_flag,
-                zero_flag: snapshot.zero_flag,
-                overflow_flag: snapshot.overflow_flag,
-            })
-            .collect(),
-    };
-    match evaluate(model, &request)? {
-        Response::Success { snapshots } => {
-            Ok((snapshots != native).then(|| "execution traces differ".into()))
-        }
-        Response::Error { error } => Ok(Some(format!("model rejected request: {error}"))),
-    }
 }
 
 fn run(args: Arguments) -> Result<u8> {
@@ -109,32 +80,18 @@ fn run(args: Arguments) -> Result<u8> {
         "Lean model build failed"
     );
 
-    if let Some(path) = args.replay {
-        let case = serde_json::from_slice(&fs::read(path)?)?;
-        if let Some(reason) = check(&model, &case)? {
-            eprintln!("MISMATCH: {reason}");
-            return Ok(1);
-        }
-        println!("Replay passed.");
-        return Ok(0);
-    }
-
-    let mut generator = fastrand::Rng::with_seed(args.seed);
-    for idx in 0..args.cases {
-        let case = case::generate(&mut generator)?;
-        if let Some(reason) =
-            check(&model, &case).with_context(|| format!("case {idx}, seed {}", args.seed))?
-        {
-            eprintln!(
-                "MISMATCH: case {idx}, seed {}: {reason}\n{}",
-                args.seed,
-                serde_json::to_string_pretty(&case)?
-            );
-            return Ok(1);
-        }
-    }
-    println!("PASS: {} generated cases, seed {}.", args.cases, args.seed);
-    Ok(0)
+    Ok(
+        match process::check(&model, &args.program, args.max_steps)? {
+            Ok(outcome) => {
+                println!("PASS: {outcome}");
+                0
+            }
+            Err(reason) => {
+                eprintln!("{reason}");
+                1
+            }
+        },
+    )
 }
 
 fn main() -> ExitCode {
