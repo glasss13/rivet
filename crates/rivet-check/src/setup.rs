@@ -89,6 +89,15 @@ pub fn prepare(case: &Case) -> Result<Prepared> {
     let instructions: Vec<_> = Decoder::new(64, bytes, DecoderOptions::NONE)
         .into_iter()
         .collect();
+    let decoded_offsets: Vec<u64> = instructions
+        .iter()
+        .map(|instruction| instruction.ip())
+        .chain(std::iter::once(bytes.len() as u64))
+        .collect();
+    ensure!(
+        case.offsets == decoded_offsets,
+        "case offsets do not match decoded instruction boundaries"
+    );
     let register_index = |register| {
         REGISTERS
             .iter()

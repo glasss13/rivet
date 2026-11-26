@@ -17,14 +17,37 @@ instance : ToJson (BitVec width) where
 instance : FromJson ByteArray where
   fromJson? json := do
     let digits := (← fromJson? json : String).toUTF8
-    let digit (index : Nat) : UInt8 :=
-      let character := digits[index]!
-      if character < 58 then character - 48 else character - 87
-    return (List.range (digits.size / 2)).foldl
-      (fun bytes index => bytes.push (16 * digit (2 * index) + digit (2 * index + 1))) .empty
+    unless digits.size % 2 == 0 do throw "odd-length hex string"
+    let nibble (character : UInt8) : Except String UInt8 :=
+      if 48 ≤ character && character ≤ 57 then pure (character - 48)
+      else if 97 ≤ character && character ≤ 102 then pure (character - 87)
+      else if 65 ≤ character && character ≤ 70 then pure (character - 55)
+      else throw "invalid hex digit"
+    let mut bytes := ByteArray.emptyWithCapacity (digits.size / 2)
+    for index in [:digits.size / 2] do
+      let high ← nibble digits[2 * index]!
+      let low ← nibble digits[2 * index + 1]!
+      bytes := bytes.push (16 * high + low)
+    return bytes
 
 deriving instance FromJson for Access
-deriving instance FromJson, ToJson for ExecutionStatus
+inductive ObservedStatus where
+  | running (address : BitVec 64)
+  | exited (code : BitVec 8)
+  | fault
+  | signal (number : Int) (address : BitVec 64)
+  deriving BEq, FromJson, ToJson
+
+def toObserved : ExecutionStatus → ObservedStatus
+  | .running address => .running address
+  | .exited code => .exited code
+  | .fault => .fault
+
+def ObservedStatus.toExecution : ObservedStatus → ExecutionStatus
+  | .running address => .running address
+  | .exited code => .exited code
+  | .fault | .signal .. => .fault
+
 instance : ToJson Segment where
   toJson segment := Json.mkObj [("vaddr", toJson segment.vaddr), ("memsz", toJson segment.memsz),
     ("offset", toJson segment.offset), ("filesz", toJson segment.filesz),
@@ -46,7 +69,7 @@ structure Snapshot where
   zeroFlag : Bool
   carryFlag : Bool
   overflowFlag : Bool
-  status : ExecutionStatus
+  status : ObservedStatus
   writes : Array (Nat × Nat)
   deriving BEq, FromJson, ToJson
 
@@ -77,7 +100,7 @@ def snapshot (state : MachineState) (writes : Array (Nat × Nat)) : Snapshot whe
   zeroFlag := state.zeroFlag
   carryFlag := state.carryFlag
   overflowFlag := state.overflowFlag
-  status := state.status
+  status := toObserved state.status
   writes
 
 @[inline] def Mapping.holds (mapping : Mapping) (address : BitVec 64) : Bool :=
@@ -95,7 +118,26 @@ def machine (mappings : Array Mapping) (observed : Snapshot) : MachineState wher
     if mapping.holds address then Fin.ofNat 256 mapping.bytes[address.toNat - mapping.base]!.toNat else byte
   kernel := ⟨fun address => mappings.foldl (init := .unmapped) fun access mapping =>
     if mapping.holds address then mapping.access else access⟩
-  status := observed.status
+  status := observed.status.toExecution
+
+inductive DecodeOutcome where
+  | ok
+  | noExec
+  | rejected
+  deriving BEq
+
+def decodeOutcome (code : Code) (address : BitVec 64) : DecodeOutcome :=
+  let rec read : Nat → Nat → DecodeState → DecodeOutcome
+    | 0, _, _ => .rejected
+    | fuel+1, offset, state =>
+      match code (address + BitVec.ofNat 64 offset) with
+      | none => .noExec
+      | some byte =>
+        match feed state byte with
+        | .reject => .rejected
+        | .done _ => .ok
+        | .more next => read fuel (offset + 1) next
+  read 15 0 (.opcode {})
 
 -- Every writable byte is read back after every step, so a stray write cannot hide; holding the
 -- result as bytes again keeps a long run from stacking one closure per store.
@@ -118,14 +160,15 @@ def evaluate (request : Request) : Option Mismatch := Id.run do
   let mut mappings := request.mappings
   let mut current := machine mappings request.start
   for observed in request.steps, index in [1:request.steps.size + 1] do
-    let decoded := match current.status with
-      | .running address => (current.code.fetch address).isSome
-      | _ => true
+    let outcome := match current.status with
+      | .running address => decodeOutcome current.code address
+      | _ => .ok
     -- Linux's values stand in for the flags the instruction leaves undefined.
     let next := step current ⟨observed.signFlag, observed.zeroFlag, observed.overflowFlag⟩
     let (settled, writes) := settle mappings next.memory
     let model := snapshot next writes
-    unless model == observed do return some { step := index, model, decoded }
+    if outcome == .rejected || model != observed then
+      return some { step := index, model, decoded := outcome != .rejected }
     mappings := settled
     current := machine mappings model
   return none

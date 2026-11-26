@@ -92,9 +92,35 @@ impl TracedChild {
         }
     }
 
-    fn snapshot(&self, signal: Signal, writes: Vec<(u64, u8)>) -> Result<Snapshot> {
+    fn snapshot(&self, signal: Signal, initial: bool, writes: Vec<(u64, u8)>) -> Result<Snapshot> {
         let registers = ptrace::getregs(self.pid)?;
         let floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(self.pid)?;
+        let status = match signal {
+            Signal::SIGTRAP => {
+                // Stepping over a real `syscall` stops with TRAP_BRKPT on this kernel; reject
+                // `int3` (SI_KERNEL) and delivered SIGTRAP (SI_USER).
+                let step_trap = initial
+                    || matches!(
+                        ptrace::getsiginfo(self.pid)?.si_code,
+                        libc::TRAP_TRACE | libc::TRAP_BRKPT
+                    );
+                if step_trap {
+                    Status::Running {
+                        address: registers.rip,
+                    }
+                } else {
+                    Status::Signal {
+                        number: signal as i32,
+                        address: registers.rip,
+                    }
+                }
+            }
+            Signal::SIGSEGV | Signal::SIGBUS => Status::Fault,
+            _ => Status::Signal {
+                number: signal as i32,
+                address: registers.rip,
+            },
+        };
         Ok(Snapshot {
             registers: register_values(&registers),
             xmm_registers: xmm_values(&floating_point),
@@ -102,27 +128,18 @@ impl TracedChild {
             zero_flag: registers.eflags & (1 << 6) != 0,
             carry_flag: registers.eflags & 1 != 0,
             overflow_flag: registers.eflags & (1 << 11) != 0,
-            status: match signal {
-                Signal::SIGTRAP => Status::Running {
-                    address: registers.rip,
-                },
-                Signal::SIGSEGV | Signal::SIGBUS => Status::Fault,
-                _ => Status::Signal {
-                    number: signal as i32,
-                    address: registers.rip,
-                },
-            },
+            status,
             writes,
         })
     }
 
-    /// The state now and after each instruction, until `stop` says so at an address, the child
-    /// is no longer running, or `steps` instructions have run.
+    /// The state now and after each instruction, until `stop` says so at a running state, the
+    /// child is no longer running, or `steps` instructions have run.
     pub fn trace(
         &mut self,
         mappings: &[Mapping],
         steps: usize,
-        stop: impl Fn(u64) -> Result<bool>,
+        mut stop: impl FnMut(&Snapshot) -> Result<bool>,
     ) -> Result<Vec<Snapshot>> {
         let memory = File::open(format!("/proc/{}/mem", self.pid))?;
         let mut writable: Vec<_> = mappings
@@ -130,13 +147,10 @@ impl TracedChild {
             .filter(|mapping| mapping.access == Access::ReadWrite)
             .map(|mapping| (mapping.base, mapping.bytes.clone()))
             .collect();
-        let mut snapshots = vec![self.snapshot(Signal::SIGTRAP, vec![])?];
+        let mut snapshots = vec![self.snapshot(Signal::SIGTRAP, true, vec![])?];
         for _ in 0..steps {
             let last = snapshots.last().unwrap();
-            let Status::Running { address } = last.status else {
-                break;
-            };
-            if stop(address)? {
+            if !matches!(last.status, Status::Running { .. }) || stop(last)? {
                 break;
             }
             ptrace::step(self.pid, None)?;
@@ -162,7 +176,7 @@ impl TracedChild {
                         }
                         *bytes = read;
                     }
-                    self.snapshot(signal, writes)?
+                    self.snapshot(signal, false, writes)?
                 }
                 status => bail!("unexpected wait status {status:?}"),
             };
@@ -183,6 +197,7 @@ impl Drop for TracedChild {
 
 pub fn execute(case: &Case, prepared: &Prepared) -> Result<Vec<Snapshot>> {
     let code_base = prepared.mappings[0].base;
+    let code_len = case.code.len() as u64;
     let mut child = TracedChild::start(None)?;
     let mut registers = ptrace::getregs(child.pid)?;
     set_registers(&mut registers, prepared.registers);
@@ -198,12 +213,40 @@ pub fn execute(case: &Case, prepared: &Prepared) -> Result<Vec<Snapshot>> {
     let mut floating_point = ptrace::getregset::<ptrace::regset::NT_PRFPREG>(child.pid)?;
     set_xmm_registers(&mut floating_point, case.xmm_registers);
     ptrace::setregset::<ptrace::regset::NT_PRFPREG>(child.pid, floating_point)?;
-    child.trace(&prepared.mappings, case.steps, |address| {
-        let offset = address.wrapping_sub(code_base);
+    let in_bounds = |address: u64, allow_end: bool| -> Result<bool> {
+        let Some(offset) = address.checked_sub(code_base) else {
+            bail!("native execution left test code");
+        };
+        let within = if allow_end {
+            offset <= code_len
+        } else {
+            offset < code_len
+        };
         ensure!(
-            case.offsets.contains(&offset),
+            within && case.offsets.contains(&offset),
             "native execution left test code"
         );
-        Ok(offset == case.code.len() as u64)
-    })
+        Ok(offset == code_len)
+    };
+    let snapshots = child.trace(&prepared.mappings, case.steps, |snapshot| {
+        let Status::Running { address } = snapshot.status else {
+            return Ok(true);
+        };
+        in_bounds(address, true)
+    })?;
+    let initial = &snapshots[0];
+    ensure!(
+        initial.registers == prepared.registers
+            && initial.xmm_registers == case.xmm_registers
+            && initial.sign_flag == case.sign_flag
+            && initial.zero_flag == case.zero_flag
+            && initial.carry_flag == case.carry_flag
+            && initial.overflow_flag == case.overflow_flag
+            && initial.status == Status::Running { address: code_base },
+        "native worker initial state did not match prepared case"
+    );
+    if let Status::Running { address } = snapshots.last().unwrap().status {
+        let _ = in_bounds(address, true)?;
+    }
+    Ok(snapshots)
 }

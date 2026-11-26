@@ -50,10 +50,17 @@ fn starts(layout: &Layout, file: &[u8], pid: Pid) -> Result<Result<Vec<Mapping>,
         let mut bytes = vec![0; length as usize];
         memory.read_exact_at(&mut bytes, base).map(|()| bytes)
     };
-    let maps: Vec<_> = fs::read_to_string(format!("/proc/{pid}/maps"))?
-        .lines()
+    let raw_maps = fs::read(format!("/proc/{pid}/maps"))?;
+    let maps: Vec<_> = raw_maps
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
         .map(|line| {
-            let (range, permissions) = line.split_once(' ')?;
+            let mut fields = line.splitn(3, |&byte| byte == b' ');
+            let range = std::str::from_utf8(fields.next()?).ok()?;
+            let permissions = std::str::from_utf8(fields.next()?).ok()?;
+            if permissions.len() < 3 {
+                return None;
+            }
             let (start, end) = range.split_once('-')?;
             let address = |text| u64::from_str_radix(text, 16).ok();
             Some((address(start)?..address(end)?, permissions[..3].to_owned()))
@@ -86,6 +93,14 @@ fn starts(layout: &Layout, file: &[u8], pid: Pid) -> Result<Result<Vec<Mapping>,
                 "access: the page at {page:#x} is {found}, its segment says {expected}"
             );
         }
+        require!(
+            segment
+                .offset
+                .checked_add(segment.filesz)
+                .is_some_and(|end| end as usize <= file.len()),
+            "same: segment at {:#x} extends past end of file",
+            segment.vaddr
+        );
         let bytes = read(base, length)?;
         for index in 0..segment.memsz {
             let address = segment.vaddr + index;
@@ -135,6 +150,7 @@ fn starts(layout: &Layout, file: &[u8], pid: Pid) -> Result<Result<Vec<Mapping>,
 
 /// `Ok` says what agreed; `Err` is the first thing that did not.
 pub fn check(model: &Path, path: &Path, max_steps: usize) -> Result<Result<String, String>> {
+    let file = fs::read(path)?;
     let layout = Command::new(model)
         .arg(path)
         .stderr(Stdio::inherit())
@@ -148,17 +164,52 @@ pub fn check(model: &Path, path: &Path, max_steps: usize) -> Result<Result<Strin
         )));
     };
     let mut child = TracedChild::start(Some(&CString::new(path.as_os_str().as_bytes())?))?;
-    let mappings = match starts(&layout, &fs::read(path)?, child.pid)? {
+    let mappings = match starts(&layout, &file, child.pid)? {
         Ok(mappings) => mappings,
         Err(reason) => return Ok(Err(format!("MISMATCH: Starts.{reason}"))),
     };
-    let native = child.trace(&mappings, max_steps, |_| Ok(false))?;
+    let exec_bytes = |address: u64| {
+        mappings
+            .iter()
+            .filter(|mapping| mapping.access == Access::ReadExec)
+            .find_map(|mapping| {
+                mapping
+                    .bytes
+                    .get(address.checked_sub(mapping.base)? as usize..)
+            })
+    };
+    let mut stopped_syscall: Option<(usize, u64, u64)> = None;
+    let mut step_index = 0usize;
+    let native = child.trace(&mappings, max_steps, |snapshot| {
+        step_index += 1;
+        let Status::Running { address } = snapshot.status else {
+            return Ok(true);
+        };
+        // Never execute an unmodeled syscall natively; only unprefixed `exit_group` (231) is modeled.
+        if let Some(bytes) = exec_bytes(address) {
+            let decoded = Decoder::with_ip(64, bytes, address, DecoderOptions::NONE).decode();
+            if decoded.mnemonic() == Mnemonic::Syscall
+                && !(bytes.starts_with(&[0x0f, 0x05]) && snapshot.registers[0] == 231)
+            {
+                stopped_syscall = Some((step_index, snapshot.registers[0], address));
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })?;
     let Some(mismatch) = evaluate(model, &mappings, &native)? else {
+        if let Some((step, rax, address)) = stopped_syscall {
+            return Ok(Err(format!(
+                "UNSUPPORTED: step {step}: syscall {rax} at {address:#x}"
+            )));
+        }
         let steps = native.len() - 1;
-        return Ok(Ok(match native[steps].status {
-            Status::Running { .. } => format!("Starts holds; {steps} steps agree (--max-steps)"),
-            ref end => format!("Starts holds; {steps} steps agree, ending in {end:?}"),
-        }));
+        return Ok(match native[steps].status {
+            Status::Running { .. } => Err(format!(
+                "INCOMPLETE: Starts holds; {steps} steps agree (--max-steps {max_steps})"
+            )),
+            ref end => Ok(format!("Starts holds; {steps} steps agree, ending in {end:?}")),
+        });
     };
 
     let step = mismatch.step;
@@ -166,16 +217,8 @@ pub fn check(model: &Path, path: &Path, max_steps: usize) -> Result<Result<Strin
     let Status::Running { address } = native[step - 1].status else {
         unreachable!("tracing stops at the first state that is not running")
     };
-    let instruction = mappings
-        .iter()
-        .filter(|mapping| mapping.access == Access::ReadExec)
-        .find_map(|mapping| {
-            mapping
-                .bytes
-                .get(address.checked_sub(mapping.base)? as usize..)
-        })
+    let instruction = exec_bytes(address)
         .map(|bytes| Decoder::with_ip(64, bytes, address, DecoderOptions::NONE).decode());
-    // The model faults on whatever it does not cover, so a fault Linux did not take is sorted here.
     let alone = mismatch.model.status == Status::Fault && native[step].status != Status::Fault;
     let (linux, model) = (
         serde_json::to_value(&native[step])?,
@@ -197,7 +240,7 @@ pub fn check(model: &Path, path: &Path, max_steps: usize) -> Result<Result<Strin
         Some(instruction) if alone && instruction.mnemonic() == Mnemonic::Syscall => {
             format!("UNSUPPORTED: step {step}: syscall {rax} at {address:#x}")
         }
-        Some(instruction) if alone && !mismatch.decoded => {
+        Some(instruction) if !mismatch.decoded => {
             format!("UNSUPPORTED: step {step}: instruction `{instruction}` at {address:#x}")
         }
         _ => format!(
