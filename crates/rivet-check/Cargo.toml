@@ -6,10 +6,8 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
-memmap2 = "0.9.12"
-nix = { version = "0.31.3", features = ["ptrace", "process", "signal", "mman", "feature"] }
-fastrand = "2.5.0"
+nix = { version = "0.31.3", features = ["ptrace", "process", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subprocess = "1.2.3"
-iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "code_asm", "decoder", "instr_info", "intel"] }
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "intel"] }

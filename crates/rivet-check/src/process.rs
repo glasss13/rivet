@@ -1,8 +1,7 @@
 //! A real program under real Linux: `Rivet.Starts` at its entry, then every instruction.
 use crate::{
-    case::{Access, Mapping, Status},
     evaluate,
-    native::TracedChild,
+    native::{Access, Mapping, Status, TracedChild},
 };
 use anyhow::{Context, Result};
 use iced_x86::{Decoder, DecoderOptions, Mnemonic};
@@ -163,7 +162,7 @@ pub fn check(model: &Path, path: &Path, max_steps: usize) -> Result<Result<Strin
             path.display()
         )));
     };
-    let mut child = TracedChild::start(Some(&CString::new(path.as_os_str().as_bytes())?))?;
+    let mut child = TracedChild::start(&CString::new(path.as_os_str().as_bytes())?)?;
     let mappings = match starts(&layout, &file, child.pid)? {
         Ok(mappings) => mappings,
         Err(reason) => return Ok(Err(format!("MISMATCH: Starts.{reason}"))),
@@ -208,7 +207,9 @@ pub fn check(model: &Path, path: &Path, max_steps: usize) -> Result<Result<Strin
             Status::Running { .. } => Err(format!(
                 "INCOMPLETE: Starts holds; {steps} steps agree (--max-steps {max_steps})"
             )),
-            ref end => Ok(format!("Starts holds; {steps} steps agree, ending in {end:?}")),
+            ref end => Ok(format!(
+                "Starts holds; {steps} steps agree, ending in {end:?}"
+            )),
         });
     };
 
