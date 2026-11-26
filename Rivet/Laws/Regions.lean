@@ -81,24 +81,6 @@ theorem Region.Has.part_at {r : Region} {pointer : BitVec 64} {size : Nat} (plac
   have := placed.finish
   constructor <;> simp only [Region.part_base, Region.part_length] <;> bv_omega
 
--- A permission of a kernel made from regions, from that list.
-theorem Kernel.reads_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (readable : r.readable = true) :
-    (Kernel.ofRegions regions).Reads r := by
-  intro address inside
-  have h : (regions.any fun region => region.readable && decide (region.Contains address)) = true := by
-    simp only [List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-    exact ⟨r, member, readable, inside⟩
-  simp only [Kernel.readable, Kernel.ofRegions, h, ↓reduceIte]
-  split <;> rfl
-
-theorem Kernel.writes_of_mem {regions : List Region} {r : Region} (member : r ∈ regions) (writable : r.writable = true) :
-    (Kernel.ofRegions regions).Writes r := by
-  intro address inside
-  have h : (regions.any fun region => region.writable && decide (region.Contains address)) = true := by
-    simp only [List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-    exact ⟨r, member, writable, inside⟩
-  simp only [Kernel.writable, Kernel.ofRegions, h, ↓reduceIte, Access.writable]
-
 -- Two parts of one region are apart when their offsets say so.
 theorem Region.part_apart (r : Region) {offset length offset' length' : Nat} (inside : offset + length ≤ r.length)
     (inside' : offset' + length' ≤ r.length) (apart : offset + length ≤ offset' ∨ offset' + length' ≤ offset) :
@@ -245,10 +227,10 @@ end Region.Same
 
 -- A block leaves alone every byte of a region its change misses.
 theorem MachineState.Except.same {t s : MachineState} {c : Changes} (kept : t.Except s c) {r : Region}
-    (misses : c.Misses r.base (r.base + r.length)) : r.Same s.memory t.memory := by
+    (limited : c.unrestricted = false) (misses : c.Misses r.base (r.base + r.length)) : r.Same s.memory t.memory := by
   intro address inside
   have bound := address.isLt
-  have same := kept.sameMemory address 1
+  have same := kept.sameMemory limited address 1
     (fun range member => by have := misses range member; simp only [Region.Contains] at inside; omega) (by omega)
   rw [readBytes_one, readBytes_one] at same
   have := congrArg BitVec.toNat same
@@ -292,10 +274,10 @@ theorem store {c : Changes} {memory earlier bytes : Memory} {r : Region} {pointe
 
 -- A nested block whose change this one covers.
 theorem nested {c inner : Changes} {t u : MachineState} {earlier : Memory} (kept : t.Except u inner)
-    (within : ∀ range ∈ inner.memory, Changes.Covers c range) (rest : Changes.Same c u.memory earlier) :
+    (limited : inner.unrestricted = false) (within : ∀ range ∈ inner.memory, Changes.Covers c range) (rest : Changes.Same c u.memory earlier) :
     Changes.Same c t.memory earlier := by
   intro address size misses fits
-  rw [kept.sameMemory address size (fun range member => by
+  rw [kept.sameMemory limited address size (fun range member => by
     obtain ⟨listed, listedIn, low, high⟩ := within range member
     have := misses listed listedIn; omega) fits]
   exact rest address size misses fits

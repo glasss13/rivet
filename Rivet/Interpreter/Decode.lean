@@ -6,6 +6,9 @@ namespace Rivet
 
 abbrev Code := BitVec 64 → Option (Fin 256)
 
+def Code.ofBytes (base : BitVec 64) (bytes : List (Fin 256)) : Code := fun address =>
+  if base.toNat ≤ address.toNat then bytes[address.toNat - base.toNat]? else none
+
 structure DecodePrefixes where
   word : Bool := false
   rep : Bool := false

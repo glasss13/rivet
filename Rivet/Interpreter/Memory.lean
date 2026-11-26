@@ -82,11 +82,4 @@ def Kernel.readable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.ac
 def Kernel.writable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).writable
 def Kernel.executable (kernel : Kernel) (address : BitVec 64) : Bool := (kernel.access address).executable
 
-def Kernel.ofRegions (regions : List Region) : Kernel where
-  access address :=
-    if regions.any fun region => region.writable && decide (region.Contains address) then .readWrite
-    else if regions.any fun region => region.readable && decide (region.Contains address) then .readOnly
-    else if regions.any fun region => decide (region.Contains address) then .protNone
-    else .unmapped
-
 end Rivet

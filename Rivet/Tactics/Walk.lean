@@ -183,7 +183,7 @@ meta partial def Walk.regionStep (w : Walk) (r memory : Expr) :
       | .inl proof =>
         let misses ← mkExpectedTypeHint proof (← mkAppM ``Changes.Misses #[c, low, high])
         return ← next (mkApp (mkConst ``MachineState.memory) earlier)
-          (← mkAppOptM ``MachineState.Except.same #[state, earlier, c, kept, r, misses])
+          (← mkAppOptM ``MachineState.Except.same #[state, earlier, c, kept, r, ← mkEqRefl (mkConst ``Bool.false), misses])
       | .inr range => stop := stop <|> some do
         let where_ := m!"stopped at the nested block that ended in {← describe state}: "
         let some other := (← instantiateMVars range).app1? ``Region.range

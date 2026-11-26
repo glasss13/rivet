@@ -52,7 +52,7 @@ meta partial def sameMemory (scope : Walk) (c memory start : Expr) : MetaM Expr 
           let some r := (← instantiateMVars range).app1? ``Region.range | return none
           covers c r with
       | .inl proof =>
-        return ← mkAppOptM ``Changes.Same.nested #[c, inner, state, earlier, start, kept, proof,
+        return ← mkAppOptM ``Changes.Same.nested #[c, inner, state, earlier, start, kept, ← mkEqRefl (mkConst ``Bool.false), proof,
           ← sameMemory scope c (mkApp (mkConst ``MachineState.memory) earlier) start]
       | .inr range => missing := missing <|> some range
     if let some range := missing then
@@ -76,7 +76,7 @@ meta partial def sameXmm (history : History) (c state s : Expr) : MetaM (Option 
       mkForallFVars #[register] (← mkArrow
         (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.xmm) inner, register])
         (← mkAppM ``Membership.mem #[mkApp (mkConst ``Changes.xmm) c, register]))
-    return some (← mkAppM ``Changes.SameXmm.nested #[kept, ← mkDecideProof within, rest])
+    return some (← mkAppM ``Changes.SameXmm.nested #[kept, ← mkEqRefl (mkConst ``Bool.false), ← mkDecideProof within, rest])
   return none
 
 -- `∀ register, register ∉ c.… → …`, the statement of `Except` for a register file: a case for each
@@ -108,17 +108,20 @@ meta partial def leaves (scope : Walk) (goal : MVarId) : TacticM (Array (MVarId 
   -- `t.Except s c`: each register and vector register outside `c` is as it was, each store is into a
   -- region `c` lists, and the kernel is as it was unless `c` lists it.
   if let some (t, s, c) := type.app3? ``MachineState.Except then
+    if (← whnfD (mkApp (mkConst ``Changes.unrestricted) c)).isConstOf ``Bool.true then
+      goal.assign (← mkAppOptM ``MachineState.Except.all #[t, s, c, ← mkEqRefl (mkConst ``Bool.true)])
+      return #[]
     if t == s then
       goal.assign (← mkAppOptM ``MachineState.Except.refl #[s, c])
       return #[]
     let statement ← inferType (← mkAppOptM ``MachineState.Except.mk #[t, s, c])
     let .forallE _ registersType (.forallE _ xmmType _ _) _ := statement
       | throwError "rivet_known: unexpected statement{indentExpr statement}"
-    let (registers, found) ← unlisted c ``Changes.registers registersType
+    let (registers, found) ← unlisted c ``Changes.registers registersType.bindingBody!
     let (xmm, found) ← match ← sameXmm scope.history c t s with
       | some same => pure (same, found)
       | none => do
-        let (xmm, parts) ← unlisted c ``Changes.xmm xmmType
+        let (xmm, parts) ← unlisted c ``Changes.xmm xmmType.bindingBody!
         pure (xmm, found ++ parts)
     let memory ← try
         sameMemory scope c (mkApp (mkConst ``MachineState.memory) t) (mkApp (mkConst ``MachineState.memory) s)
@@ -134,7 +137,9 @@ meta partial def leaves (scope : Walk) (goal : MVarId) : TacticM (Array (MVarId 
         let kept ← mkFreshExprSyntheticOpaqueMVar same
         pure (mkLambda `out .default out kept, found.push (kept.mvarId!, some m!"the kernel is not in the \
           change{indentExpr c}\nso it must end as it started. If it does change, list it: `kernel := true`."))
-    goal.assign (← mkAppOptM ``MachineState.Except.mk #[t, s, c, registers, xmm, memory, kernel])
+    let guard := mkLambda `limited .default registersType.bindingDomain!
+    goal.assign (← mkAppOptM ``MachineState.Except.mk
+      #[t, s, c, guard registers, guard xmm, guard memory, guard kernel])
     return found
   -- A place is one part: a lookup first, and its two bounds only when that finds nothing.
   if !type.isAppOf ``Region.Has && (← splits type) then

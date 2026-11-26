@@ -15,9 +15,9 @@ open Rivet
 
 ## Blocks & Loops
 
-- `Block program s c Q` (5th arg `t := s` is the current state while stepping): from `s`, for all undefined flag values, `program` terminates in a state `t` with `Q t` and `t.Except s c`.
-- `Changes`: `{ registers := [...], xmm := [...], memory := [...], kernel := true }` (`registers : List Reg`, `xmm : List Xmm`, all default `[]`; `kernel : Bool`, default `false`). Multi-line fields must start in the same column, or Lean reports `expected '}'`.
-- `t.Except s c`: every register not in `c.registers`, every `xmmRegisters` entry not in `c.xmm`, and every memory read disjoint from `c.memory` equals `s`; and `t.kernel = s.kernel` unless `c.kernel`. Does not cover flags or `status` (state those in `Q`). Saved-and-restored registers do not need to be listed.
+- `Block code s c Q` (5th arg `t := s` is the current state while stepping): while the code's bytes sit in executable memory, for all undefined flag values, execution reaches a state `t` with `Q t` and `t.Except s c`.
+- `Changes`: `{ registers := [...], xmm := [...], memory := [...], kernel := true }` (`registers : List Reg`, `xmm : List Xmm`, all default `[]`; `kernel : Bool`, default `false`). `.all` permits every change. Multi-line fields must start in the same column, or Lean reports `expected '}'`.
+- `t.Except s c`: for a restricted change, every register not in `c.registers`, every `xmmRegisters` entry not in `c.xmm`, and every memory read disjoint from `c.memory` equals `s`; and `t.kernel = s.kernel` unless `c.kernel`. Does not cover flags or `status` (state those in `Q`). Saved-and-restored registers do not need to be listed.
 
 Closing and composing blocks:
 
@@ -30,8 +30,8 @@ Closing and composing blocks:
 ```lean
 Block.loop (invariant : MachineState → Prop) (measure : MachineState → Nat) (holds : invariant t)
   (body : ∀ cur, cur.Except t c → invariant cur →
-    Block program t c (fun next => invariant next ∧ measure next < measure cur ∨ exit next) cur) :
-  Block program t c exit
+    Block code t c (fun next => invariant next ∧ measure next < measure cur ∨ exit next) cur) :
+  Block code t c exit
 ```
 
 Example:
@@ -44,7 +44,7 @@ structure Filling (dst : Region) (s t : MachineState) : Prop where
   positive : 0 < (t.registers .rdx).toNat
 
 theorem fill (dst : Region) (s : MachineState) (writes : s.kernel.Writes dst) (start : Filling dst s s) :
-    Block program s { registers := [.rdi, .rdx], memory := [dst] } (fun t => t.status = .running 0x100b) := by
+    Block code s { registers := [.rdi, .rdx], memory := [dst] } (fun t => t.status = .running 0x100b) := by
   refine Block.loop (Filling dst s) (fun t => (t.registers .rdx).toNat) start fun cur kept inv => ?_
   have fits := dst.fits
   have byte : dst.Has (cur.registers .rdi) 1 := inv.left.part (Nat.le_refl _) (by rivet_arith [inv])
@@ -172,8 +172,6 @@ Region.root_has start len r w fits : (Region.root start len r w fits).Has start 
 Region.part_apart r inside inside' (apart : off + len ≤ off' ∨ off' + len' ≤ off) :
   (r.part off len inside).Apart (r.part off' len' inside')
 
-Kernel.reads_of_mem (mem : r ∈ regions) (rd : r.readable = true) : (Kernel.ofRegions regions).Reads r
-Kernel.writes_of_mem (mem : r ∈ regions) (wr : r.writable = true) : (Kernel.ofRegions regions).Writes r
 Kernel.Writes.reads (w : k.Writes r) : k.Reads r
 
 -- same : r.Same m₁ m₂
@@ -200,32 +198,37 @@ Recipes:
 
 - `MachineState`: `registers`, `xmmRegisters`, `signFlag`, `zeroFlag`, `carryFlag`, `overflowFlag`, `memory`, `kernel`, `status` (`ExecutionStatus.running addr | .exited code | .fault`; `code : BitVec 8` is the process's exit code). `s.returnAddress := readBytes s.memory (s.registers .rsp) 8`.
 - `Access`: `.unmapped | .protNone | .readOnly | .readExec | .readWrite`.
-- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`, `executable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`. `Kernel.ofRegions regions` maps those regions with their permissions.
-- Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`, `Instruction`, `Program`.
-- A program written by hand is one leaf: `.leaf [⟨0x1000, 1, .push .rbx⟩, ⟨0x1001, 1, .ret⟩]`. The importer's is a search tree of leaves, `.branch split left right`: addresses below `split` are in `left`.
+- `Kernel`: `{ access : BitVec 64 → Access }`, with projections `mapped`, `readable`, `writable`, `executable`. An instruction faults on an access `readable` / `writable` does not allow, and none changes the kernel. `Kernel.Writes` implies `Kernel.Reads`.
+- Syntax types: `Reg`, `Reg32`, `Reg16`, `Reg8`, `Xmm`, `Width`, `Address`, `Operand`, `Op`.
+- `Code := BitVec 64 → Option (Fin 256)`. Handwritten bytes: `Code.ofBytes 0x1000 [0x53, 0xc3]`.
 - Instruction specs: `Rivet.Contract.<op>` (`Contract.mov`, `Contract.add`, `Contract.cmp`, etc.). Note: `not` is `-x - 1`; `movsxd` is a sum with `if`.
 - `Op.syscall` has one spec per system call (e.g. `Contract.exitGroup` for Linux `exit_group`, `rax = 231#64`: changes only `status` to `.exited ((s.registers .rdi).setWidth 8)`).
-- `step`, `execute`, `FlagChoices` define `Block` (proofs never call them).
+- `step`, `execute`, `FlagChoices` define `Executes` (proofs never call them).
 - Importer:
   ```sh
-  cargo run -p rivet-import -- ./prog --function f --namespace F --output F.lean
+  cargo run -p rivet-import -- ./prog --namespace F --output F.lean
   ```
-  Generates `F.entry`, `F.program`, `F.region_<a>`, `F.regions`, and `F.Loaded m` (fields `segment_<a> : F.region_<a>.Same F.segment_<a> m`). Reading a constant from a loaded segment:
-  ```lean
-  have h_in : F.region_<a>.Has 0x403000#64 8 := by rivet_known
-  have h_val : readBytes s.memory 0x403000#64 8 = 42#64 := by
-    rw [← loaded.segment_<a>.read h_in]; simp only [readBytes_succ, BitVec.of_length_zero]; decide
-  ```
+  Generates `F.file`, `F.layout`, `F.layout_ok`, `F.code := F.file.code F.layout`, and per-segment `F.segment_<a>`, `F.region_<a>`, and `F.bytes_<a>`.
 
 ## Loader
 
 - `Exe` (`{ size, pages }`): ELF bytes in 4096-byte little-endian base-256 `Nat` pages (`file.u8`/`.u16`/`.u32`/`.u64`).
 - `file.layout : Option Layout` (`{ entry : BitVec 64, segments : List Segment }`): checks static non-PIE x86-64 ELF64 (`-z noexecstack`, W^X, ascending non-overlapping pages, `e_entry` in executable bytes). Check once: `theorem layout_ok : file.layout = some layout := by decide +kernel`.
-- `Segment`: `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[p_vaddr, p_vaddr + p_memsz)`), `segment.memory file` (file bytes + zero BSS).
-- `Starts file layout stack s`: start-state hypothesis (`status`, `access`, `same`, `apart`, `stackWrites`, `stackPages`, `rsp`, `aligned`), plus `starts.reads` / `starts.writes`.
-- Tactics need literal regions — alias each segment's region/bytes with `abbrev` and pull `starts.reads`/`starts.writes`/`starts.same` onto them:
+- `Segment` (`vaddr`, `memsz`, `offset`, `filesz`, `writable`, `executable`): `segment.region` (mapped 4 KiB pages), `segment.bytes` (`[vaddr, vaddr + memsz)`), `segment.memory file` (file bytes + zero BSS).
+- `Starts file layout stack s`: start-state hypothesis (`status`, `access`, `same`, `apart`, `stackWrites`, `stackPages`, `rsp`, `aligned`), plus `starts.reads` and `starts.writes`.
+- Pull `starts.reads`/`starts.writes`/`starts.same` onto the importer's `F.region_<a>` / `F.bytes_<a>` aliases:
   ```lean
-  abbrev dataRegion : Region := Region.root 0x403000#64 0x3000 true true
-  abbrev dataBytes : Region := dataRegion.part 0x10 0x2ee8
-  have same : dataBytes.Same (data.memory file) s.memory := starts.same data (by decide)
+  have writes : s.kernel.Writes F.region_403000 := starts.writes F.segment_403000 (by decide) rfl
+  have same : F.bytes_403000.Same (F.segment_403000.memory F.file) s.memory :=
+    starts.same F.segment_403000 (by decide)
   ```
+- `Executes file Q` requires a valid layout and reaches `Q s t` from every start state for every flag choice. Exit theorems pin `t.status = .exited _`.
+- `Executes.ofBlock` proves this with a block allowing all changes.
+
+```lean
+theorem exit42 : Executes Exit42.file (fun _ t => t.status = .exited 42#8) :=
+  Executes.ofBlock Exit42.layout_ok fun stack s starts => by
+    rivet_step
+    rivet_step
+    rivet_step; exact Block.done
+```

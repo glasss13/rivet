@@ -67,8 +67,9 @@ meta def History.read : MetaM History := do
     let type ← instantiateMVars decl.type
     if let some (t, earlier, c) := type.app3? ``MachineState.Except then
       if t == earlier then continue
-      h := { h with nested := h.nested.insert t (#[(earlier, c, decl.toExpr)] ++ h.nested[t]?.getD #[]) }
       if t.isFVar then h := { h with later := h.later.insert t.fvarId! }
+      unless (← whnfD (mkApp (mkConst ``Changes.unrestricted) c)).isConstOf ``Bool.false do continue
+      h := { h with nested := h.nested.insert t (#[(earlier, c, decl.toExpr)] ++ h.nested[t]?.getD #[]) }
       continue
     if let some (_, lhs, rhs) := type.eq? then
       if let .app (.const field _) state := lhs then
@@ -139,7 +140,7 @@ meta def unchangedRegister (history : History) : Simp.Simproc := fun e => do
   let register := e.appArg!
   let out ← mkDecideProof (mkNot (← mkAppM ``Membership.mem #[mkApp (mkConst listed) c, register]))
   return .visit { expr := mkApp2 e.appFn!.appFn! earlier register,
-                  proof? := mkApp6 (mkConst law) state earlier c kept register out }
+                  proof? := mkApp7 (mkConst law) state earlier c kept (← mkEqRefl (mkConst ``Bool.false)) register out }
 
 -- The kernel read back across a nested block whose change does not list it.
 meta def unchangedKernel (history : History) : Simp.Simproc := fun e => do
@@ -147,7 +148,7 @@ meta def unchangedKernel (history : History) : Simp.Simproc := fun e => do
   for (earlier, c, kept) in history.keptBy state do
     if (← whnfD (mkApp (mkConst ``Changes.kernel) c)).isConstOf ``Bool.false then
       return .visit { expr := mkApp e.appFn! earlier,
-                      proof? := mkApp5 (mkConst ``MachineState.Except.sameKernel) state earlier c kept
+                      proof? := mkApp6 (mkConst ``MachineState.Except.sameKernel) state earlier c kept (← mkEqRefl (mkConst ``Bool.false))
                         (← mkEqRefl (mkConst ``Bool.false)) }
   return .continue
 

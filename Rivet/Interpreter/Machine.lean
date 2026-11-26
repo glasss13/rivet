@@ -1,5 +1,6 @@
 module
 public import Rivet.Interpreter.Memory
+public import Rivet.Interpreter.Decode
 -- The machine state and the executable interpreter: `step` and `execute`.
 @[expose] public section
 namespace Rivet
@@ -303,17 +304,20 @@ private def stepOp (operation : Op) (nextAddress : BitVec 64) (state : MachineSt
     if state.registers .rax == 231#64 then { state with status := .exited ((state.registers .rdi).setWidth 8) }
     else { state with status := .fault }
 
-@[no_expose] def step (program : Program) (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
+def MachineState.code (state : MachineState) : Code := fun address =>
+  if state.kernel.executable address then some (state.memory address) else none
+
+@[no_expose] def step (state : MachineState) (undefinedFlags : FlagValues) : MachineState :=
   match state.status with
-  | .running address => match program.fetch address with
-    | some instruction => stepOp instruction.op (address + BitVec.ofNat 64 instruction.length) state undefinedFlags
+  | .running address => match state.code.fetch address with
+    | some (length, operation) => stepOp operation (address + BitVec.ofNat 64 length) state undefinedFlags
     | none => { state with status := .fault }
   | _ => state
 
-@[no_expose, irreducible] def execute (program : Program) (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
+@[no_expose, irreducible] def execute (steps : Nat) (state : MachineState) (choices : FlagChoices) : MachineState :=
   match steps with
   | 0 => state
-  | remainingSteps+1 => execute program remainingSteps (step program state (choices 0)) (choices.drop 1)
+  | remainingSteps+1 => execute remainingSteps (step state (choices 0)) (choices.drop 1)
 
 abbrev MachineState.returnAddress (state : MachineState) : BitVec 64 :=
   readBytes state.memory (state.registers .rsp) 8

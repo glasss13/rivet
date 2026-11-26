@@ -1,13 +1,15 @@
-use crate::register::Register64::{Rcx, Rdx, Rsi};
 use anyhow::{Result, ensure};
 use iced_x86::{BlockEncoderOptions, code_asm::*};
-use rivet_import::Instruction;
 use serde::{Deserialize, Serialize};
 
 // Register order matches the native and Lean initial-state arrays.
 pub const REGISTERS: [AsmRegister64; 16] = [
     rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15,
 ];
+pub const RSP: usize = 7;
+const RCX: usize = 2;
+const RDX: usize = 3;
+const RSI: usize = 4;
 const REGISTERS8: [AsmRegister8; 16] = [
     al, bl, cl, dl, sil, dil, bpl, spl, r8b, r9b, r10b, r11b, r12b, r13b, r14b, r15b,
 ];
@@ -46,7 +48,8 @@ pub struct Case {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionInput {
-    pub program: Vec<Instruction>,
+    pub code_base: u64,
+    pub code: Vec<u8>,
     pub stop_address: u64,
     pub registers: [u64; 16],
     pub xmm_registers: [[u32; 4]; 16],
@@ -143,12 +146,12 @@ fn random_instruction(
     target: CodeLabel,
 ) -> Result<()> {
     let destination = if whole_program {
-        Rcx as usize
+        RCX
     } else {
         generator.usize(..16)
     };
     let source = if whole_program {
-        Rdx as usize
+        RDX
     } else if generator.bool() {
         destination
     } else {
@@ -521,7 +524,7 @@ pub fn generate(generator: &mut fastrand::Rng) -> Result<Case> {
         .collect();
     let mut registers = std::array::from_fn(|_| random_word(generator));
     if whole_program && generator.bool() {
-        registers[Rsi as usize] = generator.u64(0..=MAX_BODY_INSTRUCTIONS as u64);
+        registers[RSI] = generator.u64(0..=MAX_BODY_INSTRUCTIONS as u64);
     }
     Ok(Case {
         code: encoded.code_buffer,

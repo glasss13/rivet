@@ -108,7 +108,7 @@ fn snapshot(
 }
 
 pub fn execute(input: &ExecutionInput, memory: &NativeMemory) -> Result<Vec<Snapshot>> {
-    let code_base = memory.code.as_ptr() as u64;
+    let code_base = input.code_base;
     let mut child = TracedChild::start()?;
     let process_memory = File::open(format!("/proc/{}/mem", child.pid))?;
     let mut registers = ptrace::getregs(child.pid)?;

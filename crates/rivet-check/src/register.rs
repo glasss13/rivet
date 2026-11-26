@@ -1,5 +1,4 @@
 use nix::libc;
-pub use rivet_import::register::*;
 
 // Four little-endian 32-bit words per XMM register, matching Linux's register set.
 pub(crate) fn xmm_values(registers: &libc::user_fpregs_struct) -> [[u32; 4]; 16] {
